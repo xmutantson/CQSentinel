@@ -69,6 +69,6 @@ black>=23.0.0
 flake8>=6.0.0
 mypy>=1.4.0
 
-# Optional: For building Windows executable
-# pyinstaller>=5.13.0
-# pyinstaller-hooks-contrib>=2023.6
+# Building Windows executable
+pyinstaller>=5.13.0
+pyinstaller-hooks-contrib>=2023.6
