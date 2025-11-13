@@ -1,7 +1,7 @@
 """
 Complete audio processing pipeline
 
-Integrates denoising, VAD, and transcription into single pipeline.
+Integrates denoising, VAD, transcription, and voice fingerprinting.
 """
 
 import numpy as np
@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from .denoiser import AudioDenoiser
 from .vad import VoiceActivityDetector
 from ..speech.transcription import SpeechTranscriber, TranscriptSegment
+from ..voice.embeddings import VoiceEmbedder, VoiceSegment
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,7 @@ class ProcessedAudio:
     has_speech: bool
     speech_ratio: float
     transcripts: List[TranscriptSegment]
+    voice_segments: List[VoiceSegment]  # Voice fingerprints
     duration: float
 
 
@@ -35,6 +37,7 @@ class AudioPipeline:
     1. Noise reduction (RNNoise)
     2. Voice activity detection (Silero VAD)
     3. Speech-to-text (Whisper)
+    4. Voice fingerprinting (Resemblyzer)
     """
 
     def __init__(
@@ -42,7 +45,8 @@ class AudioPipeline:
         sample_rate: int = 16000,
         denoise_level: str = "medium",
         vad_threshold: float = 0.5,
-        whisper_model: str = "small"
+        whisper_model: str = "small",
+        enable_voice_id: bool = True
     ):
         """
         Initialize audio pipeline
@@ -52,8 +56,10 @@ class AudioPipeline:
             denoise_level: 'off', 'low', 'medium', 'high'
             vad_threshold: VAD sensitivity (0.0-1.0)
             whisper_model: Whisper model size
+            enable_voice_id: Enable voice fingerprinting (default: True)
         """
         self.sample_rate = sample_rate
+        self.enable_voice_id = enable_voice_id
 
         # Initialize components
         self.denoiser = AudioDenoiser(sample_rate=sample_rate)
@@ -70,7 +76,13 @@ class AudioPipeline:
             compute_type="int8"
         )
 
-        logger.info(f"AudioPipeline initialized: denoise={denoise_level}, whisper={whisper_model}")
+        # Voice fingerprinting (lazy load)
+        self.voice_embedder = VoiceEmbedder() if enable_voice_id else None
+
+        logger.info(
+            f"AudioPipeline initialized: denoise={denoise_level}, "
+            f"whisper={whisper_model}, voice_id={enable_voice_id}"
+        )
 
     def process(
         self,
@@ -85,7 +97,7 @@ class AudioPipeline:
             skip_if_no_voice: Skip transcription if no voice detected
 
         Returns:
-            ProcessedAudio with results
+            ProcessedAudio with results including voice fingerprints
         """
         duration = len(audio) / self.sample_rate
 
@@ -95,6 +107,7 @@ class AudioPipeline:
         clean_audio = self.denoiser.denoise(audio)
 
         # Step 2: Voice activity detection
+        speech_timestamps = self.vad.detect_speech(clean_audio)
         speech_ratio = self.vad.get_speech_ratio(clean_audio)
         has_speech = speech_ratio > 0.1  # At least 10% speech
 
@@ -116,12 +129,29 @@ class AudioPipeline:
             except Exception as e:
                 logger.error(f"Transcription failed: {e}")
 
+        # Step 4: Voice fingerprinting (if enabled and speech detected)
+        voice_segments = []
+
+        if self.enable_voice_id and self.voice_embedder and has_speech:
+            try:
+                voice_segments = self.voice_embedder.extract_embeddings(
+                    clean_audio,
+                    speech_timestamps,
+                    sample_rate=self.sample_rate
+                )
+
+                logger.debug(f"Extracted {len(voice_segments)} voice fingerprints")
+
+            except Exception as e:
+                logger.error(f"Voice fingerprinting failed: {e}")
+
         return ProcessedAudio(
             raw_audio=audio,
             clean_audio=clean_audio,
             has_speech=has_speech,
             speech_ratio=speech_ratio,
             transcripts=transcripts,
+            voice_segments=voice_segments,
             duration=duration
         )
 
