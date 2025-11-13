@@ -4,7 +4,7 @@
 
 [![License: TBD](https://img.shields.io/badge/License-TBD-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![Status: Planning](https://img.shields.io/badge/status-planning-yellow.svg)](PROJECT_PLAN.md)
+[![Status: Beta](https://img.shields.io/badge/status-beta-green.svg)](PROJECT_PLAN.md)
 
 ## What is CQSentinel?
 
@@ -86,12 +86,22 @@ Previous attempts at SSB auto-tuning assumed a fixed audio center frequency (e.g
 
 ## Project Status
 
-**Current Phase**: Planning (as of November 2025)
+**Current Phase**: Beta Testing (as of January 2025)
 
-See [PROJECT_PLAN.md](PROJECT_PLAN.md) for complete technical specification and development roadmap.
+All 10 development phases are COMPLETE! CQSentinel is now feature-complete and ready for beta testing.
 
-**Estimated Timeline**: 20-26 weeks (~5-6 months)
-**Target First Release**: Q2 2026 (Field Day 2026)
+✅ Phase 1: Core Infrastructure
+✅ Phase 2: Audio Intelligence
+✅ Phase 3: SSB Auto-Centering
+✅ Phase 4: Voice Fingerprinting
+✅ Phase 5: Contest Logic
+✅ Phase 6: Band Map & Visualization
+✅ Phase 7: N3FJP Integration
+✅ Phase 8: Band Scanning Engine
+✅ Phase 9: Contest Profiles
+✅ Phase 10: Polish & Distribution
+
+See [PROJECT_PLAN.md](PROJECT_PLAN.md) for complete technical specification.
 
 ## Development Roadmap
 
@@ -106,25 +116,61 @@ See [PROJECT_PLAN.md](PROJECT_PLAN.md) for complete technical specification and 
 9. **Phase 9**: Contest Profiles (FD, WFD, CQWW, CQWPX, Salmon Run)
 10. **Phase 10**: Polish & Distribution (packaging, docs, testing)
 
-## Quick Start (Coming Soon)
+## Quick Start
+
+### Installation
 
 ```bash
-# Installation (future)
-pip install cqsentinel
+# Clone repository
+git clone https://github.com/xmutantson/CQSentinel.git
+cd CQSentinel
 
-# Or download Windows installer
-# CQSentinel-1.0-setup.exe
+# Install dependencies
+pip install -r requirements.txt
 
-# Run
-cqsentinel
+# Run CQSentinel
+python -m cqsentinel.main
 ```
+
+### Building Windows Executable
+
+```bash
+# Build standalone executable (PyInstaller)
+python -m PyInstaller cqsentinel.spec
+
+# Executable will be in dist/CQSentinel/CQSentinel.exe
+```
+
+### First Run Setup
+
+1. Start rigctld for your radio:
+   ```bash
+   rigctld -m 3085 -r COM3  # Example for IC-705
+   ```
+
+2. Launch CQSentinel:
+   ```bash
+   python -m cqsentinel.main
+   ```
+
+3. Configure settings:
+   - Radio: Set rigctld connection (default: localhost:4532)
+   - Audio: Select audio device
+   - Contest: Choose contest profile (Field Day, CQWW, etc.)
+   - N3FJP: Enable and configure if using N3FJP logging
+
+4. Start scanning!
+   - Select band profile (e.g., "Field Day 20m")
+   - Click "Start Scan"
+   - Watch the band map populate with stations
 
 ## Documentation
 
 - **[PROJECT_PLAN.md](PROJECT_PLAN.md)** - Complete technical specification
-- **User Guide** - Coming soon
-- **Developer Guide** - Coming soon
-- **API Reference** - Coming soon
+- **[PHASE1.md](PHASE1.md) - [PHASE10.md](PHASE10.md)** - Implementation documentation for all phases
+- **[BUILD.md](BUILD.md)** - Windows build instructions
+- **User Guide** - See phase documentation for detailed usage
+- **Configuration** - Settings stored in `~/.cqsentinel/config.yaml`
 
 ## Hardware Requirements
 
