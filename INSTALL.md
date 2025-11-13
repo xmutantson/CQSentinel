@@ -31,6 +31,192 @@ pip install faster-whisper resemblyzer noisereduce silero-vad
 
 ---
 
+## Windows Development Setup (For Full Features)
+
+### Installing Voice Fingerprinting Support
+
+Voice fingerprinting (Phase 4 feature) requires compiling native C++ extensions. Follow these steps:
+
+#### 1. Install Microsoft Visual C++ Build Tools
+
+**Download**: https://visualstudio.microsoft.com/visual-cpp-build-tools/
+
+Or direct link: https://aka.ms/vs/17/release/vs_BuildTools.exe
+
+**Installation Steps**:
+1. Run `vs_BuildTools.exe`
+2. In the installer, select **"Desktop development with C++"**
+3. In the right panel, ensure these are checked:
+   - ✅ **MSVC v143 - VS 2022 C++ x64/x86 build tools** (latest)
+   - ✅ **Windows 11 SDK** (or Windows 10 SDK)
+   - ✅ **C++ CMake tools for Windows**
+4. Click **Install**
+5. **Download size**: ~6-8 GB
+6. **Install time**: ~10-15 minutes
+7. **Restart your computer** after installation completes
+
+#### 2. Enable Resemblyzer in environment.yml
+
+After installing Build Tools, uncomment resemblyzer:
+
+**Edit `environment.yml` line 63**:
+```yaml
+# BEFORE (commented out):
+# - resemblyzer>=0.1.1  # Uncomment after installing Visual Studio Build Tools
+
+# AFTER (uncommented):
+- resemblyzer>=0.1.1  # Voice fingerprinting
+```
+
+#### 3. Install Voice Fingerprinting Package
+
+In **VSCode PowerShell** (with `cqsentinel` environment activated):
+
+```powershell
+# After restarting computer, activate environment
+conda activate cqsentinel
+
+# Install resemblyzer (will compile webrtcvad)
+pip install resemblyzer
+
+# Verify installation
+python -c "from resemblyzer import VoiceEncoder; print('✓ Voice fingerprinting ready')"
+```
+
+**Expected output**:
+```
+Downloading Resemblyzer model...
+✓ Voice fingerprinting ready
+```
+
+#### 4. Verify in VSCode
+
+Test that all imports work:
+
+```powershell
+# Test all critical imports
+python -c "import torch; print('✓ PyTorch')"
+python -c "from PyQt5 import QtCore; print('✓ PyQt5')"
+python -c "import librosa; print('✓ librosa')"
+python -c "import faster_whisper; print('✓ Whisper')"
+python -c "from resemblyzer import VoiceEncoder; print('✓ Resemblyzer')"
+```
+
+All should show ✓ checkmarks.
+
+---
+
+### VSCode Setup for Development
+
+#### 1. Initialize Conda in PowerShell (One-Time)
+
+In VSCode's integrated PowerShell terminal:
+
+```powershell
+# Initialize conda
+& C:\Users\<YOUR_USERNAME>\radioconda\Scripts\conda.exe init powershell
+
+# Restart terminal (click trash icon, open new terminal)
+```
+
+After restart, you should see `(base)` in your prompt.
+
+#### 2. Set Execution Policy (One-Time)
+
+If you see "scripts disabled" error:
+
+```powershell
+# Allow scripts for current user
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+
+# Type: Y and press Enter
+```
+
+#### 3. Select Python Interpreter
+
+In VSCode:
+1. Press **`Ctrl+Shift+P`**
+2. Type: **"Python: Select Interpreter"**
+3. Choose: **`Python 3.10.x ('cqsentinel')`**
+
+Verify in bottom-left status bar: should show `3.10.x ('cqsentinel')`
+
+#### 4. Configure VSCode Settings (Optional)
+
+Create `.vscode/settings.json` in your project root:
+
+```json
+{
+    "python.defaultInterpreterPath": "C:\\Users\\<YOUR_USERNAME>\\radioconda\\envs\\cqsentinel\\python.exe",
+    "python.terminal.activateEnvironment": true,
+    "terminal.integrated.defaultProfile.windows": "PowerShell",
+    "python.linting.enabled": true,
+    "python.linting.flake8Enabled": true,
+    "python.formatting.provider": "black",
+    "editor.formatOnSave": true
+}
+```
+
+Replace `<YOUR_USERNAME>` with your Windows username.
+
+---
+
+### Troubleshooting Build Errors
+
+#### Error: "Microsoft Visual C++ 14.0 or greater is required"
+
+**Cause**: Build Tools not installed or not found
+
+**Solutions**:
+1. Install Visual Studio Build Tools (see above)
+2. Restart computer after installation
+3. Verify installation:
+   ```powershell
+   # Check if cl.exe (C++ compiler) is accessible
+   & "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
+   cl
+   ```
+
+#### Error: "conda: command not found" in PowerShell
+
+**Cause**: Conda not initialized in PowerShell
+
+**Solution**:
+```powershell
+# Initialize conda for PowerShell
+& C:\Users\<YOUR_USERNAME>\radioconda\Scripts\conda.exe init powershell
+
+# Restart terminal
+```
+
+#### Error: "Failed building wheel for webrtcvad"
+
+**Cause**: Build Tools missing components
+
+**Solution**:
+1. Re-run Build Tools installer
+2. Ensure "Desktop development with C++" is selected
+3. Ensure "MSVC" and "Windows SDK" are checked
+4. Restart computer
+
+#### Import Error After Installation
+
+**Verify each package individually**:
+
+```powershell
+python -c "import torch; print('PyTorch version:', torch.__version__)"
+python -c "import librosa; print('librosa version:', librosa.__version__)"
+python -c "from resemblyzer import VoiceEncoder; print('Resemblyzer OK')"
+```
+
+If any fail, reinstall that specific package:
+```powershell
+pip uninstall <package-name>
+pip install <package-name>
+```
+
+---
+
 ## Prerequisites
 
 ### 1. Python 3.10 or higher
