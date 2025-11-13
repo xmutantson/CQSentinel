@@ -1,0 +1,66 @@
+# CQSentinel Conda Environment
+# Recommended installation method for Windows
+#
+# Usage:
+#   conda env create -f environment.yml
+#   conda activate cqsentinel
+
+name: cqsentinel
+channels:
+  - conda-forge
+  - pytorch
+  - defaults
+
+dependencies:
+  - python>=3.10,<3.12
+
+  # GUI (conda-forge has pre-built PyQt6)
+  - pyqt>=5.15.0  # Use PyQt5 from conda, more stable
+
+  # Audio I/O
+  - sounddevice>=0.4.6
+  - pysoundfile>=0.12.1
+
+  # Audio Processing
+  - librosa>=0.10.0
+  - resampy>=0.4.2
+
+  # PyTorch (for Whisper, Silero VAD, Resemblyzer)
+  - pytorch>=2.0.0
+  - torchaudio>=2.0.0
+
+  # Math / Signal Processing
+  - numpy>=1.24.0
+  - scipy>=1.10.0
+  - scikit-learn>=1.3.0
+
+  # Networking
+  - pyserial>=3.5
+
+  # Configuration
+  - pyyaml>=6.0
+
+  # Utilities
+  - colorlog>=6.7.0
+  - tqdm>=4.65.0
+
+  # Development
+  - pytest>=7.4.0
+  - black>=23.0.0
+  - flake8>=6.0.0
+
+  # PyInstaller
+  - pyinstaller>=5.13.0
+
+  # Install from pip (not in conda)
+  - pip
+  - pip:
+    # These packages are only on PyPI
+    - faster-whisper>=0.10.0
+    - resemblyzer>=0.1.1
+    - noisereduce>=3.0.0
+    - silero-vad>=4.0.0
+    - openai-whisper>=20230314
+    - pyinstaller-hooks-contrib>=2023.6
+    - pytest-qt>=4.2.0
+    - pytest-cov>=4.1.0

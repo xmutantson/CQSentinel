@@ -1,5 +1,36 @@
 # CQSentinel Installation Guide
 
+## ⚠️ Windows Users: Read This First!
+
+CQSentinel has complex dependencies (PyQt6, PyTorch, audio libraries) that can be challenging on Windows. **We strongly recommend using Conda** for installation.
+
+### Quick Start (Windows with Conda/Radioconda)
+
+You have **radioconda** installed! Here's the fastest way to get started:
+
+```cmd
+# Open Anaconda Prompt (radioconda)
+conda create -n cqsentinel python=3.10
+conda activate cqsentinel
+
+# Navigate to CQSentinel directory
+cd X:\Storage\Documents\CQSentinel
+
+# Install using environment.yml
+conda env update -f environment.yml
+
+# OR install manually:
+conda install -c conda-forge pyqt librosa numpy scipy pyyaml tqdm sounddevice
+conda install pytorch torchaudio -c pytorch
+pip install faster-whisper resemblyzer noisereduce silero-vad
+```
+
+**Then in VSCode**: Press `Ctrl+Shift+P` → "Python: Select Interpreter" → Choose `cqsentinel` environment
+
+**Common Issue**: If you see `PyQt6 build failed`, you're using MSYS2/MinGW Python. Switch to conda or native Windows Python.
+
+---
+
 ## Prerequisites
 
 ### 1. Python 3.10 or higher
