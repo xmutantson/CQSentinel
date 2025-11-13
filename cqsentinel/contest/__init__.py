@@ -6,11 +6,33 @@ This module provides:
 - Callsign extraction from transcripts
 - Contest behavior detection and scoring
 - Station type classification
+- Pre-configured contest profiles
 """
 
 from .phonetics import PhoneticParser, parse_callsign, parse_exchange
 from .callsign import CallsignExtractor, ExtractedCallsign, extract_callsigns, extract_best_callsign
 from .behavior import BehaviorAnalyzer, ContestnessAnalysis, StationType, analyze_contestness
+from .profiles import (
+    ContestProfile,
+    ExchangeField,
+    MultiplierType,
+    # Pre-configured profiles
+    FIELD_DAY,
+    WINTER_FIELD_DAY,
+    CQ_WW_DX,
+    CQ_WPX,
+    SALMON_RUN,
+    CONTEST_PROFILES,
+    # Functions
+    get_contest_profile,
+    list_contest_profiles,
+    detect_contest,
+    parse_exchange_auto,
+    # Constants
+    ARRL_SECTIONS,
+    CQ_ZONES,
+    WA_COUNTIES,
+)
 
 __all__ = [
     # Phonetics
@@ -29,4 +51,22 @@ __all__ = [
     'ContestnessAnalysis',
     'StationType',
     'analyze_contestness',
+
+    # Contest Profiles
+    'ContestProfile',
+    'ExchangeField',
+    'MultiplierType',
+    'FIELD_DAY',
+    'WINTER_FIELD_DAY',
+    'CQ_WW_DX',
+    'CQ_WPX',
+    'SALMON_RUN',
+    'CONTEST_PROFILES',
+    'get_contest_profile',
+    'list_contest_profiles',
+    'detect_contest',
+    'parse_exchange_auto',
+    'ARRL_SECTIONS',
+    'CQ_ZONES',
+    'WA_COUNTIES',
 ]
