@@ -14,11 +14,11 @@ channels:
 dependencies:
   - python>=3.10,<3.12
 
-  # GUI (conda-forge has pre-built PyQt6)
-  - pyqt>=5.15.0  # Use PyQt5 from conda, more stable
+  # GUI (conda-forge has pre-built PyQt5)
+  - pyqt=5.15  # PyQt5 from conda, more stable than PyQt6
 
   # Audio I/O
-  - sounddevice>=0.4.6
+  - python-sounddevice>=0.4.6  # Note: conda package is "python-sounddevice"
   - pysoundfile>=0.12.1
 
   # Audio Processing
@@ -26,8 +26,10 @@ dependencies:
   - resampy>=0.4.2
 
   # PyTorch (for Whisper, Silero VAD, Resemblyzer)
+  # Using cpuonly for smaller download (~500MB vs 2GB)
   - pytorch>=2.0.0
   - torchaudio>=2.0.0
+  - cpuonly  # CPU-only version, remove if you have GPU
 
   # Math / Signal Processing
   - numpy>=1.24.0
