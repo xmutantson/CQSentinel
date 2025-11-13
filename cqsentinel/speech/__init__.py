@@ -3,5 +3,6 @@ Speech processing module for CQSentinel
 Handles transcription, phonetics, and callsign extraction
 """
 
-# Placeholder for future speech processing modules
-__all__ = []
+from .transcription import SpeechTranscriber, TranscriptSegment
+
+__all__ = ['SpeechTranscriber', 'TranscriptSegment']
