@@ -1,0 +1,74 @@
+# CQSentinel Requirements
+# Python 3.10+
+
+# GUI
+PyQt6>=6.5.0
+PyQt6-Qt6>=6.5.0
+
+# Audio I/O
+sounddevice>=0.4.6
+soundfile>=0.12.1
+
+# Audio Processing - Noise Reduction
+# Note: pyrnnoise may require manual installation or compilation
+# Alternative: noisereduce (pure Python, easier to install)
+noisereduce>=3.0.0
+
+# Voice Activity Detection
+# Note: silero-vad requires torch
+torch>=2.0.0
+torchaudio>=2.0.0
+silero-vad>=4.0.0
+
+# Speech Recognition (Offline)
+# faster-whisper uses CTranslate2 for optimized inference
+faster-whisper>=0.10.0
+openai-whisper>=20230314  # Fallback
+
+# Pitch Detection for SSB Auto-Centering
+librosa>=0.10.0
+soundfile>=0.12.1
+resampy>=0.4.2
+
+# Optional: CREPE for GPU-accelerated pitch detection
+# crepe>=0.0.12
+
+# Voice Fingerprinting / Speaker Diarization
+# Resemblyzer uses PyTorch backend
+resemblyzer>=0.1.1
+# Alternative/Additional: pyannote.audio for advanced diarization
+# pyannote-audio>=3.0.0
+
+# Ham Radio Utilities
+# Note: pyhamtools may have dependency issues, using manual validation as fallback
+# pyhamtools>=0.7.5
+
+# Math / Signal Processing
+numpy>=1.24.0
+scipy>=1.10.0
+scikit-learn>=1.3.0
+
+# Networking
+pyserial>=3.5  # For direct serial CAT if needed
+
+# Configuration & Storage
+pyyaml>=6.0
+toml>=0.10.2
+
+# Logging & Monitoring
+colorlog>=6.7.0
+tqdm>=4.65.0
+
+# Testing
+pytest>=7.4.0
+pytest-qt>=4.2.0
+pytest-cov>=4.1.0
+
+# Development
+black>=23.0.0
+flake8>=6.0.0
+mypy>=1.4.0
+
+# Optional: For building Windows executable
+# pyinstaller>=5.13.0
+# pyinstaller-hooks-contrib>=2023.6
