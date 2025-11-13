@@ -68,9 +68,10 @@ contest_logs/
 exports/
 
 # Build artifacts
-*.spec
 build/
 dist/
+# Keep cqsentinel.spec (PyInstaller spec file)
+# *.spec
 
 # Jupyter
 .ipynb_checkpoints/
