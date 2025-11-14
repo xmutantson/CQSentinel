@@ -231,7 +231,8 @@ class SettingsDialog(QDialog):
         try:
             from cqsentinel.audio import list_audio_devices
             for device in list_audio_devices():
-                self.audio_device_combo.addItem(device['name'], device['index'])
+                # AudioDevice is a dataclass - use attribute access not subscript
+                self.audio_device_combo.addItem(device.name, device.index)
         except Exception as e:
             logger.warning(f"Could not list audio devices: {e}")
 
