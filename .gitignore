@@ -73,6 +73,9 @@ dist/
 # Keep cqsentinel.spec (PyInstaller spec file)
 # *.spec
 
+# External dependencies (downloaded at build time)
+external/
+
 # Jupyter
 .ipynb_checkpoints/
 

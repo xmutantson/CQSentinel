@@ -11,10 +11,40 @@ import logging
 import socket
 import shutil
 import platform
+import sys
 from typing import Optional
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+def get_bundled_rigctld_path() -> Optional[str]:
+    """
+    Get path to bundled rigctld executable
+
+    Returns:
+        Path to rigctld.exe if bundled, None otherwise
+    """
+    # Check if running as PyInstaller bundle
+    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+        # Running in PyInstaller bundle
+        bundle_dir = Path(sys._MEIPASS)
+        rigctld_path = bundle_dir / 'hamlib' / 'bin' / 'rigctld.exe'
+
+        if rigctld_path.exists():
+            logger.info(f"Found bundled rigctld at: {rigctld_path}")
+            return str(rigctld_path)
+
+    # Also check next to executable (onedir mode)
+    if getattr(sys, 'frozen', False):
+        exe_dir = Path(sys.executable).parent
+        rigctld_path = exe_dir / 'hamlib' / 'bin' / 'rigctld.exe'
+
+        if rigctld_path.exists():
+            logger.info(f"Found bundled rigctld at: {rigctld_path}")
+            return str(rigctld_path)
+
+    return None
 
 
 class RigctldManager:
@@ -74,15 +104,22 @@ class RigctldManager:
             logger.info("rigctld is already running")
             return True
 
-        # Find rigctld executable (check both rigctld and rigctld.exe on Windows)
-        rigctld_path = shutil.which("rigctld")
-        if not rigctld_path and platform.system() == 'Windows':
-            rigctld_path = shutil.which("rigctld.exe")
+        # Find rigctld executable
+        # 1. Check for bundled version first (PyInstaller bundle)
+        rigctld_path = get_bundled_rigctld_path()
 
+        # 2. Fall back to PATH if not bundled
         if not rigctld_path:
-            logger.error("rigctld not found in PATH.")
-            logger.error("Please install Hamlib. On Windows, ensure Hamlib bin directory is in PATH.")
-            logger.error("Download from: https://github.com/Hamlib/Hamlib/releases")
+            rigctld_path = shutil.which("rigctld")
+            if not rigctld_path and platform.system() == 'Windows':
+                rigctld_path = shutil.which("rigctld.exe")
+
+        # 3. Give up if still not found
+        if not rigctld_path:
+            logger.error("rigctld not found.")
+            logger.error("Hamlib is bundled with CQSentinel but rigctld.exe was not found.")
+            logger.error("Please reinstall CQSentinel or install Hamlib manually:")
+            logger.error("  Download from: https://github.com/Hamlib/Hamlib/releases")
             return False
 
         logger.info(f"Found rigctld at: {rigctld_path}")

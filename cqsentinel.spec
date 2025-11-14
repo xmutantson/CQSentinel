@@ -33,6 +33,13 @@ if os.path.exists('contest_profiles'):
 if os.path.exists('resources'):
     datas.append(('resources', 'resources'))
 
+# Add Hamlib binaries (if exists)
+hamlib_dir = 'external/hamlib'
+if os.path.exists(hamlib_dir):
+    # Add entire hamlib directory to distribution
+    datas.append((hamlib_dir, 'hamlib'))
+    print(f"✓ Including Hamlib from {hamlib_dir}")
+
 # Collect data files from packages
 datas += collect_data_files('torch')
 datas += collect_data_files('torchaudio')

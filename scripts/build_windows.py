@@ -63,6 +63,44 @@ def check_dependencies():
     return True
 
 
+def check_hamlib():
+    """Check if Hamlib is present, download if needed"""
+    print("📡 Checking for Hamlib...")
+
+    hamlib_dir = Path('external/hamlib')
+    rigctld_path = hamlib_dir / 'bin' / 'rigctld.exe'
+
+    if rigctld_path.exists():
+        print(f"  ✓ Hamlib found at: {hamlib_dir}")
+        print()
+        return True
+
+    print(f"  ⚠ Hamlib not found, downloading...")
+    print()
+
+    # Run download script
+    download_script = Path(__file__).parent / 'download_hamlib.py'
+
+    try:
+        result = subprocess.run(
+            [sys.executable, str(download_script)],
+            check=True
+        )
+
+        if rigctld_path.exists():
+            print()
+            return True
+        else:
+            print("\n❌ Hamlib download failed")
+            print("Please run: python scripts/download_hamlib.py")
+            return False
+
+    except subprocess.CalledProcessError as e:
+        print(f"\n❌ Failed to download Hamlib: {e}")
+        print("Please run: python scripts/download_hamlib.py")
+        return False
+
+
 def create_resources():
     """Create placeholder resources if they don't exist"""
     print("📦 Setting up resources...")
@@ -166,6 +204,10 @@ def main():
 
     # Check dependencies
     if not check_dependencies():
+        return 1
+
+    # Check/download Hamlib
+    if not check_hamlib():
         return 1
 
     # Create resources
