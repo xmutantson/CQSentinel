@@ -22,25 +22,51 @@ def setup_cache_paths():
     """
     Setup cache directories for model downloads.
 
-    Ensures models download to user home directory, not frozen app directory.
+    For packaged builds: Put models next to the .exe
+    For source builds: Use standard cache directories
     """
-    # Use user's home directory for cache
-    home = Path.home()
+    # Check if running from packaged executable
+    if getattr(sys, 'frozen', False):
+        # Running from packaged build - put models next to executable
+        if hasattr(sys, '_MEIPASS'):
+            # PyInstaller temp folder - use parent of executable
+            base_path = Path(sys.executable).parent
+        else:
+            base_path = Path(sys.executable).parent
 
-    # Set Hugging Face cache path
-    hf_cache = home / ".cache" / "huggingface"
-    hf_cache.mkdir(parents=True, exist_ok=True)
-    os.environ["HF_HOME"] = str(hf_cache)
-    os.environ["TRANSFORMERS_CACHE"] = str(hf_cache)
+        # Create models directory next to executable
+        models_dir = base_path / "models"
+        models_dir.mkdir(parents=True, exist_ok=True)
 
-    # Set torch cache path
-    torch_cache = home / ".cache" / "torch"
-    torch_cache.mkdir(parents=True, exist_ok=True)
-    os.environ["TORCH_HOME"] = str(torch_cache)
+        # Set cache paths to models directory
+        hf_cache = models_dir / "huggingface"
+        hf_cache.mkdir(parents=True, exist_ok=True)
+        os.environ["HF_HOME"] = str(hf_cache)
+        os.environ["TRANSFORMERS_CACHE"] = str(hf_cache)
+
+        torch_cache = models_dir / "torch"
+        torch_cache.mkdir(parents=True, exist_ok=True)
+        os.environ["TORCH_HOME"] = str(torch_cache)
+
+        logger.info(f"Packaged build - models directory: {models_dir}")
+    else:
+        # Running from source - use standard cache directories
+        home = Path.home()
+
+        hf_cache = home / ".cache" / "huggingface"
+        hf_cache.mkdir(parents=True, exist_ok=True)
+        os.environ["HF_HOME"] = str(hf_cache)
+        os.environ["TRANSFORMERS_CACHE"] = str(hf_cache)
+
+        torch_cache = home / ".cache" / "torch"
+        torch_cache.mkdir(parents=True, exist_ok=True)
+        os.environ["TORCH_HOME"] = str(torch_cache)
+
+        logger.info(f"Source build - using standard cache")
 
     logger.info(f"Cache paths configured:")
-    logger.info(f"  HF_HOME: {hf_cache}")
-    logger.info(f"  TORCH_HOME: {torch_cache}")
+    logger.info(f"  HF_HOME: {os.environ['HF_HOME']}")
+    logger.info(f"  TORCH_HOME: {os.environ['TORCH_HOME']}")
 
 
 class ModelDownloadThread(QThread):
@@ -140,8 +166,14 @@ class ModelDownloadThread(QThread):
 
             self.progress_signal.emit("  Downloading Silero VAD (~1.5 MB)...")
 
-            # Set torch hub directory to user cache
-            torch_hub_dir = Path.home() / ".cache" / "torch" / "hub"
+            # Set torch hub directory based on frozen/source
+            if getattr(sys, 'frozen', False):
+                # Packaged - use models dir next to exe
+                torch_hub_dir = Path(sys.executable).parent / "models" / "torch" / "hub"
+            else:
+                # Source - use cache
+                torch_hub_dir = Path.home() / ".cache" / "torch" / "hub"
+
             torch_hub_dir.mkdir(parents=True, exist_ok=True)
             torch.hub.set_dir(str(torch_hub_dir))
 
@@ -171,9 +203,16 @@ class ModelDownloadThread(QThread):
         try:
             self.progress_signal.emit("  Downloading Resemblyzer (~20 MB)...")
 
-            # Set up Resemblyzer to use user cache directory
+            # Set up torch hub directory based on frozen/source
             import torch
-            torch.hub.set_dir(str(Path.home() / ".cache" / "torch" / "hub"))
+            if getattr(sys, 'frozen', False):
+                # Packaged - use models dir next to exe
+                torch_hub_dir = Path(sys.executable).parent / "models" / "torch" / "hub"
+            else:
+                # Source - use cache
+                torch_hub_dir = Path.home() / ".cache" / "torch" / "hub"
+
+            torch.hub.set_dir(str(torch_hub_dir))
 
             # Import and initialize encoder (downloads model if needed)
             from resemblyzer import VoiceEncoder
@@ -354,31 +393,46 @@ def check_models_exist():
     """
     Check if AI models are already downloaded.
 
+    For packaged builds: Check models directory next to .exe
+    For source builds: Check standard cache directories
+
     Returns:
         bool: True if models exist, False if need to download
     """
     try:
-        # Check Whisper (try to load without downloading)
-        import os
-        from pathlib import Path
+        # Determine where to check based on frozen/source
+        if getattr(sys, 'frozen', False):
+            # Packaged build - check models directory next to exe
+            base_path = Path(sys.executable).parent
+            models_dir = base_path / "models"
 
-        # Check Hugging Face cache for Whisper
-        hf_cache = Path.home() / ".cache" / "huggingface" / "hub"
+            hf_cache = models_dir / "huggingface" / "hub"
+            torch_cache = models_dir / "torch" / "hub"
+            resemblyzer_cache = models_dir / "torch" / "hub" / "checkpoints"
+
+            logger.info(f"Checking for models in: {models_dir}")
+        else:
+            # Source build - check standard cache directories
+            home = Path.home()
+            hf_cache = home / ".cache" / "huggingface" / "hub"
+            torch_cache = home / ".cache" / "torch" / "hub"
+            resemblyzer_cache = home / ".cache" / "torch" / "hub" / "checkpoints"
+
+            logger.info(f"Checking for models in standard cache")
+
+        # Check for Whisper models
         whisper_exists = False
         if hf_cache.exists():
-            # Look for whisper model directories
             whisper_models = list(hf_cache.glob("models--Systran--faster-whisper-*"))
             whisper_exists = len(whisper_models) > 0
 
-        # Check torch cache for Silero VAD
-        torch_cache = Path.home() / ".cache" / "torch" / "hub"
+        # Check for Silero VAD
         vad_exists = False
         if torch_cache.exists():
             vad_models = list(torch_cache.glob("snakers4_silero-vad_*"))
             vad_exists = len(vad_models) > 0
 
         # Check for Resemblyzer
-        resemblyzer_cache = Path.home() / ".cache" / "torch" / "hub" / "checkpoints"
         resemblyzer_exists = False
         if resemblyzer_cache.exists():
             resemblyzer_models = list(resemblyzer_cache.glob("*.pt"))
@@ -388,7 +442,7 @@ def check_models_exist():
         models_ready = whisper_exists and vad_exists and resemblyzer_exists
 
         if models_ready:
-            logger.info("AI models already downloaded")
+            logger.info("✓ AI models already downloaded")
         else:
             logger.info(f"Models status: Whisper={whisper_exists}, VAD={vad_exists}, Resemblyzer={resemblyzer_exists}")
             logger.info("AI models need to be downloaded")
