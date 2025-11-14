@@ -25,6 +25,9 @@ dependencies:
   - librosa>=0.10.0
   - resampy>=0.4.2
 
+  # Voice Activity Detection (for resemblyzer)
+  - webrtcvad>=2.0.10  # Pre-built on conda-forge, avoids need for C++ compiler
+
   # PyTorch (for Whisper, Silero VAD, Resemblyzer)
   # Using cpuonly for smaller download (~500MB vs 2GB)
   - pytorch>=2.0.0
@@ -59,8 +62,8 @@ dependencies:
   - pip:
     # These packages are only on PyPI
     - faster-whisper>=0.10.0
-    # OPTIONAL: Voice fingerprinting (requires C++ compiler on Windows)
-    # - resemblyzer>=0.1.1  # Uncomment after installing Visual Studio Build Tools
+    # Voice fingerprinting (webrtcvad pre-installed from conda-forge above)
+    - resemblyzer>=0.1.1
     - noisereduce>=3.0.0
     - silero-vad>=4.0.0
     - openai-whisper>=20230314
