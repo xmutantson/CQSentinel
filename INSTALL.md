@@ -2,40 +2,82 @@
 
 ## ⚠️ Windows Users: Read This First!
 
-CQSentinel has complex dependencies (PyQt6, PyTorch, audio libraries) that can be challenging on Windows. **We strongly recommend using Conda** for installation.
+CQSentinel has complex dependencies (PyQt5, PyTorch, audio libraries) that can be challenging on Windows. **We strongly recommend using Conda** for installation.
 
 ### Quick Start (Windows with Conda/Radioconda)
 
-You have **radioconda** installed! Here's the fastest way to get started:
+**Recommended method** - uses pre-built binaries from conda-forge (no compiler needed!):
 
 ```cmd
-# Open Anaconda Prompt (radioconda)
+# Open Anaconda Prompt (radioconda) or PowerShell with conda initialized
 conda create -n cqsentinel python=3.10
 conda activate cqsentinel
 
 # Navigate to CQSentinel directory
 cd X:\Storage\Documents\CQSentinel
 
-# Install using environment.yml
+# Install all dependencies (including voice fingerprinting!)
 conda env update -f environment.yml
-
-# OR install manually:
-conda install -c conda-forge pyqt librosa numpy scipy pyyaml tqdm sounddevice
-conda install pytorch torchaudio -c pytorch
-pip install faster-whisper resemblyzer noisereduce silero-vad
 ```
 
+**That's it!** All dependencies including voice fingerprinting support are now installed.
+
 **Then in VSCode**: Press `Ctrl+Shift+P` → "Python: Select Interpreter" → Choose `cqsentinel` environment
+
+### What's Included
+
+✅ PyQt5 (pre-built GUI framework)
+✅ PyTorch CPU (optimized, ~500MB download)
+✅ Audio processing (librosa, sounddevice, soundfile)
+✅ AI models (Whisper, Silero VAD)
+✅ **Voice fingerprinting (resemblyzer + webrtcvad)** - no compiler needed!
+✅ All testing and development tools
+
+### Verify Installation
+
+Test that all imports work:
+
+```powershell
+conda activate cqsentinel
+
+# Test all critical imports
+python -c "import torch; print('✓ PyTorch')"
+python -c "from PyQt5 import QtCore; print('✓ PyQt5')"
+python -c "import librosa; print('✓ librosa')"
+python -c "import faster_whisper; print('✓ Whisper')"
+python -c "from resemblyzer import VoiceEncoder; print('✓ Resemblyzer')"
+```
+
+All should show ✓ checkmarks.
 
 **Common Issue**: If you see `PyQt6 build failed`, you're using MSYS2/MinGW Python. Switch to conda or native Windows Python.
 
 ---
 
-## Windows Development Setup (For Full Features)
+## Alternative: Manual Installation (Advanced)
 
-### Installing Voice Fingerprinting Support
+If you need to install packages individually or troubleshoot:
 
-Voice fingerprinting (Phase 4 feature) requires compiling native C++ extensions. **Two options**:
+```cmd
+conda activate cqsentinel
+
+# Core dependencies from conda-forge
+conda install -c conda-forge pyqt=5.15 librosa numpy scipy pyyaml tqdm python-sounddevice pysoundfile webrtcvad
+
+# PyTorch (CPU-only)
+conda install -c pytorch pytorch torchaudio cpuonly
+
+# Python packages from PyPI
+pip install faster-whisper resemblyzer noisereduce silero-vad openai-whisper
+```
+
+---
+
+## LEGACY: Installing Voice Fingerprinting with Build Tools (NOT NEEDED!)
+
+**Note**: As of the latest update, voice fingerprinting is **included by default** using conda-forge's pre-built `webrtcvad` package. You do **NOT** need Visual Studio Build Tools anymore!
+
+The sections below are kept for reference only in case you need to build from source for other reasons.
 
 ---
 
@@ -269,10 +311,15 @@ Replace `<YOUR_USERNAME>` with your Windows username.
 
 #### Error: "Microsoft Visual C++ 14.0 or greater is required"
 
-**Cause**: Build Tools not installed or not found
+**This should not happen anymore!** As of the latest update, we use conda-forge's pre-built packages for all C++ dependencies.
 
-**Solutions**:
-1. Install Visual Studio Build Tools (see above)
+**If you still see this error**:
+1. Make sure you're installing from `environment.yml` (not `requirements.txt`)
+2. Ensure you're using conda-forge channel: `conda config --add channels conda-forge`
+3. Update your environment: `conda env update -f environment.yml`
+
+**Old solution (if you must build from source)**:
+1. Install Visual Studio Build Tools
 2. Restart computer after installation
 3. Verify installation:
    ```powershell
@@ -295,10 +342,15 @@ Replace `<YOUR_USERNAME>` with your Windows username.
 
 #### Error: "Failed building wheel for webrtcvad"
 
-**Cause**: Build Tools missing components
+**This should not happen anymore!** As of the latest update, we use conda-forge's pre-built `webrtcvad` package.
 
-**Solution**:
-1. Re-run Build Tools installer
+**If you still see this error**:
+1. Make sure you're using the latest `environment.yml`
+2. Ensure `webrtcvad>=2.0.10` is in the conda dependencies (not pip)
+3. Update your environment: `conda env update -f environment.yml`
+
+**Old solution (if you must build from source)**:
+1. Install Visual Studio Build Tools
 2. Ensure "Desktop development with C++" is selected
 3. Ensure "MSVC" and "Windows SDK" are checked
 4. Restart computer
