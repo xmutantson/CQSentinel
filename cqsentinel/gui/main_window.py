@@ -171,12 +171,15 @@ class MainWindow(QMainWindow):
         self.scan_thread: ScanThread = None
         self.band_scanner: BandScanner = None
         self.use_full_scanner = False  # Enable when Phase 2+ components ready
+        self.scan_queue = []  # Queue of bands to scan
+        self.current_scan_band = None  # Current band being scanned
 
         # Audio monitoring
         self.last_audio_level = 0.0  # 0.0 to 1.0
 
         # Band map visualization (always available)
-        self.band_map_widget: BandMapWidget = None
+        self.band_map_widgets = {}  # Dictionary of BandMapWidget instances per band
+        self.band_maps = {}  # Dictionary of BandMapState instances per band
         self.station_detail_panel: StationDetailPanel = None
 
         # Initialize audio capture for level meter (basic monitoring, always available)
@@ -237,6 +240,9 @@ class MainWindow(QMainWindow):
                 self.log("  Initializing voice database...")
                 self.voice_db = VoiceDatabase()
 
+                # Check voice database age and warn if old
+                self._check_voice_db_age()
+
             # Contest logic
             if not self.callsign_extractor:
                 self.log("  Initializing callsign extractor...")
@@ -246,15 +252,9 @@ class MainWindow(QMainWindow):
                 self.log("  Initializing behavior analyzer...")
                 self.behavior_analyzer = BehaviorAnalyzer()
 
-            # Band map
-            if not self.band_map:
-                self.log("  Initializing band map...")
-                self.band_map = BandMapState()
-
-            # Connect band map to visualization widget
-            if self.band_map_widget:
-                self.band_map_widget.set_band_map(self.band_map)
-                self.log("  Band map visualization connected")
+            # Band map - now using per-band band maps
+            # The band_maps dictionary is already created in init_ui
+            self.log("  Band maps initialized for all bands")
 
             self.use_full_scanner = True
             self.log("✓ Advanced features initialized successfully!")
@@ -324,11 +324,40 @@ class MainWindow(QMainWindow):
         # Band map and station detail panel (side by side)
         bandmap_layout = QHBoxLayout()
 
-        # Band map visualization (left side, 70% width)
-        self.band_map_widget = BandMapWidget(BandMapState())
-        self.band_map_widget.station_clicked.connect(self.on_station_clicked)
-        self.band_map_widget.station_selected.connect(self.on_station_selected)
-        bandmap_layout.addWidget(self.band_map_widget, stretch=7)
+        # Left side: Stacked band maps (70% width)
+        from PyQt5.QtWidgets import QScrollArea, QVBoxLayout
+        bandmaps_container = QWidget()
+        bandmaps_layout = QVBoxLayout(bandmaps_container)
+        bandmaps_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Create band map widgets for all bands
+        for band_name in ["160m", "80m", "40m", "20m", "15m", "10m"]:
+            if band_name in BAND_PROFILES:
+                profile = BAND_PROFILES[band_name]
+
+                # Create band map state for this band
+                band_map_state = BandMapState(band=band_name)
+                self.band_maps[band_name] = band_map_state
+
+                # Create band map widget
+                band_map_widget = BandMapWidget(band_map_state)
+                band_map_widget.set_frequency_range(profile.freq_start, profile.freq_end)
+                band_map_widget.station_clicked.connect(self.on_station_clicked)
+                band_map_widget.station_selected.connect(self.on_station_selected)
+
+                # Store reference
+                self.band_map_widgets[band_name] = band_map_widget
+
+                # Add to layout
+                bandmaps_layout.addWidget(band_map_widget)
+
+        bandmaps_layout.addStretch()
+
+        # Make scrollable
+        scroll_area = QScrollArea()
+        scroll_area.setWidget(bandmaps_container)
+        scroll_area.setWidgetResizable(True)
+        bandmap_layout.addWidget(scroll_area, stretch=7)
 
         # Station detail panel (right side, 30% width)
         self.station_detail_panel = StationDetailPanel()
@@ -689,19 +718,20 @@ class MainWindow(QMainWindow):
                     on_progress_update=lambda prog: self.log(f"Progress: {prog.progress_percent:.1f}%")
                 )
 
-                # Get frequency ranges for selected bands
+                # Queue up all bands to scan
+                self.scan_queue = []
                 for band_name in enabled_bands:
                     if band_name in BAND_PROFILES:
                         profile = BAND_PROFILES[band_name]
-                        self.log(f"  Scanning {profile.name}: {profile.freq_start/1e6:.3f}-{profile.freq_end/1e6:.3f} MHz")
-                        # TODO: Start multi-band scan
-                        # For now, scan first band only
-                        self.band_scanner.start_scan(
-                            freq_start=profile.freq_start,
-                            freq_end=profile.freq_end,
-                            step_size=self.config.scan.step_size_hz
-                        )
-                        break  # First band only for now
+                        self.log(f"  Queued: {profile.name}: {profile.freq_start/1e6:.3f}-{profile.freq_end/1e6:.3f} MHz")
+                        self.scan_queue.append({
+                            'band_name': band_name,
+                            'profile': profile
+                        })
+
+                # Start scanning first band
+                if self.scan_queue:
+                    self._start_next_band_scan()
             else:
                 # Use simple Phase 1 scanner (frequency stepping only)
                 self.log("Using BASIC SCANNER (frequency stepping only)")
@@ -823,9 +853,9 @@ class MainWindow(QMainWindow):
             station.worked = True
             station.status = StationStatus.WORKED
             self.log(f"Marked {station.callsign} as worked")
-            # Update band map display
-            if self.band_map_widget:
-                self.band_map_widget.update_display()
+            # Update all band map displays
+            for band_map_widget in self.band_map_widgets.values():
+                band_map_widget.update_display()
             # Refresh detail panel
             if self.station_detail_panel:
                 self.station_detail_panel.set_station(station)
@@ -839,11 +869,134 @@ class MainWindow(QMainWindow):
             self.log("N3FJP integration enabled")
             self.n3fjp_status_label.setStyleSheet("color: orange;")
             self.n3fjp_status_label.setToolTip("N3FJP: Connecting...")
-            # TODO: Attempt to connect to N3FJP
+            # Attempt to connect to N3FJP
+            self._connect_n3fjp()
         else:
             self.log("N3FJP integration disabled")
             self.n3fjp_status_label.setStyleSheet("color: gray;")
             self.n3fjp_status_label.setToolTip("N3FJP: Disabled")
+            # Disconnect if connected
+            if hasattr(self, 'n3fjp_client') and self.n3fjp_client:
+                try:
+                    self.n3fjp_client.disconnect()
+                except:
+                    pass
+                self.n3fjp_client = None
+
+    def _check_voice_db_age(self):
+        """Check voice database age and warn if stale"""
+        if not self.voice_db:
+            return
+
+        try:
+            age_days = self.voice_db.get_age_days()
+            warn_threshold = self.config.voice_db.warn_age_days
+
+            if age_days > warn_threshold:
+                self.log(f"⚠ Voice database is {age_days:.1f} days old (>{warn_threshold} days)")
+
+                result = QMessageBox.question(
+                    self,
+                    "Voice Database Age Warning",
+                    f"The voice database is {age_days:.1f} days old.\n\n"
+                    f"For best results in contests, it's recommended to reset the voice database "
+                    f"before each new contest to avoid false dupe detection.\n\n"
+                    f"Would you like to reset the voice database now?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No
+                )
+
+                if result == QMessageBox.StandardButton.Yes:
+                    self.voice_db.reset()
+                    self.log("✓ Voice database reset")
+                    QMessageBox.information(self, "Database Reset", "Voice database has been reset.")
+                else:
+                    self.log("Voice database kept (user chose not to reset)")
+            else:
+                self.log(f"Voice database age: {age_days:.1f} days (OK)")
+
+        except Exception as e:
+            logger.warning(f"Failed to check voice database age: {e}")
+
+    def _connect_n3fjp(self):
+        """Connect to N3FJP logging software"""
+        try:
+            from cqsentinel.n3fjp import N3FJPClient
+
+            self.log(f"Connecting to N3FJP at {self.config.contest.n3fjp_host}:{self.config.contest.n3fjp_port}...")
+
+            self.n3fjp_client = N3FJPClient(
+                host=self.config.contest.n3fjp_host,
+                port=self.config.contest.n3fjp_port
+            )
+
+            if self.n3fjp_client.connect():
+                self.log("✓ Connected to N3FJP successfully")
+                self.n3fjp_status_label.setStyleSheet("color: green;")
+                self.n3fjp_status_label.setToolTip("N3FJP: Connected")
+            else:
+                raise Exception("Connection failed")
+
+        except Exception as e:
+            self.log(f"✗ Failed to connect to N3FJP: {e}")
+            self.log("  Make sure N3FJP is running with network server enabled")
+            self.n3fjp_status_label.setStyleSheet("color: red;")
+            self.n3fjp_status_label.setToolTip(f"N3FJP: Failed - {e}")
+            self.n3fjp_client = None
+
+    def _start_next_band_scan(self):
+        """Start scanning the next band in the queue"""
+        if not self.scan_queue:
+            self.log("All bands scanned!")
+            self.on_scan_finished()
+            return
+
+        # Get next band from queue
+        band_info = self.scan_queue.pop(0)
+        self.current_scan_band = band_info['band_name']
+        profile = band_info['profile']
+
+        self.log(f"Starting scan: {profile.name} ({profile.freq_start/1e6:.3f}-{profile.freq_end/1e6:.3f} MHz)")
+
+        # Get the band map for this specific band
+        current_band_map = self.band_maps.get(self.current_scan_band)
+
+        # Reinitialize BandScanner with the correct band map
+        self.band_scanner = BandScanner(
+            radio_controller=self.radio,
+            audio_capture=self.audio,
+            audio_pipeline=self.audio_pipeline,
+            auto_tuner=self.auto_tuner,
+            voice_database=self.voice_db,
+            callsign_extractor=self.callsign_extractor,
+            behavior_analyzer=self.behavior_analyzer,
+            band_map=current_band_map,
+            on_station_detected=lambda station: self.log(f"STATION on {self.current_scan_band}: {station.callsign}"),
+            on_progress_update=lambda prog: self.log(f"{self.current_scan_band}: {prog.progress_percent:.1f}%")
+        )
+
+        # Start scan for this band
+        self.band_scanner.start_scan(
+            freq_start=profile.freq_start,
+            freq_end=profile.freq_end,
+            step_size=self.config.scan.step_size_hz
+        )
+
+        # Monitor scan completion in background
+        import threading
+        def monitor_scan():
+            while self.band_scanner and self.band_scanner.is_scanning():
+                time.sleep(1)
+
+            # Scan finished, start next band
+            if self.scan_queue:
+                self.log(f"Band {self.current_scan_band} complete")
+                self._start_next_band_scan()
+            else:
+                self.log("All bands scanned!")
+
+        monitor_thread = threading.Thread(target=monitor_scan, daemon=True)
+        monitor_thread.start()
 
     def show_settings(self):
         """Show settings dialog"""
