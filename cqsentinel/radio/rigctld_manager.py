@@ -74,11 +74,18 @@ class RigctldManager:
             logger.info("rigctld is already running")
             return True
 
-        # Find rigctld executable
+        # Find rigctld executable (check both rigctld and rigctld.exe on Windows)
         rigctld_path = shutil.which("rigctld")
+        if not rigctld_path and platform.system() == 'Windows':
+            rigctld_path = shutil.which("rigctld.exe")
+
         if not rigctld_path:
-            logger.error("rigctld not found in PATH. Please install Hamlib.")
+            logger.error("rigctld not found in PATH.")
+            logger.error("Please install Hamlib. On Windows, ensure Hamlib bin directory is in PATH.")
+            logger.error("Download from: https://github.com/Hamlib/Hamlib/releases")
             return False
+
+        logger.info(f"Found rigctld at: {rigctld_path}")
 
         # Build command
         cmd = [
@@ -106,6 +113,7 @@ class RigctldManager:
             ])
 
         logger.info(f"Starting rigctld: {' '.join(cmd)}")
+        logger.info(f"Model ID: {self.model_id}, Serial Port: {self.serial_port}, Baud: {self.baud_rate}")
 
         try:
             # Start process
@@ -120,32 +128,107 @@ class RigctldManager:
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     startupinfo=startupinfo,
-                    creationflags=subprocess.CREATE_NO_WINDOW
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                    text=True,
+                    bufsize=1
                 )
             else:
                 self.process = subprocess.Popen(
                     cmd,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
+                    text=True,
+                    bufsize=1
                 )
 
             self._is_managed = True
 
             # Wait for rigctld to be ready
             start_time = time.time()
+            last_check = start_time
+            stderr_output = []
+
             while time.time() - start_time < timeout:
+                # Check if process died
+                if self.process.poll() is not None:
+                    # Process terminated
+                    stdout, stderr = self.process.communicate(timeout=1)
+                    logger.error(f"rigctld process died with exit code {self.process.returncode}")
+                    if stderr:
+                        logger.error(f"rigctld stderr: {stderr}")
+                        stderr_output.append(stderr)
+                    if stdout:
+                        logger.info(f"rigctld stdout: {stdout}")
+
+                    # Provide specific error guidance
+                    error_msg = stderr.lower() if stderr else ""
+                    if "permission denied" in error_msg or "access is denied" in error_msg:
+                        logger.error("Serial port access denied. Check that:")
+                        logger.error("  1. No other program is using the radio")
+                        logger.error("  2. You have permission to access the serial port")
+                    elif "no such file" in error_msg or "cannot open" in error_msg:
+                        logger.error(f"Serial port {self.serial_port} not found.")
+                        logger.error("  Check Settings > Radio > Serial Port")
+                    elif "rig_init" in error_msg:
+                        logger.error("Failed to initialize radio. Check that:")
+                        logger.error("  1. Radio model is correct")
+                        logger.error("  2. Radio is powered on")
+                        logger.error("  3. Serial cable is connected")
+
+                    return False
+
+                # Check if rigctld is listening
                 if self.is_running():
                     logger.info(f"rigctld started successfully (PID: {self.process.pid})")
                     return True
+
+                # Log stderr periodically (non-blocking read)
+                if time.time() - last_check > 0.5:
+                    try:
+                        # Try to read any available stderr (non-blocking)
+                        import select
+                        if hasattr(select, 'select'):
+                            readable, _, _ = select.select([self.process.stderr], [], [], 0)
+                            if readable:
+                                line = self.process.stderr.readline()
+                                if line:
+                                    logger.debug(f"rigctld: {line.strip()}")
+                                    stderr_output.append(line)
+                    except:
+                        pass  # Non-blocking read not available
+
+                    last_check = time.time()
+
                 time.sleep(0.2)
 
-            # Timeout - kill process
-            logger.error("rigctld failed to start within timeout")
+            # Timeout - get any error output and kill process
+            logger.error(f"rigctld failed to start within {timeout} seconds")
+
+            # Try to get stderr output
+            try:
+                # Give it a moment to write error messages
+                time.sleep(0.5)
+                if self.process.poll() is None:
+                    self.process.terminate()
+                stdout, stderr = self.process.communicate(timeout=2)
+                if stderr:
+                    logger.error(f"rigctld error output: {stderr}")
+                if stdout:
+                    logger.info(f"rigctld output: {stdout}")
+            except:
+                pass
+
             self.stop()
             return False
 
+        except FileNotFoundError as e:
+            logger.error(f"rigctld executable not found: {e}")
+            logger.error("Install Hamlib and ensure it's in your PATH")
+            return False
         except Exception as e:
             logger.error(f"Failed to start rigctld: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return False
 
     def stop(self):
