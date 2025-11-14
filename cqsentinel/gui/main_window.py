@@ -52,24 +52,36 @@ class ScanThread(QThread):
     def run(self):
         """Scan loop"""
         import time
+        import traceback
         try:
             for band_name in self.bands:
                 if not self.running:
                     break
 
                 if band_name not in BAND_PROFILES:
-                    self.log_signal.emit(f"Unknown band: {band_name}")
+                    try:
+                        self.log_signal.emit(f"Unknown band: {band_name}")
+                    except Exception as e:
+                        logger.error(f"Signal emit failed: {e}")
                     continue
 
                 profile = BAND_PROFILES[band_name]
-                self.log_signal.emit(f"Scanning {profile.name}: {profile.freq_start/1e6:.3f}-{profile.freq_end/1e6:.3f} MHz")
+                try:
+                    self.log_signal.emit(f"Scanning {profile.name}: {profile.freq_start/1e6:.3f}-{profile.freq_end/1e6:.3f} MHz")
+                except Exception as e:
+                    logger.error(f"Signal emit failed: {e}")
 
                 freq = profile.freq_start
                 while freq <= profile.freq_end and self.running:
                     try:
                         # Tune radio
                         self.radio.set_frequency(int(freq))
-                        self.log_signal.emit(f"  {freq/1e6:.4f} MHz")
+
+                        # Emit frequency update
+                        try:
+                            self.log_signal.emit(f"  {freq/1e6:.4f} MHz")
+                        except Exception as e:
+                            logger.error(f"Signal emit failed for freq {freq}: {e}")
 
                         # Dwell
                         time.sleep(self.dwell_sec)
@@ -77,17 +89,37 @@ class ScanThread(QThread):
                         # Next frequency
                         freq += self.step_hz
 
+                    except RadioConnectionError as e:
+                        error_msg = f"Radio connection lost at {freq/1e6:.3f} MHz: {e}"
+                        logger.error(error_msg)
+                        try:
+                            self.log_signal.emit(error_msg)
+                        except:
+                            pass
+                        return  # Exit scan completely on connection loss
                     except Exception as e:
-                        self.log_signal.emit(f"Error at {freq/1e6:.3f} MHz: {e}")
+                        error_msg = f"Error at {freq/1e6:.3f} MHz: {e}\n{traceback.format_exc()}"
+                        logger.error(error_msg)
+                        try:
+                            self.log_signal.emit(f"Error at {freq/1e6:.3f} MHz: {e}")
+                        except:
+                            pass
                         break
 
                 if not self.running:
                     break
 
-            self.log_signal.emit("Scan complete")
+            try:
+                self.log_signal.emit("Scan complete")
+            except Exception as e:
+                logger.error(f"Signal emit failed for scan complete: {e}")
         except Exception as e:
-            self.log_signal.emit(f"Scan error: {e}")
-            logger.error(f"Scan error: {e}", exc_info=True)
+            error_msg = f"Scan thread crashed: {e}\n{traceback.format_exc()}"
+            logger.error(error_msg)
+            try:
+                self.log_signal.emit(f"Scan error: {e}")
+            except:
+                pass
 
     def stop(self):
         """Stop scanning"""
