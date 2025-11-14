@@ -16,7 +16,7 @@ from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QComboBox, QCheckBox,
     QGroupBox, QTextEdit, QProgressBar, QStatusBar,
-    QMenuBar, QMenu, QMessageBox, QAction
+    QMenuBar, QMenu, QMessageBox, QAction, QScrollArea
 )
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread
 from PyQt5.QtGui import QFont
@@ -325,7 +325,6 @@ class MainWindow(QMainWindow):
         bandmap_layout = QHBoxLayout()
 
         # Left side: Stacked band maps (70% width)
-        from PyQt5.QtWidgets import QScrollArea, QVBoxLayout
         bandmaps_container = QWidget()
         bandmaps_layout = QVBoxLayout(bandmaps_container)
         bandmaps_layout.setContentsMargins(0, 0, 0, 0)

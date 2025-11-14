@@ -123,6 +123,31 @@ def main():
         app.processEvents()
         check_dependencies()
 
+        # Check if AI models need to be downloaded
+        splash.update_message("Checking AI models...")
+        app.processEvents()
+        from cqsentinel.gui.model_downloader_dialog import check_models_exist, ModelDownloaderDialog
+
+        if not check_models_exist():
+            # Hide splash and show model downloader
+            splash.hide()
+
+            logger.info("AI models not found - showing download dialog")
+            downloader = ModelDownloaderDialog(model_size=config.audio.whisper_model_size)
+            downloader.start_download()
+
+            result = downloader.exec()
+
+            # Show splash again
+            splash.show()
+            splash.update_message("Models ready, loading application...")
+            app.processEvents()
+
+            if result != downloader.Accepted:
+                logger.warning("User skipped model download - advanced features will be disabled")
+        else:
+            logger.info("AI models already available")
+
         # Import MainWindow after splash is shown (this is a slow import)
         splash.update_message("Loading modules...")
         app.processEvents()
@@ -180,16 +205,12 @@ def check_dependencies():
         logger.warning("rigctld not found in PATH. Please install Hamlib.")
         missing.append("rigctld (Hamlib)")
 
-    # Check for optional AI models
-    models_dir = Path(__file__).parent.parent / "models"
-    if not models_dir.exists():
-        logger.warning(f"Models directory not found: {models_dir}")
-        logger.warning("AI features will be limited until models are downloaded.")
-
     # Report missing dependencies
     if missing:
         logger.warning(f"Missing dependencies: {', '.join(missing)}")
         logger.warning("Some features may not work correctly.")
+
+    # Note: AI model checking is now handled by the model downloader dialog
 
 
 if __name__ == '__main__':
