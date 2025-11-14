@@ -4,8 +4,11 @@ Model Downloader Dialog
 Downloads AI models at application startup with progress feedback.
 """
 
+import os
+import sys
 import logging
 import threading
+from pathlib import Path
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QLabel, QProgressBar, QPushButton,
     QTextEdit, QMessageBox
@@ -13,6 +16,31 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, pyqtSignal, QThread
 
 logger = logging.getLogger(__name__)
+
+
+def setup_cache_paths():
+    """
+    Setup cache directories for model downloads.
+
+    Ensures models download to user home directory, not frozen app directory.
+    """
+    # Use user's home directory for cache
+    home = Path.home()
+
+    # Set Hugging Face cache path
+    hf_cache = home / ".cache" / "huggingface"
+    hf_cache.mkdir(parents=True, exist_ok=True)
+    os.environ["HF_HOME"] = str(hf_cache)
+    os.environ["TRANSFORMERS_CACHE"] = str(hf_cache)
+
+    # Set torch cache path
+    torch_cache = home / ".cache" / "torch"
+    torch_cache.mkdir(parents=True, exist_ok=True)
+    os.environ["TORCH_HOME"] = str(torch_cache)
+
+    logger.info(f"Cache paths configured:")
+    logger.info(f"  HF_HOME: {hf_cache}")
+    logger.info(f"  TORCH_HOME: {torch_cache}")
 
 
 class ModelDownloadThread(QThread):
@@ -28,27 +56,48 @@ class ModelDownloadThread(QThread):
     def run(self):
         """Download all models"""
         try:
+            # Setup cache paths first
+            setup_cache_paths()
+
+            # Check if running in frozen/packaged environment
+            is_frozen = getattr(sys, 'frozen', False)
+            if is_frozen:
+                self.progress_signal.emit("Running in packaged mode")
+                self.progress_signal.emit("")
+
             success = True
+            failures = []
 
             # Download Whisper
             self.progress_signal.emit("Downloading Whisper speech recognition model...")
             if not self._download_whisper():
                 success = False
+                failures.append("Whisper")
 
             # Download Silero VAD
             self.progress_signal.emit("Downloading Silero VAD model...")
             if not self._download_silero_vad():
                 success = False
+                failures.append("Silero VAD")
 
             # Download Resemblyzer
             self.progress_signal.emit("Downloading Resemblyzer voice encoder...")
             if not self._download_resemblyzer():
                 success = False
+                failures.append("Resemblyzer")
 
             if success:
                 self.progress_signal.emit("✓ All models downloaded successfully!")
             else:
-                self.progress_signal.emit("⚠ Some models failed to download")
+                self.progress_signal.emit(f"⚠ Failed to download: {', '.join(failures)}")
+                self.progress_signal.emit("")
+                self.progress_signal.emit("This may indicate missing dependencies.")
+                self.progress_signal.emit("")
+                self.progress_signal.emit("If running from source, install dependencies:")
+                self.progress_signal.emit("  pip install faster-whisper torch resemblyzer")
+                self.progress_signal.emit("")
+                self.progress_signal.emit("You can continue without these models.")
+                self.progress_signal.emit("Advanced features will be limited.")
 
             self.finished_signal.emit(success)
 
@@ -91,32 +140,43 @@ class ModelDownloadThread(QThread):
 
             self.progress_signal.emit("  Downloading Silero VAD (~1.5 MB)...")
 
+            # Set torch hub directory to user cache
+            torch_hub_dir = Path.home() / ".cache" / "torch" / "hub"
+            torch_hub_dir.mkdir(parents=True, exist_ok=True)
+            torch.hub.set_dir(str(torch_hub_dir))
+
             # Load model (will download if needed)
             model, utils = torch.hub.load(
                 repo_or_dir='snakers4/silero-vad',
                 model='silero_vad',
                 force_reload=False,
-                onnx=False
+                onnx=False,
+                trust_repo=True  # Trust the repository
             )
 
             self.progress_signal.emit("  ✓ Silero VAD downloaded")
             return True
 
-        except ImportError:
-            self.progress_signal.emit("  ✗ torch not installed")
-            logger.error("torch not installed")
+        except ImportError as e:
+            self.progress_signal.emit(f"  ✗ torch not installed: {e}")
+            logger.error(f"torch not installed: {e}")
             return False
         except Exception as e:
             self.progress_signal.emit(f"  ✗ Silero VAD download failed: {e}")
-            logger.error(f"Silero VAD download failed: {e}")
+            logger.error(f"Silero VAD download failed: {e}", exc_info=True)
             return False
 
     def _download_resemblyzer(self):
         """Download Resemblyzer model"""
         try:
-            from resemblyzer import VoiceEncoder
-
             self.progress_signal.emit("  Downloading Resemblyzer (~20 MB)...")
+
+            # Set up Resemblyzer to use user cache directory
+            import torch
+            torch.hub.set_dir(str(Path.home() / ".cache" / "torch" / "hub"))
+
+            # Import and initialize encoder (downloads model if needed)
+            from resemblyzer import VoiceEncoder
 
             # Initialize encoder (downloads model if needed)
             encoder = VoiceEncoder()
@@ -124,13 +184,13 @@ class ModelDownloadThread(QThread):
             self.progress_signal.emit("  ✓ Resemblyzer downloaded")
             return True
 
-        except ImportError:
-            self.progress_signal.emit("  ✗ resemblyzer not installed")
-            logger.error("resemblyzer not installed")
+        except ImportError as e:
+            self.progress_signal.emit(f"  ✗ resemblyzer or torch not installed: {e}")
+            logger.error(f"resemblyzer or torch not installed: {e}")
             return False
         except Exception as e:
             self.progress_signal.emit(f"  ✗ Resemblyzer download failed: {e}")
-            logger.error(f"Resemblyzer download failed: {e}")
+            logger.error(f"Resemblyzer download failed: {e}", exc_info=True)
             return False
 
 
@@ -257,14 +317,32 @@ class ModelDownloaderDialog(QDialog):
             self.continue_btn.setEnabled(True)
             self.skip_btn.setEnabled(True)
 
-            # Show warning
-            QMessageBox.warning(
-                self,
-                "Download Failed",
-                "Some AI models failed to download.\n\n"
-                "You can continue without advanced features, or retry the download.\n\n"
-                "Check the download log for details."
-            )
+            # Check if running from source or packaged
+            is_frozen = getattr(sys, 'frozen', False)
+
+            if is_frozen:
+                # Show message for packaged build
+                QMessageBox.warning(
+                    self,
+                    "Model Download Failed",
+                    "AI models failed to download.\n\n"
+                    "This packaged build may be missing required dependencies.\n\n"
+                    "You can continue in basic mode (frequency scanning only)\n"
+                    "or install from source with:\n"
+                    "  pip install faster-whisper torch resemblyzer\n\n"
+                    "See the download log for details."
+                )
+            else:
+                # Show message for source installation
+                QMessageBox.warning(
+                    self,
+                    "Model Download Failed",
+                    "Some AI models failed to download.\n\n"
+                    "Make sure dependencies are installed:\n"
+                    "  pip install faster-whisper torch resemblyzer\n\n"
+                    "You can continue in basic mode or retry after installing.\n\n"
+                    "Check the download log for details."
+                )
 
     def log(self, message: str):
         """Add message to log"""

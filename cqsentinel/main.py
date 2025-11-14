@@ -126,7 +126,10 @@ def main():
         # Check if AI models need to be downloaded
         splash.update_message("Checking AI models...")
         app.processEvents()
-        from cqsentinel.gui.model_downloader_dialog import check_models_exist, ModelDownloaderDialog
+        from cqsentinel.gui.model_downloader_dialog import check_models_exist, ModelDownloaderDialog, setup_cache_paths
+
+        # Setup cache paths first (ensures models go to user home directory)
+        setup_cache_paths()
 
         if not check_models_exist():
             # Hide splash and show model downloader
