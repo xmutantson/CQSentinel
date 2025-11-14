@@ -110,19 +110,18 @@ def test_rigctld(model_id, serial_port, baud_rate=115200, civ_address=None, time
     print()
 
     try:
-        process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1
-        )
+        # Don't capture stdout/stderr to prevent pipe blocking on Windows
+        # rigctld with -vvvvv generates massive output that fills pipe buffers
+        # Instead, let output print directly to console
+        process = subprocess.Popen(cmd)
 
         print(f"Process started (PID: {process.pid})")
         print()
         print("Waiting for rigctld to initialize...")
+        print("(rigctld verbose output will appear below)")
         print("(Press Ctrl+C to stop)")
         print()
+        print("=" * 70)
 
         start_time = time.time()
         port_available = False
@@ -131,27 +130,13 @@ def test_rigctld(model_id, serial_port, baud_rate=115200, civ_address=None, time
         while time.time() - start_time < timeout:
             # Check if process died
             if process.poll() is not None:
-                stdout, stderr = process.communicate(timeout=1)
                 print()
                 print("=" * 70)
                 print("❌ rigctld process exited!")
                 print("=" * 70)
                 print(f"Exit code: {process.returncode}")
                 print()
-
-                if stderr:
-                    print("STDERR OUTPUT:")
-                    print("-" * 70)
-                    print(stderr)
-                    print("-" * 70)
-
-                if stdout:
-                    print()
-                    print("STDOUT OUTPUT:")
-                    print("-" * 70)
-                    print(stdout)
-                    print("-" * 70)
-
+                print("(See output above for error details)")
                 return False
 
             # Check if port is available
@@ -169,6 +154,7 @@ def test_rigctld(model_id, serial_port, baud_rate=115200, civ_address=None, time
                 print("  (or use any Hamlib-compatible software)")
                 print()
                 print("Press Ctrl+C to stop rigctld...")
+                print()
 
                 # Keep running until user stops
                 try:
@@ -200,37 +186,28 @@ def test_rigctld(model_id, serial_port, baud_rate=115200, civ_address=None, time
             print()
             print("This means rigctld started but had errors during radio initialization.")
             print("The radio might still be usable - try connecting anyway.")
+            print()
+            print("Press Ctrl+C to stop rigctld...")
+
+            # Keep running so user can test
+            try:
+                process.wait()
+            except KeyboardInterrupt:
+                print()
+                print("Stopping rigctld...")
+                process.terminate()
+                try:
+                    process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                print("✓ Stopped")
+
+            return True
         else:
             print("✗ Port 4532 is NOT listening")
             print()
             print("rigctld failed to start the TCP server.")
-
-        print()
-        print("Getting error output...")
-
-        # Get stderr output
-        try:
-            # Process should still be running
-            import select
-            if hasattr(select, 'select'):
-                # Try non-blocking read
-                readable, _, _ = select.select([process.stderr], [], [], 1)
-                if readable:
-                    stderr_lines = []
-                    for _ in range(100):  # Read up to 100 lines
-                        line = process.stderr.readline()
-                        if not line:
-                            break
-                        stderr_lines.append(line)
-
-                    if stderr_lines:
-                        print()
-                        print("STDERR OUTPUT (last errors):")
-                        print("-" * 70)
-                        print("".join(stderr_lines[-50:]))  # Last 50 lines
-                        print("-" * 70)
-        except:
-            pass
+            print("(See output above for error details)")
 
         # Stop process
         print()
