@@ -502,9 +502,14 @@ class SettingsDialog(QDialog):
             logger.warning(f"Could not find Hamlib ID for {manufacturer} {model}")
 
         # CI-V address
-        self.config.radio.civ_address = self.civ_address_edit.text().strip().upper()
+        civ_address = self.civ_address_edit.text().strip().upper()
+        self.config.radio.civ_address = civ_address
+        logger.info(f"Saving CI-V address: '{civ_address}' (was: '{self.config.radio.civ_address}')")
 
-        self.config.radio.serial_port = self.serial_combo.currentData() or ""
+        serial_port = self.serial_combo.currentData() or ""
+        self.config.radio.serial_port = serial_port
+        logger.info(f"Saving serial port: '{serial_port}'")
+
         self.config.radio.baud_rate = self.baud_combo.currentData()
         self.config.radio.rigctld_host = self.rigctld_host_edit.text()
         self.config.radio.rigctld_port = self.rigctld_port_spin.value()
@@ -534,7 +539,10 @@ class SettingsDialog(QDialog):
         # Save configuration
         try:
             self.config_manager.save()
-            logger.info("Settings saved successfully")
+            logger.info(f"Settings saved successfully to: {self.config_manager.config_file}")
+            logger.info(f"  CI-V address: {self.config.radio.civ_address}")
+            logger.info(f"  Serial port: {self.config.radio.serial_port}")
+            logger.info(f"  Model: {self.config.radio.model} (ID: {self.config.radio.model_id})")
         except Exception as e:
             logger.error(f"Failed to save settings: {e}")
             QMessageBox.critical(self, "Error", f"Failed to save settings: {e}")

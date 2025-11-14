@@ -296,25 +296,56 @@ class RigctldManager:
 
 def find_serial_port() -> Optional[str]:
     """
-    Auto-detect radio serial port
+    Auto-detect radio serial port (CI-V for Icom IC-705)
+
+    For IC-705 over USB, there are two ports:
+    - CI-V port (Device A) - for radio control
+    - GPS port - NOT for radio control
 
     Returns:
-        First available serial port, or None
+        Best serial port for radio control, or None
     """
     try:
         import serial.tools.list_ports
 
         ports = list(serial.tools.list_ports.comports())
-        if ports:
-            # Prefer USB ports
-            for port in ports:
-                if 'USB' in port.description.upper():
-                    logger.info(f"Auto-detected USB serial port: {port.device}")
-                    return port.device
+        if not ports:
+            logger.warning("No serial ports found")
+            return None
 
-            # Fall back to first port
-            logger.info(f"Auto-detected serial port: {ports[0].device}")
-            return ports[0].device
+        # Log all available ports for debugging
+        logger.info(f"Found {len(ports)} serial port(s):")
+        for port in ports:
+            logger.info(f"  {port.device}: {port.description} (hwid: {port.hwid})")
+
+        # Priority 1: Prefer ports with "CI-V" or "Device A" in description
+        for port in ports:
+            desc_upper = port.description.upper()
+            if 'CI-V' in desc_upper or 'DEVICE A' in desc_upper:
+                logger.info(f"Auto-detected CI-V port: {port.device} ({port.description})")
+                return port.device
+
+        # Priority 2: Skip GPS ports (for IC-705 and similar radios)
+        non_gps_ports = []
+        for port in ports:
+            desc_upper = port.description.upper()
+            if 'GPS' not in desc_upper and 'GNSS' not in desc_upper:
+                non_gps_ports.append(port)
+
+        # Priority 3: Prefer USB ports (excluding GPS)
+        for port in non_gps_ports:
+            if 'USB' in port.description.upper():
+                logger.info(f"Auto-detected USB serial port: {port.device} ({port.description})")
+                return port.device
+
+        # Priority 4: Use first non-GPS port
+        if non_gps_ports:
+            logger.info(f"Auto-detected serial port: {non_gps_ports[0].device} ({non_gps_ports[0].description})")
+            return non_gps_ports[0].device
+
+        # Priority 5: Fall back to first port (even if GPS)
+        logger.warning(f"Only GPS port available, using anyway: {ports[0].device}")
+        return ports[0].device
 
     except ImportError:
         logger.warning("pyserial not installed, cannot auto-detect serial port")

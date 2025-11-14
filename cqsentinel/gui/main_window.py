@@ -387,9 +387,17 @@ class MainWindow(QMainWindow):
                 self.log("Starting rigctld...")
                 self.status_bar.showMessage("Starting rigctld...")
 
+                # Log current config for debugging
+                logger.info(f"Radio config:")
+                logger.info(f"  Model: {self.config.radio.model} (ID: {self.config.radio.model_id})")
+                logger.info(f"  CI-V address: '{self.config.radio.civ_address}'")
+                logger.info(f"  Serial port (saved): '{self.config.radio.serial_port}'")
+                logger.info(f"  Baud rate: {self.config.radio.baud_rate}")
+
                 # Get serial port (auto-detect if not configured)
                 serial_port = self.config.radio.serial_port
                 if not serial_port:
+                    self.log("No serial port configured, auto-detecting...")
                     serial_port = find_serial_port()
                     if not serial_port:
                         raise RadioConnectionError(
@@ -397,6 +405,8 @@ class MainWindow(QMainWindow):
                             "Please configure serial port in Settings."
                         )
                     self.log(f"Auto-detected serial port: {serial_port}")
+                else:
+                    self.log(f"Using saved serial port: {serial_port}")
 
                 # Create and start rigctld manager
                 self.rigctld_manager = RigctldManager(
