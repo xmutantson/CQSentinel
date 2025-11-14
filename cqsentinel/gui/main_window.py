@@ -20,9 +20,9 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread
 from PyQt5.QtGui import QAction, QFont
 
-from ..config import get_config, get_config_manager
-from ..radio import HamlibController, RadioConnectionError
-from ..audio import AudioCapture, list_audio_devices
+from cqsentinel.config import get_config, get_config_manager
+from cqsentinel.radio import HamlibController, RadioConnectionError
+from cqsentinel.audio import AudioCapture, list_audio_devices
 
 logger = logging.getLogger(__name__)
 

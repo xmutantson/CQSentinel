@@ -12,7 +12,7 @@ import re
 from typing import List, Optional, Set, Tuple
 from dataclasses import dataclass
 
-from .phonetics import PhoneticParser
+from cqsentinel.contest.phonetics import PhoneticParser
 
 logger = logging.getLogger(__name__)
 

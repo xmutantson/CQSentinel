@@ -15,7 +15,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QColor
 
-from ..voice.database import VoiceDatabase, OperatorVoice
+from cqsentinel.voice.database import VoiceDatabase, OperatorVoice
 
 logger = logging.getLogger(__name__)
 

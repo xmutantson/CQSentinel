@@ -15,7 +15,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, pyqtSignal, QPoint, QRect
 from PyQt5.QtGui import QPainter, QColor, QPen, QFont, QBrush, QPainterPath
 
-from .station import BandMapStation, BandMapState, StationStatus
+from cqsentinel.bandmap.station import BandMapStation, BandMapState, StationStatus
 
 logger = logging.getLogger(__name__)
 

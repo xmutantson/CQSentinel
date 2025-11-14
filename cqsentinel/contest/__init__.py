@@ -9,10 +9,10 @@ This module provides:
 - Pre-configured contest profiles
 """
 
-from .phonetics import PhoneticParser, parse_callsign, parse_exchange
-from .callsign import CallsignExtractor, ExtractedCallsign, extract_callsigns, extract_best_callsign
-from .behavior import BehaviorAnalyzer, ContestnessAnalysis, StationType, analyze_contestness
-from .profiles import (
+from cqsentinel.contest.phonetics import PhoneticParser, parse_callsign, parse_exchange
+from cqsentinel.contest.callsign import CallsignExtractor, ExtractedCallsign, extract_callsigns, extract_best_callsign
+from cqsentinel.contest.behavior import BehaviorAnalyzer, ContestnessAnalysis, StationType, analyze_contestness
+from cqsentinel.contest.profiles import (
     ContestProfile,
     ExchangeField,
     MultiplierType,

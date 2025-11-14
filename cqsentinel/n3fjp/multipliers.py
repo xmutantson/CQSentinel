@@ -13,7 +13,7 @@ import re
 from typing import Set, Optional, List
 from enum import Enum
 
-from .client import CallInfo
+from cqsentinel.n3fjp.client import CallInfo
 
 logger = logging.getLogger(__name__)
 

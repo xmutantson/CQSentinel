@@ -13,8 +13,8 @@ from typing import List, Dict, Optional
 from dataclasses import dataclass
 from enum import Enum
 
-from .callsign import CallsignExtractor
-from .phonetics import PhoneticParser
+from cqsentinel.contest.callsign import CallsignExtractor
+from cqsentinel.contest.phonetics import PhoneticParser
 
 logger = logging.getLogger(__name__)
 

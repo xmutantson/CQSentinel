@@ -9,10 +9,10 @@ import logging
 from typing import List, Dict, Optional
 from dataclasses import dataclass
 
-from .denoiser import AudioDenoiser
-from .vad import VoiceActivityDetector
-from ..speech.transcription import SpeechTranscriber, TranscriptSegment
-from ..voice.embeddings import VoiceEmbedder, VoiceSegment
+from cqsentinel.audio.denoiser import AudioDenoiser
+from cqsentinel.audio.vad import VoiceActivityDetector
+from cqsentinel.speech.transcription import SpeechTranscriber, TranscriptSegment
+from cqsentinel.voice.embeddings import VoiceEmbedder, VoiceSegment
 
 logger = logging.getLogger(__name__)
 

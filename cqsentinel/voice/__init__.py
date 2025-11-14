@@ -7,8 +7,8 @@ This module provides:
 - Speaker matching and identification
 """
 
-from .embeddings import VoiceEmbedder, VoiceSegment
-from .database import VoiceDatabase, OperatorVoice
+from cqsentinel.voice.embeddings import VoiceEmbedder, VoiceSegment
+from cqsentinel.voice.database import VoiceDatabase, OperatorVoice
 
 __all__ = [
     'VoiceEmbedder',

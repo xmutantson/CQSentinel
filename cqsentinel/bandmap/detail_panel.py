@@ -15,7 +15,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QFont
 
-from .station import BandMapStation, StationStatus, ActivityType
+from cqsentinel.bandmap.station import BandMapStation, StationStatus, ActivityType
 
 logger = logging.getLogger(__name__)
 

@@ -10,7 +10,7 @@ import logging
 from typing import Tuple, Optional
 from dataclasses import dataclass
 
-from .pitch import PitchDetector, PitchAnalysis
+from cqsentinel.radio.pitch import PitchDetector, PitchAnalysis
 
 logger = logging.getLogger(__name__)
 

@@ -6,8 +6,8 @@ SSB auto-centering, and full integration with all
 CQSentinel components.
 """
 
-from .engine import BandScanner, ScanState, ScanProgress
-from .profiles import (
+from cqsentinel.scanner.engine import BandScanner, ScanState, ScanProgress
+from cqsentinel.scanner.profiles import (
     BandProfile,
     MultiBandProfile,
     BAND_PROFILES,

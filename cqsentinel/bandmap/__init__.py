@@ -10,14 +10,14 @@ Provides visual representation of band activity with:
 - Station detail panel
 """
 
-from .station import (
+from cqsentinel.bandmap.station import (
     BandMapStation,
     BandMapState,
     StationStatus,
     ActivityType
 )
-from .widget import BandMapWidget
-from .detail_panel import StationDetailPanel
+from cqsentinel.bandmap.widget import BandMapWidget
+from cqsentinel.bandmap.detail_panel import StationDetailPanel
 
 __all__ = [
     'BandMapStation',

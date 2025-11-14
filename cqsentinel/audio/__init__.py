@@ -2,9 +2,9 @@
 Audio processing module for CQSentinel
 """
 
-from .capture import AudioCapture, list_audio_devices
-from .denoiser import AudioDenoiser
-from .vad import VoiceActivityDetector
+from cqsentinel.audio.capture import AudioCapture, list_audio_devices
+from cqsentinel.audio.denoiser import AudioDenoiser
+from cqsentinel.audio.vad import VoiceActivityDetector
 
 __all__ = [
     'AudioCapture',
