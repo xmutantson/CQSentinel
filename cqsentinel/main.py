@@ -6,6 +6,7 @@ Main application entry point
 
 import sys
 import logging
+import traceback
 from pathlib import Path
 
 from PyQt5.QtWidgets import QApplication
@@ -17,6 +18,18 @@ from cqsentinel.gui.splash_screen import SplashScreen
 from cqsentinel.gui.main_window import MainWindow
 
 logger = logging.getLogger(__name__)
+
+
+def excepthook(exc_type, exc_value, exc_tb):
+    """Global exception handler to catch uncaught exceptions"""
+    error_msg = ''.join(traceback.format_exception(exc_type, exc_value, exc_tb))
+    logger.critical("=" * 60)
+    logger.critical("UNCAUGHT EXCEPTION - Application crashed!")
+    logger.critical("=" * 60)
+    logger.critical(error_msg)
+    logger.critical("=" * 60)
+    # Call the default handler to ensure proper cleanup
+    sys.__excepthook__(exc_type, exc_value, exc_tb)
 
 
 def main():
@@ -35,6 +48,9 @@ def main():
 
     setup_logging(log_level=config.log_level, log_file=log_file)
 
+    # Install global exception handler to catch crashes
+    sys.excepthook = excepthook
+
     logger.info("=" * 60)
     logger.info("CQSentinel starting...")
     logger.info("=" * 60)
@@ -42,46 +58,55 @@ def main():
     # Check for required components
     check_dependencies()
 
-    # Create Qt application
-    app = QApplication(sys.argv)
-    app.setApplicationName("CQSentinel")
-    app.setOrganizationName("CQSentinel")
+    try:
+        # Create Qt application
+        app = QApplication(sys.argv)
+        app.setApplicationName("CQSentinel")
+        app.setOrganizationName("CQSentinel")
 
-    # Show splash screen immediately
-    splash = SplashScreen()
-    splash.update_message("Loading application...")
-    app.processEvents()  # Update UI
+        # Show splash screen immediately
+        splash = SplashScreen()
+        splash.update_message("Loading application...")
+        app.processEvents()  # Update UI
 
-    # Create main window (this loads heavy modules)
-    splash.update_message("Initializing user interface...")
-    app.processEvents()
-    window = MainWindow()
+        # Create main window (this loads heavy modules)
+        splash.update_message("Initializing user interface...")
+        app.processEvents()
+        window = MainWindow()
 
-    # Finish splash and show main window
-    splash.finish_loading(window)
-    window.show()
+        # Finish splash and show main window
+        splash.finish_loading(window)
+        window.show()
 
-    logger.info("Main window displayed")
+        logger.info("Main window displayed")
 
-    # Show initial instructions
-    window.log("Welcome to CQSentinel - SSB Contest Scanner!")
-    window.log("=" * 40)
-    window.log("Quick Start:")
-    window.log("1. Click 'File > Settings' to configure your radio")
-    window.log("2. Click 'Connect Radio' - rigctld will start automatically")
-    window.log("3. Select bands and contest profile")
-    window.log("4. Click 'Start Scan' to begin")
-    window.log("=" * 40)
-    window.log("")
-    window.log("Tip: The app will auto-detect your radio's serial port")
-    window.log("and start rigctld automatically when you connect.")
+        # Show initial instructions
+        window.log("Welcome to CQSentinel - SSB Contest Scanner!")
+        window.log("=" * 40)
+        window.log("Quick Start:")
+        window.log("1. Click 'File > Settings' to configure your radio")
+        window.log("2. Click 'Connect Radio' - rigctld will start automatically")
+        window.log("3. Select bands and contest profile")
+        window.log("4. Click 'Start Scan' to begin")
+        window.log("=" * 40)
+        window.log("")
+        window.log("Tip: The app will auto-detect your radio's serial port")
+        window.log("and start rigctld automatically when you connect.")
 
-    # Run application
-    exit_code = app.exec()
+        # Run application
+        exit_code = app.exec()
 
-    logger.info("CQSentinel shutting down...")
+        logger.info("CQSentinel shutting down...")
 
-    return exit_code
+        return exit_code
+
+    except Exception as e:
+        logger.critical("=" * 60)
+        logger.critical("FATAL ERROR in main()")
+        logger.critical("=" * 60)
+        logger.critical(f"{e}", exc_info=True)
+        logger.critical("=" * 60)
+        return 1
 
 
 def check_dependencies():
