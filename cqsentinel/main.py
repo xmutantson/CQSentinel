@@ -16,7 +16,6 @@ from PyQt5.QtCore import Qt
 from cqsentinel.config import get_config_manager, get_config
 from cqsentinel.utils.logging import setup_logging
 from cqsentinel.gui.splash_screen import SplashScreen
-from cqsentinel.gui.main_window import MainWindow
 
 logger = logging.getLogger(__name__)
 
@@ -114,10 +113,15 @@ def main():
         app.setApplicationName("CQSentinel")
         app.setOrganizationName("CQSentinel")
 
-        # Show splash screen immediately
+        # Show splash screen immediately (before heavy imports)
         splash = SplashScreen()
         splash.update_message("Loading application...")
         app.processEvents()  # Update UI
+
+        # Import MainWindow after splash is shown (this is a slow import)
+        splash.update_message("Loading modules...")
+        app.processEvents()
+        from cqsentinel.gui.main_window import MainWindow
 
         # Create main window (this loads heavy modules)
         splash.update_message("Initializing user interface...")

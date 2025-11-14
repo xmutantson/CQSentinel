@@ -229,12 +229,24 @@ class HamlibController:
         Get signal strength (S-meter)
 
         Returns:
-            Signal strength (0-9 for S0-S9, higher for S9+)
+            Signal strength (0-9 for S0-S9, 10+ for S9+10, etc.)
             Returns -1 on error
         """
         try:
             response = self._send_command("l STRENGTH")
-            return int(float(response))
+            # Hamlib returns strength in dB (usually negative)
+            # Convert to S-units: S9 = 0dB, S8 = -6dB, S7 = -12dB, etc.
+            # Each S-unit is 6dB
+            db_value = int(float(response))
+
+            if db_value >= 0:
+                # S9 or above: S9+XdB
+                return 9 + (db_value // 10)  # S9+10dB, S9+20dB, etc.
+            else:
+                # Below S9: Calculate S-unit
+                s_unit = 9 + (db_value // 6)
+                return max(0, s_unit)  # Clamp to S0 minimum
+
         except (ValueError, RadioConnectionError) as e:
             logger.debug(f"Failed to get signal strength: {e}")
             return -1

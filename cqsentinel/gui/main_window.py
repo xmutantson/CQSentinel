@@ -72,6 +72,14 @@ class ScanThread(QThread):
                 except Exception as e:
                     logger.error(f"Signal emit failed: {e}")
 
+                # Set SSB mode: LSB for 40m and below (10 MHz), USB for above 40m
+                ssb_mode = "LSB" if profile.freq_start <= 10_000_000 else "USB"
+                try:
+                    self.radio.set_mode(ssb_mode, 2400)
+                    logger.debug(f"Set mode to {ssb_mode} for {band_name}")
+                except Exception as e:
+                    logger.warning(f"Failed to set mode to {ssb_mode}: {e}")
+
                 freq = profile.freq_start
                 while freq <= profile.freq_end and self.running:
                     try:
@@ -355,7 +363,7 @@ class MainWindow(QMainWindow):
         group = QGroupBox("Radio Status")
         layout = QVBoxLayout()
 
-        # Frequency display
+        # Frequency display (large, centered)
         freq_layout = QHBoxLayout()
         freq_layout.addWidget(QLabel("Frequency:"))
 
@@ -364,27 +372,33 @@ class MainWindow(QMainWindow):
         freq_font.setPointSize(24)
         freq_font.setBold(True)
         self.freq_label.setFont(freq_font)
+        self.freq_label.setMinimumWidth(250)  # Prevent label from resizing
         freq_layout.addWidget(self.freq_label)
-
         freq_layout.addStretch()
+        layout.addLayout(freq_layout)
+
+        # Mode and S-meter display (separate row)
+        status_layout = QHBoxLayout()
 
         # Mode display
-        freq_layout.addWidget(QLabel("Mode:"))
+        status_layout.addWidget(QLabel("Mode:"))
         self.mode_label = QLabel("USB")
         mode_font = QFont()
         mode_font.setPointSize(16)
         self.mode_label.setFont(mode_font)
-        freq_layout.addWidget(self.mode_label)
+        self.mode_label.setMinimumWidth(80)  # Fixed width
+        status_layout.addWidget(self.mode_label)
 
-        freq_layout.addStretch()
+        status_layout.addStretch()
 
         # S-meter
-        freq_layout.addWidget(QLabel("S-Meter:"))
+        status_layout.addWidget(QLabel("S-Meter:"))
         self.smeter_label = QLabel("S0")
         self.smeter_label.setFont(mode_font)
-        freq_layout.addWidget(self.smeter_label)
+        self.smeter_label.setMinimumWidth(80)  # Fixed width
+        status_layout.addWidget(self.smeter_label)
 
-        layout.addLayout(freq_layout)
+        layout.addLayout(status_layout)
 
         # Audio level meter
         audio_layout = QHBoxLayout()
