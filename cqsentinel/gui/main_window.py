@@ -549,7 +549,7 @@ class MainWindow(QMainWindow):
                         self.band_scanner.start_scan(
                             freq_start=profile.freq_start,
                             freq_end=profile.freq_end,
-                            step_size=self.config.scan.step_size
+                            step_size=self.config.scan.step_size_hz
                         )
                         break  # First band only for now
             else:
@@ -560,7 +560,7 @@ class MainWindow(QMainWindow):
                 self.scan_thread = ScanThread(
                     radio=self.radio,
                     bands=enabled_bands,
-                    step_hz=self.config.scan.step_size,
+                    step_hz=self.config.scan.step_size_hz,
                     dwell_sec=2.0  # Phase 1: 2 second dwell per frequency
                 )
                 self.scan_thread.log_signal.connect(self.log)
