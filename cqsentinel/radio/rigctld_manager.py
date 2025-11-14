@@ -146,7 +146,7 @@ class RigctldManager:
         # Disable auto power-on check to avoid initialization errors
         # Some Icom radios (like IC-705) reject the power status command
         cmd.extend([
-            "--set-conf=auto_power_on=0",
+            "--set-conf", "auto_power_on=0",
         ])
 
         # On Windows, add additional flags for stability
