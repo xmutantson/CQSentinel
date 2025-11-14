@@ -48,7 +48,7 @@ if ($process.ExitCode -eq 0 -or $process.ExitCode -eq 3010) {
     Write-Host "1. Restart your computer (if required)"
     Write-Host "2. Run: conda activate cqsentinel"
     Write-Host "3. Run: pip install resemblyzer"
-    Write-Host "4. Test: python -c `"from resemblyzer import VoiceEncoder; print('✓ Works!')`""
+    Write-Host "4. Test: python -c ""from resemblyzer import VoiceEncoder; print('Works!')"""
 
 } else {
     Write-Host "✗ Installation failed with exit code: $($process.ExitCode)" -ForegroundColor Red
