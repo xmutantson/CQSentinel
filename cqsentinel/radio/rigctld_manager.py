@@ -235,12 +235,34 @@ class RigctldManager:
         if self.process and self._is_managed:
             logger.info("Stopping rigctld...")
             try:
-                self.process.terminate()
+                # On Windows, terminate the entire process tree
+                if platform.system() == 'Windows':
+                    try:
+                        # Try to kill process tree on Windows using taskkill
+                        subprocess.run(
+                            ['taskkill', '/F', '/T', '/PID', str(self.process.pid)],
+                            capture_output=True,
+                            timeout=5
+                        )
+                        logger.info("rigctld process tree terminated (Windows)")
+                    except Exception as e:
+                        logger.warning(f"taskkill failed, using terminate: {e}")
+                        self.process.terminate()
+                else:
+                    # On Unix, terminate normally
+                    self.process.terminate()
+
+                # Wait for process to exit
                 self.process.wait(timeout=5.0)
                 logger.info("rigctld stopped")
+
             except subprocess.TimeoutExpired:
                 logger.warning("rigctld did not terminate, forcing kill")
-                self.process.kill()
+                try:
+                    self.process.kill()
+                    self.process.wait(timeout=2.0)
+                except Exception as e:
+                    logger.error(f"Force kill failed: {e}")
             except Exception as e:
                 logger.error(f"Error stopping rigctld: {e}")
 
