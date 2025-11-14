@@ -10,7 +10,7 @@ from typing import Optional, List
 
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QScrollArea, QFrame
+    QScrollArea, QFrame, QMenu, QAction
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QPoint, QRect
 from PyQt5.QtGui import QPainter, QColor, QPen, QFont, QBrush, QPainterPath
@@ -47,6 +47,7 @@ class BandMapWidget(QWidget):
     # Signals
     station_clicked = pyqtSignal(float)  # frequency_hz
     station_selected = pyqtSignal(object)  # BandMapStation
+    station_cleared = pyqtSignal(object)  # BandMapStation - emitted when user clears a station
 
     def __init__(self, band_map_state: Optional[BandMapState] = None, parent=None):
         """
@@ -367,6 +368,111 @@ class BandMapWidget(QWidget):
                 self.station_clicked.emit(station.frequency)
 
                 logger.info(f"Station clicked: {station.callsign} at {station.frequency_mhz:.3f} MHz")
+
+    def contextMenuEvent(self, event):
+        """
+        Handle right-click context menu.
+
+        Args:
+            event: Context menu event
+        """
+        # Find station at click position
+        station = self._find_station_at_position(event.pos())
+
+        if station:
+            # Show context menu for station
+            menu = QMenu(self)
+
+            # Add station info as header
+            station_info = f"{station.callsign} @ {station.frequency_mhz:.3f} MHz"
+            header_action = QAction(station_info, self)
+            header_action.setEnabled(False)
+            font = header_action.font()
+            font.setBold(True)
+            header_action.setFont(font)
+            menu.addAction(header_action)
+
+            menu.addSeparator()
+
+            # Clear this station
+            clear_action = QAction("Clear this station", self)
+            clear_action.triggered.connect(lambda: self._clear_station(station))
+            menu.addAction(clear_action)
+
+            # Mark as worked (if not already)
+            if station.status != StationStatus.WORKED:
+                mark_worked_action = QAction("Mark as worked", self)
+                mark_worked_action.triggered.connect(lambda: self._mark_station_worked(station))
+                menu.addAction(mark_worked_action)
+
+            # Tune to station
+            tune_action = QAction("Tune to this frequency", self)
+            tune_action.triggered.connect(lambda: self.station_clicked.emit(station.frequency))
+            menu.addAction(tune_action)
+
+            menu.exec_(event.globalPos())
+        else:
+            # Show general context menu
+            menu = QMenu(self)
+
+            # Clear all stations
+            clear_all_action = QAction("Clear all stations", self)
+            clear_all_action.triggered.connect(self._clear_all_stations)
+            menu.addAction(clear_all_action)
+
+            menu.addSeparator()
+
+            # Toggle callsign labels
+            toggle_callsigns_action = QAction("Toggle callsign labels", self)
+            toggle_callsigns_action.triggered.connect(self.toggle_callsigns)
+            menu.addAction(toggle_callsigns_action)
+
+            # Toggle signal strength
+            toggle_signal_action = QAction("Toggle signal strength", self)
+            toggle_signal_action.triggered.connect(self.toggle_signal_strength)
+            menu.addAction(toggle_signal_action)
+
+            menu.exec_(event.globalPos())
+
+    def _clear_station(self, station: BandMapStation):
+        """
+        Clear a single station from the band map.
+
+        Args:
+            station: Station to clear
+        """
+        logger.info(f"Clearing station: {station.callsign} at {station.frequency_mhz:.3f} MHz")
+
+        # Remove from band map
+        if station in self.band_map.stations:
+            self.band_map.stations.remove(station)
+
+        # Clear selection if this was selected
+        if self.selected_station == station:
+            self.selected_station = None
+
+        # Emit signal
+        self.station_cleared.emit(station)
+
+        # Update display
+        self.update_display()
+
+    def _clear_all_stations(self):
+        """Clear all stations from the band map."""
+        logger.info("Clearing all stations from band map")
+        self.clear_stations()
+
+    def _mark_station_worked(self, station: BandMapStation):
+        """
+        Mark a station as worked.
+
+        Args:
+            station: Station to mark as worked
+        """
+        logger.info(f"Marking station as worked: {station.callsign}")
+        station.worked = True
+        station.status = StationStatus.WORKED
+        self.update_display()
 
     def _find_station_at_position(self, pos: QPoint) -> Optional[BandMapStation]:
         """

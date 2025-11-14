@@ -32,6 +32,7 @@ from cqsentinel.voice import VoiceDatabase, VoiceEmbedder
 from cqsentinel.contest import CallsignExtractor, BehaviorAnalyzer
 from cqsentinel.bandmap.station import BandMapState
 from cqsentinel.bandmap.widget import BandMapWidget
+from cqsentinel.bandmap.detail_panel import StationDetailPanel
 from cqsentinel.gui.settings_dialog import SettingsDialog
 from cqsentinel.scanner.profiles import BAND_PROFILES
 from cqsentinel.scanner.engine import BandScanner, ScanProgress
@@ -176,6 +177,7 @@ class MainWindow(QMainWindow):
 
         # Band map visualization (always available)
         self.band_map_widget: BandMapWidget = None
+        self.station_detail_panel: StationDetailPanel = None
 
         # Initialize audio capture for level meter (basic monitoring, always available)
         try:
@@ -319,10 +321,22 @@ class MainWindow(QMainWindow):
         # Radio status panel
         main_layout.addWidget(self.create_radio_panel())
 
-        # Band map visualization panel
+        # Band map and station detail panel (side by side)
+        bandmap_layout = QHBoxLayout()
+
+        # Band map visualization (left side, 70% width)
         self.band_map_widget = BandMapWidget(BandMapState())
         self.band_map_widget.station_clicked.connect(self.on_station_clicked)
-        main_layout.addWidget(self.band_map_widget)
+        self.band_map_widget.station_selected.connect(self.on_station_selected)
+        bandmap_layout.addWidget(self.band_map_widget, stretch=7)
+
+        # Station detail panel (right side, 30% width)
+        self.station_detail_panel = StationDetailPanel()
+        self.station_detail_panel.tune_requested.connect(self.on_station_clicked)
+        self.station_detail_panel.mark_worked_requested.connect(self.on_mark_station_worked)
+        bandmap_layout.addWidget(self.station_detail_panel, stretch=3)
+
+        main_layout.addLayout(bandmap_layout)
 
         # Log/transcript panel
         main_layout.addWidget(self.create_log_panel())
@@ -396,7 +410,34 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel("Contest:"))
         self.contest_combo = QComboBox()
         self.contest_combo.addItems(["Field Day", "Winter Field Day", "CQWW", "CQWPX", "Salmon Run"])
+        # Map display names to profile IDs
+        self.contest_profile_map = {
+            "Field Day": "FD",
+            "Winter Field Day": "WFD",
+            "CQWW": "CQWW",
+            "CQWPX": "CQWPX",
+            "Salmon Run": "WASR"
+        }
+        # Set current contest profile
+        current_profile = self.config.contest.active_profile
+        for display_name, profile_id in self.contest_profile_map.items():
+            if profile_id == current_profile:
+                self.contest_combo.setCurrentText(display_name)
+                break
+        self.contest_combo.currentTextChanged.connect(self.on_contest_changed)
         layout.addWidget(self.contest_combo)
+
+        # N3FJP checkbox and status
+        self.n3fjp_checkbox = QCheckBox("N3FJP")
+        self.n3fjp_checkbox.setChecked(self.config.contest.n3fjp_enabled)
+        self.n3fjp_checkbox.setToolTip("Enable N3FJP integration for dupe checking")
+        self.n3fjp_checkbox.stateChanged.connect(self.on_n3fjp_toggled)
+        layout.addWidget(self.n3fjp_checkbox)
+
+        self.n3fjp_status_label = QLabel("●")
+        self.n3fjp_status_label.setStyleSheet("color: gray;")
+        self.n3fjp_status_label.setToolTip("N3FJP connection status")
+        layout.addWidget(self.n3fjp_status_label)
 
         layout.addStretch()
 
@@ -760,6 +801,49 @@ class MainWindow(QMainWindow):
                 self.log(f"Failed to tune to {frequency_hz/1e6:.3f} MHz: {e}")
         else:
             self.log("Radio not connected - cannot tune to station")
+
+    def on_contest_changed(self, display_name: str):
+        """Handle contest profile selection change"""
+        if display_name in self.contest_profile_map:
+            profile_id = self.contest_profile_map[display_name]
+            self.config.contest.active_profile = profile_id
+            self.log(f"Contest profile changed to: {display_name} ({profile_id})")
+            logger.info(f"Contest profile changed to {profile_id}")
+
+    def on_station_selected(self, station):
+        """Handle station selection - update detail panel"""
+        if self.station_detail_panel:
+            self.station_detail_panel.set_station(station)
+            logger.debug(f"Station selected: {station.callsign if station else 'None'}")
+
+    def on_mark_station_worked(self, station):
+        """Handle mark station as worked request from detail panel"""
+        if station:
+            from cqsentinel.bandmap.station import StationStatus
+            station.worked = True
+            station.status = StationStatus.WORKED
+            self.log(f"Marked {station.callsign} as worked")
+            # Update band map display
+            if self.band_map_widget:
+                self.band_map_widget.update_display()
+            # Refresh detail panel
+            if self.station_detail_panel:
+                self.station_detail_panel.set_station(station)
+
+    def on_n3fjp_toggled(self, state):
+        """Handle N3FJP checkbox toggle"""
+        enabled = (state == Qt.CheckState.Checked.value) if hasattr(Qt.CheckState, 'Checked') else (state == 2)
+        self.config.contest.n3fjp_enabled = enabled
+
+        if enabled:
+            self.log("N3FJP integration enabled")
+            self.n3fjp_status_label.setStyleSheet("color: orange;")
+            self.n3fjp_status_label.setToolTip("N3FJP: Connecting...")
+            # TODO: Attempt to connect to N3FJP
+        else:
+            self.log("N3FJP integration disabled")
+            self.n3fjp_status_label.setStyleSheet("color: gray;")
+            self.n3fjp_status_label.setToolTip("N3FJP: Disabled")
 
     def show_settings(self):
         """Show settings dialog"""
