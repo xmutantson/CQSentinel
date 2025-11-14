@@ -461,9 +461,18 @@ class SettingsDialog(QDialog):
 
         # Audio settings
         if self.config.radio.audio_device_name:
-            index = self.audio_device_combo.findText(self.config.radio.audio_device_name)
-            if index >= 0:
-                self.audio_device_combo.setCurrentIndex(index)
+            # Handle both old format (int) and new format (string)
+            if isinstance(self.config.radio.audio_device_name, int):
+                # Old format: find by index in userData
+                for i in range(self.audio_device_combo.count()):
+                    if self.audio_device_combo.itemData(i) == self.config.radio.audio_device_name:
+                        self.audio_device_combo.setCurrentIndex(i)
+                        break
+            else:
+                # New format: find by device name
+                index = self.audio_device_combo.findText(str(self.config.radio.audio_device_name))
+                if index >= 0:
+                    self.audio_device_combo.setCurrentIndex(index)
 
         sample_rate_text = f"{self.config.audio.sample_rate} Hz"
         index = self.sample_rate_combo.findText(sample_rate_text)
@@ -519,7 +528,12 @@ class SettingsDialog(QDialog):
 
         # Audio settings
         audio_device = self.audio_device_combo.currentData()
-        self.config.radio.audio_device_name = audio_device if audio_device else ""
+        # Store device name, not index
+        audio_device_text = self.audio_device_combo.currentText()
+        if audio_device_text != "(Auto-detect)":
+            self.config.radio.audio_device_name = audio_device_text
+        else:
+            self.config.radio.audio_device_name = ""
         self.config.audio.sample_rate = self.sample_rate_combo.currentData()
         self.config.audio.noise_reduction_level = self.noise_reduction_combo.currentText().lower()
         self.config.audio.vad_sensitivity = self.vad_sensitivity_spin.value() / 100.0

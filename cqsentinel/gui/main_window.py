@@ -173,6 +173,15 @@ class MainWindow(QMainWindow):
         # Audio monitoring
         self.last_audio_level = 0.0  # 0.0 to 1.0
 
+        # Initialize audio capture for level meter (basic monitoring, always available)
+        try:
+            self.audio = AudioCapture()
+            self.start_audio_monitoring()
+            logger.info("Basic audio monitoring initialized")
+        except Exception as e:
+            logger.warning(f"Could not initialize audio capture: {e}")
+            # Not critical - app can still function
+
         self.init_ui()
         self.setup_timers()
 
@@ -183,10 +192,13 @@ class MainWindow(QMainWindow):
         try:
             self.log("Initializing advanced features...")
 
-            # Audio capture
+            # Audio capture (already initialized for level meter, reuse it)
             if not self.audio:
                 self.log("  Initializing audio capture...")
                 self.audio = AudioCapture()
+                self.start_audio_monitoring()
+            else:
+                self.log("  Audio capture already active (for level meter)")
 
             # Audio pipeline (denoiser + VAD)
             if not self.audio_pipeline:
@@ -237,9 +249,6 @@ class MainWindow(QMainWindow):
             self.log("✓ Advanced features initialized successfully!")
             self.log("  Full scanner with audio processing, AI transcription, and voice ID enabled.")
 
-            # Start audio monitoring for level meter
-            self.start_audio_monitoring()
-
             QMessageBox.information(self, "Advanced Features Enabled",
                 "All advanced features initialized:\n\n"
                 "✓ Audio processing (noise reduction, voice detection)\n"
@@ -261,6 +270,11 @@ class MainWindow(QMainWindow):
     def start_audio_monitoring(self):
         """Start audio stream for level monitoring"""
         if not self.audio:
+            return
+
+        # Check if already recording
+        if hasattr(self.audio, '_recording') and self.audio._recording:
+            logger.debug("Audio monitoring already active")
             return
 
         try:
