@@ -143,6 +143,12 @@ class RigctldManager:
             except ValueError:
                 logger.warning(f"Invalid CI-V address '{self.civ_address}', using default")
 
+        # Disable auto power-on check to avoid initialization errors
+        # Some Icom radios (like IC-705) reject the power status command
+        cmd.extend([
+            "--set-conf=auto_power_on=0",
+        ])
+
         # On Windows, add additional flags for stability
         if platform.system() == 'Windows':
             cmd.extend([

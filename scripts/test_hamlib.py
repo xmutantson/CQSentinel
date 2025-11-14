@@ -82,6 +82,7 @@ def test_rigctld(model_id, serial_port, baud_rate=115200, civ_address=None, time
         "-r", serial_port,
         "-s", str(baud_rate),
         "-t", "4532",
+        "--set-conf=auto_power_on=0",  # Skip power status check
         "-vvvvv"  # Maximum verbosity
     ]
 
