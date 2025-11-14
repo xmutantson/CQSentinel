@@ -40,6 +40,7 @@ logger = logging.getLogger(__name__)
 class ScanThread(QThread):
     """Background thread for band scanning (Phase 1)"""
     log_signal = pyqtSignal(str)
+    freq_update_signal = pyqtSignal(int)  # Emit frequency in Hz for display update
 
     def __init__(self, radio, bands, step_hz=1000, dwell_sec=2.0):
         super().__init__()
@@ -77,7 +78,13 @@ class ScanThread(QThread):
                         # Tune radio
                         self.radio.set_frequency(int(freq))
 
-                        # Emit frequency update
+                        # Update frequency display (prevents race condition with status timer)
+                        try:
+                            self.freq_update_signal.emit(int(freq))
+                        except Exception as e:
+                            logger.error(f"Frequency display update failed: {e}")
+
+                        # Emit frequency update to log
                         try:
                             self.log_signal.emit(f"  {freq/1e6:.4f} MHz")
                         except Exception as e:
@@ -596,6 +603,7 @@ class MainWindow(QMainWindow):
                     dwell_sec=2.0  # Phase 1: 2 second dwell per frequency
                 )
                 self.scan_thread.log_signal.connect(self.log)
+                self.scan_thread.freq_update_signal.connect(self.update_freq_display)
                 self.scan_thread.finished.connect(self.on_scan_finished)
                 self.scan_thread.start()
 
@@ -612,6 +620,7 @@ class MainWindow(QMainWindow):
             if self.scan_thread:
                 self.scan_thread.stop()
                 self.scan_thread.wait(3000)  # Wait up to 3 seconds
+
             self.scan_btn.setText("Start Scan")
             self.connect_btn.setEnabled(True)
             for cb in self.band_checkboxes.values():
@@ -662,6 +671,10 @@ class MainWindow(QMainWindow):
         """Add message to log panel"""
         self.log_text.append(message)
         logger.info(message)
+
+    def update_freq_display(self, freq_hz: int):
+        """Update frequency display from scan thread (prevents race condition)"""
+        self.freq_label.setText(f"{freq_hz/1e6:.4f} MHz")
 
     def show_settings(self):
         """Show settings dialog"""

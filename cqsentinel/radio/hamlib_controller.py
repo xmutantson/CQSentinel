@@ -146,9 +146,28 @@ class HamlibController:
             Frequency in Hz
         """
         response = self._send_command("f")
-        freq = int(response)
-        self._last_frequency = freq
-        return freq
+
+        # Handle empty response (can happen with concurrent requests or rigctld errors)
+        if not response or response.strip() == "":
+            # Return last known frequency if available
+            if self._last_frequency:
+                logger.warning("Empty frequency response from rigctld, using cached value")
+                return self._last_frequency
+            else:
+                raise RadioConnectionError("rigctld returned empty frequency and no cached value available")
+
+        try:
+            freq = int(response)
+            self._last_frequency = freq
+            return freq
+        except ValueError as e:
+            logger.error(f"Invalid frequency response from rigctld: '{response}'")
+            # Try to return last known frequency
+            if self._last_frequency:
+                logger.warning("Using cached frequency after parse error")
+                return self._last_frequency
+            else:
+                raise RadioConnectionError(f"Invalid frequency format: '{response}'")
 
     def set_frequency(self, freq_hz: int) -> bool:
         """
