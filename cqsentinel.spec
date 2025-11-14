@@ -41,9 +41,9 @@ datas += collect_data_files('sounddevice')
 
 # Hidden imports - modules that PyInstaller might miss
 hiddenimports = [
-    'PyQt6.QtCore',
-    'PyQt6.QtGui',
-    'PyQt6.QtWidgets',
+    'PyQt5.QtCore',
+    'PyQt5.QtGui',
+    'PyQt5.QtWidgets',
     'numpy',
     'scipy',
     'scipy.special',
@@ -80,7 +80,7 @@ a = Analysis(
     runtime_hooks=[],
     excludes=[
         'matplotlib',  # Exclude if not needed
-        'tkinter',     # We use PyQt6
+        'tkinter',     # We use PyQt5
         'IPython',
         'jupyter',
         'notebook',
