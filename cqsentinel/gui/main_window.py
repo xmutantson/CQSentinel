@@ -101,15 +101,104 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         self.config = get_config()
+
+        # Phase 1: Radio control
         self.radio: HamlibController = None
         self.rigctld_manager: RigctldManager = None
+
+        # Phase 2-8: Advanced features (initialized on-demand)
         self.audio: AudioCapture = None
+        self.audio_pipeline: AudioPipeline = None
+        self.auto_tuner: SSBAutoTuner = None
+        self.transcriber: SpeechTranscriber = None
+        self.voice_embedder: VoiceEmbedder = None
+        self.voice_db: VoiceDatabase = None
+        self.callsign_extractor: CallsignExtractor = None
+        self.behavior_analyzer: BehaviorAnalyzer = None
+        self.band_map: BandMapState = None
+
+        # Scanning
         self.scan_thread: ScanThread = None
+        self.band_scanner: BandScanner = None
+        self.use_full_scanner = False  # Enable when Phase 2+ components ready
 
         self.init_ui()
         self.setup_timers()
 
         logger.info("Main window initialized")
+
+    def init_advanced_features(self):
+        """Initialize Phase 2-8 advanced features (audio processing, AI models, etc.)"""
+        try:
+            self.log("Initializing advanced features...")
+
+            # Audio capture
+            if not self.audio:
+                self.log("  Initializing audio capture...")
+                self.audio = AudioCapture()
+
+            # Audio pipeline (denoiser + VAD)
+            if not self.audio_pipeline:
+                self.log("  Initializing audio pipeline...")
+                denoiser = AudioDenoiser()
+                vad = VoiceActivityDetector()
+                self.audio_pipeline = AudioPipeline(denoiser=denoiser, vad=vad)
+
+            # SSB Auto-tuner
+            if not self.auto_tuner:
+                self.log("  Initializing SSB auto-tuner...")
+                self.auto_tuner = SSBAutoTuner()
+
+            # Speech transcriber (Whisper - may download model)
+            if not self.transcriber:
+                self.log("  Initializing speech transcriber (may download AI model)...")
+                self.transcriber = SpeechTranscriber()
+
+            # Voice embedder (speaker ID - may download model)
+            if not self.voice_embedder:
+                self.log("  Initializing voice embedder...")
+                self.voice_embedder = VoiceEmbedder()
+
+            # Voice database
+            if not self.voice_db:
+                self.log("  Initializing voice database...")
+                self.voice_db = VoiceDatabase()
+
+            # Contest logic
+            if not self.callsign_extractor:
+                self.log("  Initializing callsign extractor...")
+                self.callsign_extractor = CallsignExtractor()
+
+            if not self.behavior_analyzer:
+                self.log("  Initializing behavior analyzer...")
+                self.behavior_analyzer = BehaviorAnalyzer()
+
+            # Band map
+            if not self.band_map:
+                self.log("  Initializing band map...")
+                self.band_map = BandMapState()
+
+            self.use_full_scanner = True
+            self.log("✓ Advanced features initialized successfully!")
+            self.log("  Full scanner with audio processing, AI transcription, and voice ID enabled.")
+
+            QMessageBox.information(self, "Advanced Features Enabled",
+                "All advanced features initialized:\n\n"
+                "✓ Audio processing (noise reduction, voice detection)\n"
+                "✓ AI speech transcription (Whisper)\n"
+                "✓ Voice fingerprinting (speaker ID)\n"
+                "✓ SSB auto-centering\n"
+                "✓ Contest logic (callsign extraction, behavior analysis)\n"
+                "✓ Band map tracking\n\n"
+                "The scanner will now use full AI-powered features!")
+
+        except Exception as e:
+            self.log(f"ERROR initializing advanced features: {e}")
+            logger.error(f"Failed to initialize advanced features: {e}", exc_info=True)
+            QMessageBox.warning(self, "Advanced Features Failed",
+                f"Could not initialize advanced features:\n{e}\n\n"
+                "Using basic scanner mode instead.")
+            self.use_full_scanner = False
 
     def init_ui(self):
         """Initialize user interface"""
@@ -167,6 +256,14 @@ class MainWindow(QMainWindow):
         disconnect_action = QAction("&Disconnect", self)
         disconnect_action.triggered.connect(self.disconnect_radio)
         radio_menu.addAction(disconnect_action)
+
+        # Scanner menu
+        scanner_menu = menubar.addMenu("&Scanner")
+
+        enable_advanced_action = QAction("Enable &Advanced Features", self)
+        enable_advanced_action.setToolTip("Initialize AI models, audio processing, and voice recognition")
+        enable_advanced_action.triggered.connect(self.init_advanced_features)
+        scanner_menu.addAction(enable_advanced_action)
 
         # Help menu
         help_menu = menubar.addMenu("&Help")
@@ -408,15 +505,57 @@ class MainWindow(QMainWindow):
 
             # Start scanner
             self.log(f"Starting scan on bands: {', '.join(enabled_bands)}")
-            self.scan_thread = ScanThread(
-                radio=self.radio,
-                bands=enabled_bands,
-                step_hz=self.config.scan.step_size,
-                dwell_sec=2.0  # Phase 1: 2 second dwell per frequency
-            )
-            self.scan_thread.log_signal.connect(self.log)
-            self.scan_thread.finished.connect(self.on_scan_finished)
-            self.scan_thread.start()
+
+            if self.use_full_scanner and self.audio_pipeline:
+                # Use full-featured BandScanner with all Phase 2-8 features
+                self.log("Using FULL SCANNER with AI features:")
+                self.log("  ✓ Audio processing (noise reduction + voice detection)")
+                self.log("  ✓ Speech transcription (Whisper AI)")
+                self.log("  ✓ Voice fingerprinting (speaker identification)")
+                self.log("  ✓ SSB auto-centering")
+                self.log("  ✓ Contest logic (callsign extraction)")
+
+                # Initialize BandScanner
+                self.band_scanner = BandScanner(
+                    radio_controller=self.radio,
+                    audio_capture=self.audio,
+                    audio_pipeline=self.audio_pipeline,
+                    auto_tuner=self.auto_tuner,
+                    voice_database=self.voice_db,
+                    callsign_extractor=self.callsign_extractor,
+                    behavior_analyzer=self.behavior_analyzer,
+                    band_map=self.band_map,
+                    on_station_detected=lambda station: self.log(f"STATION: {station}"),
+                    on_progress_update=lambda prog: self.log(f"Progress: {prog.progress_percent:.1f}%")
+                )
+
+                # Get frequency ranges for selected bands
+                for band_name in enabled_bands:
+                    if band_name in BAND_PROFILES:
+                        profile = BAND_PROFILES[band_name]
+                        self.log(f"  Scanning {profile.name}: {profile.freq_start/1e6:.3f}-{profile.freq_end/1e6:.3f} MHz")
+                        # TODO: Start multi-band scan
+                        # For now, scan first band only
+                        self.band_scanner.start_scan(
+                            freq_start=profile.freq_start,
+                            freq_end=profile.freq_end,
+                            step_size=self.config.scan.step_size
+                        )
+                        break  # First band only for now
+            else:
+                # Use simple Phase 1 scanner (frequency stepping only)
+                self.log("Using BASIC SCANNER (frequency stepping only)")
+                self.log("  Enable advanced features via Scanner menu for AI capabilities")
+
+                self.scan_thread = ScanThread(
+                    radio=self.radio,
+                    bands=enabled_bands,
+                    step_hz=self.config.scan.step_size,
+                    dwell_sec=2.0  # Phase 1: 2 second dwell per frequency
+                )
+                self.scan_thread.log_signal.connect(self.log)
+                self.scan_thread.finished.connect(self.on_scan_finished)
+                self.scan_thread.start()
 
             self.scan_btn.setText("Stop Scan")
             self.connect_btn.setEnabled(False)
@@ -425,6 +564,9 @@ class MainWindow(QMainWindow):
         else:
             # Stop scanner
             self.log("Stopping scan...")
+            if self.band_scanner:
+                self.band_scanner.stop_scan()
+                self.band_scanner = None
             if self.scan_thread:
                 self.scan_thread.stop()
                 self.scan_thread.wait(3000)  # Wait up to 3 seconds
