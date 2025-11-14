@@ -10,9 +10,9 @@ from pathlib import Path
 
 from PyQt5.QtWidgets import QApplication
 
-from .config import get_config_manager, get_config
-from .utils.logging import setup_logging
-from .gui.main_window import MainWindow
+from cqsentinel.config import get_config_manager, get_config
+from cqsentinel.utils.logging import setup_logging
+from cqsentinel.gui.main_window import MainWindow
 
 logger = logging.getLogger(__name__)
 
