@@ -89,7 +89,7 @@ class RigctldManager:
         except (socket.error, ConnectionRefusedError):
             return False
 
-    def start(self, timeout: float = 5.0) -> bool:
+    def start(self, timeout: float = 10.0) -> bool:
         """
         Start rigctld daemon
 
@@ -238,7 +238,12 @@ class RigctldManager:
 
                 time.sleep(0.2)
 
-            # Timeout - get any error output and kill process
+            # Timeout - but check one more time if port is available
+            # rigctld might be listening despite protocol errors
+            if self.is_running():
+                logger.warning(f"rigctld started with errors but is listening on port {self.port}")
+                return True
+
             logger.error(f"rigctld failed to start within {timeout} seconds")
 
             # Try to get stderr output
