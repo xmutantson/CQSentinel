@@ -31,6 +31,7 @@ from cqsentinel.speech.transcription import SpeechTranscriber
 from cqsentinel.voice import VoiceDatabase, VoiceEmbedder
 from cqsentinel.contest import CallsignExtractor, BehaviorAnalyzer
 from cqsentinel.bandmap.station import BandMapState
+from cqsentinel.bandmap.widget import BandMapWidget
 from cqsentinel.gui.settings_dialog import SettingsDialog
 from cqsentinel.scanner.profiles import BAND_PROFILES
 from cqsentinel.scanner.engine import BandScanner, ScanProgress
@@ -173,6 +174,9 @@ class MainWindow(QMainWindow):
         # Audio monitoring
         self.last_audio_level = 0.0  # 0.0 to 1.0
 
+        # Band map visualization (always available)
+        self.band_map_widget: BandMapWidget = None
+
         # Initialize audio capture for level meter (basic monitoring, always available)
         try:
             self.audio = AudioCapture()
@@ -245,6 +249,11 @@ class MainWindow(QMainWindow):
                 self.log("  Initializing band map...")
                 self.band_map = BandMapState()
 
+            # Connect band map to visualization widget
+            if self.band_map_widget:
+                self.band_map_widget.set_band_map(self.band_map)
+                self.log("  Band map visualization connected")
+
             self.use_full_scanner = True
             self.log("✓ Advanced features initialized successfully!")
             self.log("  Full scanner with audio processing, AI transcription, and voice ID enabled.")
@@ -307,10 +316,15 @@ class MainWindow(QMainWindow):
         # Top panel: Band selection and controls
         main_layout.addWidget(self.create_control_panel())
 
-        # Middle panel: Radio status and frequency display
+        # Radio status panel
         main_layout.addWidget(self.create_radio_panel())
 
-        # Bottom panel: Log/transcript display
+        # Band map visualization panel
+        self.band_map_widget = BandMapWidget(BandMapState())
+        self.band_map_widget.station_clicked.connect(self.on_station_clicked)
+        main_layout.addWidget(self.band_map_widget)
+
+        # Log/transcript panel
         main_layout.addWidget(self.create_log_panel())
 
         # Status bar
@@ -735,6 +749,17 @@ class MainWindow(QMainWindow):
     def update_freq_display(self, freq_hz: int):
         """Update frequency display from scan thread (prevents race condition)"""
         self.freq_label.setText(f"{freq_hz/1e6:.4f} MHz")
+
+    def on_station_clicked(self, frequency_hz: float):
+        """Handle band map station click - tune radio to frequency"""
+        if self.radio and self.radio.is_connected:
+            try:
+                self.radio.set_frequency(int(frequency_hz))
+                self.log(f"Tuned to station at {frequency_hz/1e6:.3f} MHz")
+            except Exception as e:
+                self.log(f"Failed to tune to {frequency_hz/1e6:.3f} MHz: {e}")
+        else:
+            self.log("Radio not connected - cannot tune to station")
 
     def show_settings(self):
         """Show settings dialog"""
