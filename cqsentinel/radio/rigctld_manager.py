@@ -24,7 +24,7 @@ class RigctldManager:
     Automatically starts/stops rigctld when needed.
     """
 
-    def __init__(self, model_id: int, serial_port: str, baud_rate: int, port: int = 4532):
+    def __init__(self, model_id: int, serial_port: str, baud_rate: int, port: int = 4532, civ_address: str = ""):
         """
         Initialize rigctld manager
 
@@ -33,11 +33,13 @@ class RigctldManager:
             serial_port: Serial port device (e.g., "COM3" on Windows, "/dev/ttyUSB0" on Linux)
             baud_rate: Serial baud rate (e.g., 115200)
             port: rigctld TCP port (default 4532)
+            civ_address: CI-V address for Icom radios in hex (e.g., "94" for 0x94), empty for default
         """
         self.model_id = model_id
         self.serial_port = serial_port
         self.baud_rate = baud_rate
         self.port = port
+        self.civ_address = civ_address
         self.process: Optional[subprocess.Popen] = None
         self._is_managed = False  # True if we started the process
 
@@ -86,6 +88,16 @@ class RigctldManager:
             "-s", str(self.baud_rate),
             "-t", str(self.port),
         ]
+
+        # Add CI-V address if specified (for Icom radios)
+        if self.civ_address:
+            try:
+                # Convert hex string to decimal for rigctld -c parameter
+                civ_decimal = int(self.civ_address, 16)
+                cmd.extend(["-c", str(civ_decimal)])
+                logger.info(f"Using CI-V address: 0x{self.civ_address} ({civ_decimal})")
+            except ValueError:
+                logger.warning(f"Invalid CI-V address '{self.civ_address}', using default")
 
         # On Windows, add additional flags for stability
         if platform.system() == 'Windows':
@@ -182,6 +194,7 @@ class RigctldManager:
             'serial_port': self.serial_port,
             'baud_rate': self.baud_rate,
             'port': self.port,
+            'civ_address': self.civ_address,
         }
 
     def __enter__(self):

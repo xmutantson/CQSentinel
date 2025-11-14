@@ -22,21 +22,12 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt
 
 from cqsentinel.config import get_config_manager, RadioConfig
+from cqsentinel.radio.radio_database import (
+    get_manufacturers, get_models_by_manufacturer,
+    get_radio_info, is_icom_radio
+)
 
 logger = logging.getLogger(__name__)
-
-
-# Common Hamlib radio models for easy selection
-RADIO_MODELS = [
-    ("Icom IC-705", 3085),
-    ("Icom IC-7300", 3073),
-    ("Icom IC-9700", 3081),
-    ("Yaesu FT-991A", 1035),
-    ("Yaesu FT-710", 1045),
-    ("Kenwood TS-590SG", 2033),
-    ("Elecraft K3", 2029),
-    ("Elecraft KX3", 2043),
-]
 
 
 def get_serial_ports() -> List[Tuple[str, str]]:
@@ -123,10 +114,40 @@ class SettingsDialog(QDialog):
         model_group = QGroupBox("Radio Model")
         model_layout = QFormLayout()
 
-        self.radio_combo = QComboBox()
-        for name, model_id in RADIO_MODELS:
-            self.radio_combo.addItem(name, model_id)
-        model_layout.addRow("Model:", self.radio_combo)
+        # Manufacturer dropdown
+        self.manufacturer_combo = QComboBox()
+        self.manufacturer_combo.addItems(get_manufacturers())
+        self.manufacturer_combo.currentTextChanged.connect(self.on_manufacturer_changed)
+        model_layout.addRow("Manufacturer:", self.manufacturer_combo)
+
+        # Model dropdown (populated when manufacturer is selected)
+        self.model_combo = QComboBox()
+        self.model_combo.currentTextChanged.connect(self.on_model_changed)
+        model_layout.addRow("Model:", self.model_combo)
+
+        # CI-V address (only for Icom radios)
+        self.civ_label = QLabel("CI-V Address:")
+        civ_layout = QHBoxLayout()
+        self.civ_address_edit = QLineEdit()
+        self.civ_address_edit.setPlaceholderText("Leave blank for default (e.g., 94 for 0x94)")
+        self.civ_address_edit.setMaxLength(2)
+        civ_layout.addWidget(self.civ_address_edit)
+
+        civ_info = QLabel("ℹ")
+        civ_info.setToolTip(
+            "CI-V address in hex (without 0x prefix).\n"
+            "Example: Enter '94' for IC-7300 address.\n"
+            "Leave blank to use radio's default address."
+        )
+        civ_layout.addWidget(civ_info)
+
+        civ_widget = QWidget()
+        civ_widget.setLayout(civ_layout)
+        model_layout.addRow(self.civ_label, civ_widget)
+
+        # Store CI-V widgets for show/hide
+        self.civ_label_widget = self.civ_label
+        self.civ_address_widget = civ_widget
 
         model_group.setLayout(model_layout)
         layout.addWidget(model_group)
@@ -351,6 +372,40 @@ class SettingsDialog(QDialog):
         layout.addStretch()
         return widget
 
+    def on_manufacturer_changed(self, manufacturer: str):
+        """Handle manufacturer selection change"""
+        if not manufacturer:
+            return
+
+        # Populate models for selected manufacturer
+        self.model_combo.clear()
+        models = get_models_by_manufacturer(manufacturer)
+        self.model_combo.addItems(models)
+
+        # Show/hide CI-V address field for Icom radios
+        is_icom = is_icom_radio(manufacturer)
+        self.civ_label_widget.setVisible(is_icom)
+        self.civ_address_widget.setVisible(is_icom)
+
+    def on_model_changed(self, model: str):
+        """Handle model selection change"""
+        if not model:
+            return
+
+        manufacturer = self.manufacturer_combo.currentText()
+        if not manufacturer:
+            return
+
+        # Get radio info and populate CI-V address with default if Icom
+        radio_info = get_radio_info(manufacturer, model)
+        if radio_info and is_icom_radio(manufacturer):
+            hamlib_id, default_civ, notes = radio_info
+            if default_civ is not None:
+                # Show default CI-V address as placeholder
+                self.civ_address_edit.setPlaceholderText(
+                    f"Leave blank for default ({default_civ:02X})"
+                )
+
     def refresh_serial_ports(self):
         """Refresh the list of serial ports"""
         current = self.serial_combo.currentData()
@@ -368,10 +423,20 @@ class SettingsDialog(QDialog):
 
     def load_settings(self):
         """Load settings from configuration"""
-        # Radio settings
-        model_index = self.radio_combo.findText(self.config.radio.model)
-        if model_index >= 0:
-            self.radio_combo.setCurrentIndex(model_index)
+        # Radio settings - set manufacturer first
+        manufacturer_index = self.manufacturer_combo.findText(self.config.radio.manufacturer)
+        if manufacturer_index >= 0:
+            self.manufacturer_combo.setCurrentIndex(manufacturer_index)
+            # This will trigger on_manufacturer_changed which populates models
+
+            # Then set model
+            model_index = self.model_combo.findText(self.config.radio.model)
+            if model_index >= 0:
+                self.model_combo.setCurrentIndex(model_index)
+
+        # CI-V address
+        if self.config.radio.civ_address:
+            self.civ_address_edit.setText(self.config.radio.civ_address)
 
         # Serial port
         if self.config.radio.serial_port:
@@ -423,8 +488,22 @@ class SettingsDialog(QDialog):
     def apply_settings(self):
         """Apply settings to configuration"""
         # Radio settings
-        self.config.radio.model = self.radio_combo.currentText()
-        self.config.radio.model_id = self.radio_combo.currentData()
+        manufacturer = self.manufacturer_combo.currentText()
+        model = self.model_combo.currentText()
+
+        self.config.radio.manufacturer = manufacturer
+        self.config.radio.model = model
+
+        # Get Hamlib ID from database
+        radio_info = get_radio_info(manufacturer, model)
+        if radio_info:
+            self.config.radio.model_id = radio_info[0]  # hamlib_id
+        else:
+            logger.warning(f"Could not find Hamlib ID for {manufacturer} {model}")
+
+        # CI-V address
+        self.config.radio.civ_address = self.civ_address_edit.text().strip().upper()
+
         self.config.radio.serial_port = self.serial_combo.currentData() or ""
         self.config.radio.baud_rate = self.baud_combo.currentData()
         self.config.radio.rigctld_host = self.rigctld_host_edit.text()

@@ -239,7 +239,8 @@ class MainWindow(QMainWindow):
                     model_id=self.config.radio.model_id,
                     serial_port=serial_port,
                     baud_rate=self.config.radio.baud_rate,
-                    port=self.config.radio.rigctld_port
+                    port=self.config.radio.rigctld_port,
+                    civ_address=self.config.radio.civ_address
                 )
 
                 if not self.rigctld_manager.start():

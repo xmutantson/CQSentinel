@@ -17,8 +17,10 @@ logger = logging.getLogger(__name__)
 @dataclass
 class RadioConfig:
     """Radio hardware configuration"""
-    model: str = "Icom IC-705"
-    model_id: int = 3085  # Hamlib model ID for IC-705
+    manufacturer: str = "Icom"  # Radio manufacturer
+    model: str = "IC-705"  # Radio model
+    model_id: int = 3085  # Hamlib model ID
+    civ_address: str = ""  # CI-V address for Icom radios (hex, e.g., "94" for 0x94), empty for default
     serial_port: str = ""  # Auto-detect if empty
     baud_rate: int = 115200
     rigctld_host: str = "localhost"
