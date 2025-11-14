@@ -122,6 +122,116 @@ def check_dependencies_installed():
     return missing
 
 
+def ensure_pip_available(progress_callback=None):
+    """
+    Ensure pip is available in the Python environment.
+
+    On fresh Windows machines or packaged builds, pip might not be available.
+    This function bootstraps pip using ensurepip if needed.
+
+    Args:
+        progress_callback: Optional callback(message: str) for progress updates
+
+    Returns:
+        bool: True if pip is available, False if failed to bootstrap
+    """
+    try:
+        # Check if pip is available
+        result = subprocess.run(
+            [sys.executable, '-m', 'pip', '--version'],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+
+        if result.returncode == 0:
+            if progress_callback:
+                progress_callback("✓ pip is available")
+            logger.info(f"pip is available: {result.stdout.strip()}")
+            return True
+
+    except Exception as e:
+        logger.warning(f"pip check failed: {e}")
+
+    # pip not available, try to bootstrap it
+    if progress_callback:
+        progress_callback("Installing pip (package installer)...")
+
+    try:
+        # Try using ensurepip (included in Python 3.4+)
+        result = subprocess.run(
+            [sys.executable, '-m', 'ensurepip', '--default-pip'],
+            capture_output=True,
+            text=True,
+            timeout=60
+        )
+
+        if result.returncode == 0:
+            if progress_callback:
+                progress_callback("✓ pip installed successfully")
+            logger.info("pip bootstrapped using ensurepip")
+            return True
+        else:
+            logger.warning(f"ensurepip failed: {result.stderr}")
+
+    except Exception as e:
+        logger.warning(f"ensurepip failed: {e}")
+
+    # ensurepip failed, try downloading get-pip.py
+    if progress_callback:
+        progress_callback("Downloading pip installer...")
+
+    try:
+        import urllib.request
+        import tempfile
+
+        # Download get-pip.py
+        get_pip_url = "https://bootstrap.pypa.io/get-pip.py"
+        with tempfile.NamedTemporaryFile(mode='wb', suffix='.py', delete=False) as tmp_file:
+            tmp_path = tmp_file.name
+
+            if progress_callback:
+                progress_callback(f"  Downloading from {get_pip_url}...")
+
+            with urllib.request.urlopen(get_pip_url, timeout=30) as response:
+                tmp_file.write(response.read())
+
+        if progress_callback:
+            progress_callback("  Running pip installer...")
+
+        # Run get-pip.py
+        result = subprocess.run(
+            [sys.executable, tmp_path],
+            capture_output=True,
+            text=True,
+            timeout=120
+        )
+
+        # Clean up temp file
+        try:
+            Path(tmp_path).unlink()
+        except:
+            pass
+
+        if result.returncode == 0:
+            if progress_callback:
+                progress_callback("✓ pip installed successfully")
+            logger.info("pip bootstrapped using get-pip.py")
+            return True
+        else:
+            logger.error(f"get-pip.py failed: {result.stderr}")
+
+    except Exception as e:
+        logger.error(f"Failed to download/run get-pip.py: {e}")
+
+    if progress_callback:
+        progress_callback("✗ Failed to install pip")
+        progress_callback("  Cannot proceed without pip")
+        progress_callback("  Please run from source installation instead")
+
+    return False
+
+
 def install_dependencies(packages_dir, progress_callback=None):
     """
     Install AI dependencies using pip subprocess.
@@ -133,6 +243,17 @@ def install_dependencies(packages_dir, progress_callback=None):
     Returns:
         bool: True if all packages installed successfully, False otherwise
     """
+    # Ensure pip is available first
+    if not ensure_pip_available(progress_callback):
+        if progress_callback:
+            progress_callback("")
+            progress_callback("Cannot install dependencies without pip.")
+            progress_callback("Please install Python with pip support.")
+        return False
+
+    if progress_callback:
+        progress_callback("")
+
     # List of packages to install
     # Note: Installing torch is large (~700 MB), so we install CPU-only version
     dependencies = [
