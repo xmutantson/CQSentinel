@@ -15,10 +15,10 @@ from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QComboBox, QCheckBox,
     QGroupBox, QTextEdit, QProgressBar, QStatusBar,
-    QMenuBar, QMenu, QMessageBox
+    QMenuBar, QMenu, QMessageBox, QAction
 )
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread
-from PyQt5.QtGui import QAction, QFont
+from PyQt5.QtGui import QFont
 
 from cqsentinel.config import get_config, get_config_manager
 from cqsentinel.radio import HamlibController, RadioConnectionError
