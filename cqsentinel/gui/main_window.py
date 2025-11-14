@@ -11,14 +11,14 @@ Provides the primary user interface with:
 
 import sys
 import logging
-from PyQt6.QtWidgets import (
+from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QComboBox, QCheckBox,
     QGroupBox, QTextEdit, QProgressBar, QStatusBar,
     QMenuBar, QMenu, QMessageBox
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread
-from PyQt6.QtGui import QAction, QFont
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread
+from PyQt5.QtGui import QAction, QFont
 
 from ..config import get_config, get_config_manager
 from ..radio import HamlibController, RadioConnectionError
@@ -332,7 +332,7 @@ class MainWindow(QMainWindow):
         <h2>CQSentinel v{self.get_version()}</h2>
         <p><b>SSB Contest Band Scanner with AI Voice Recognition</b></p>
         <p>The first practical implementation of an "SSB Skimmer" for ham radio contesting.</p>
-        <p>Built with Python, PyQt6, Hamlib, and modern AI technologies.</p>
+        <p>Built with Python, PyQt5, Hamlib, and modern AI technologies.</p>
         <p><a href="https://github.com/xmutantson/CQSentinel">GitHub Repository</a></p>
         """
         QMessageBox.about(self, "About CQSentinel", about_text)

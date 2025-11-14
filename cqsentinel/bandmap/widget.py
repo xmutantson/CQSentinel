@@ -8,12 +8,12 @@ signal strength indicators, and click-to-tune functionality.
 import logging
 from typing import Optional, List
 
-from PyQt6.QtWidgets import (
+from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QScrollArea, QFrame
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QPoint, QRect
-from PyQt6.QtGui import QPainter, QColor, QPen, QFont, QBrush, QPainterPath
+from PyQt5.QtCore import Qt, pyqtSignal, QPoint, QRect
+from PyQt5.QtGui import QPainter, QColor, QPen, QFont, QBrush, QPainterPath
 
 from .station import BandMapStation, BandMapState, StationStatus
 

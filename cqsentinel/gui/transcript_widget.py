@@ -2,12 +2,12 @@
 Transcript display widget for real-time speech-to-text results
 """
 
-from PyQt6.QtWidgets import (
+from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QTextEdit, QPushButton,
     QHBoxLayout, QLabel
 )
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QFont, QTextCursor
+from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtGui import QFont, QTextCursor
 import logging
 
 logger = logging.getLogger(__name__)

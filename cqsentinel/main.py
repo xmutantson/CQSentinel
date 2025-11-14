@@ -8,7 +8,7 @@ import sys
 import logging
 from pathlib import Path
 
-from PyQt6.QtWidgets import QApplication
+from PyQt5.QtWidgets import QApplication
 
 from .config import get_config_manager, get_config
 from .utils.logging import setup_logging

@@ -30,7 +30,7 @@ setup(
     python_requires='>=3.10',
 
     install_requires=[
-        'PyQt6>=6.5.0',
+        'PyQt5>=5.15.0',
         'sounddevice>=0.4.6',
         'soundfile>=0.12.1',
         'noisereduce>=3.0.0',

@@ -41,7 +41,7 @@ def check_dependencies():
 
     required = {
         'pyinstaller': 'PyInstaller',
-        'PyQt6': 'PyQt6',
+        'PyQt5': 'PyQt5',
     }
 
     missing = []
@@ -56,7 +56,7 @@ def check_dependencies():
 
     if missing:
         print(f"\n❌ Missing dependencies: {', '.join(missing)}")
-        print("Install with: pip install pyinstaller PyQt6")
+        print("Install with: pip install pyinstaller PyQt5")
         return False
 
     print("✓ All dependencies found\n")
