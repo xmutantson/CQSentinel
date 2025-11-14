@@ -52,15 +52,17 @@ def main():
     logger.info("Main window displayed")
 
     # Show initial instructions
-    window.log("Welcome to CQSentinel!")
+    window.log("Welcome to CQSentinel - SSB Contest Scanner!")
     window.log("=" * 40)
-    window.log("1. Make sure rigctld is running:")
-    window.log("   rigctld -m 3085 -r /dev/ttyUSB0 -s 115200")
-    window.log("   (3085 = IC-705, adjust for your radio)")
-    window.log("2. Click 'Connect Radio' to connect")
+    window.log("Quick Start:")
+    window.log("1. Click 'File > Settings' to configure your radio")
+    window.log("2. Click 'Connect Radio' - rigctld will start automatically")
     window.log("3. Select bands and contest profile")
     window.log("4. Click 'Start Scan' to begin")
     window.log("=" * 40)
+    window.log("")
+    window.log("Tip: The app will auto-detect your radio's serial port")
+    window.log("and start rigctld automatically when you connect.")
 
     # Run application
     exit_code = app.exec()

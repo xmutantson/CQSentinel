@@ -18,8 +18,12 @@ logger = logging.getLogger(__name__)
 class RadioConfig:
     """Radio hardware configuration"""
     model: str = "Icom IC-705"
+    model_id: int = 3085  # Hamlib model ID for IC-705
+    serial_port: str = ""  # Auto-detect if empty
+    baud_rate: int = 115200
     rigctld_host: str = "localhost"
     rigctld_port: int = 4532
+    auto_start_rigctld: bool = True  # Auto-start rigctld on connect
     audio_device_name: str = ""  # Auto-detect if empty
     audio_sample_rate: int = 16000
     cat_poll_interval_ms: int = 1000

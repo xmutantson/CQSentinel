@@ -1,0 +1,482 @@
+"""
+Settings Dialog for CQSentinel
+
+Allows users to configure:
+- Radio model and connection settings
+- Serial port (auto-detected on Windows)
+- Audio devices
+- Contest profiles
+- AI model settings
+"""
+
+import logging
+import platform
+from typing import List, Tuple
+
+from PyQt5.QtWidgets import (
+    QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
+    QLabel, QPushButton, QComboBox, QSpinBox,
+    QLineEdit, QGroupBox, QTabWidget, QWidget,
+    QCheckBox, QMessageBox, QDialogButtonBox
+)
+from PyQt5.QtCore import Qt
+
+from cqsentinel.config import get_config_manager, RadioConfig
+
+logger = logging.getLogger(__name__)
+
+
+# Common Hamlib radio models for easy selection
+RADIO_MODELS = [
+    ("Icom IC-705", 3085),
+    ("Icom IC-7300", 3073),
+    ("Icom IC-9700", 3081),
+    ("Yaesu FT-991A", 1035),
+    ("Yaesu FT-710", 1045),
+    ("Kenwood TS-590SG", 2033),
+    ("Elecraft K3", 2029),
+    ("Elecraft KX3", 2043),
+]
+
+
+def get_serial_ports() -> List[Tuple[str, str]]:
+    """
+    Get list of available serial ports
+
+    Returns:
+        List of (port_name, description) tuples
+    """
+    ports = []
+
+    try:
+        import serial.tools.list_ports
+
+        for port in serial.tools.list_ports.comports():
+            # On Windows, show COM ports; on Linux/Mac show /dev/tty*
+            if platform.system() == 'Windows':
+                ports.append((port.device, f"{port.device} - {port.description}"))
+            else:
+                ports.append((port.device, f"{port.device} - {port.description}"))
+
+    except ImportError:
+        logger.warning("pyserial not installed, cannot auto-detect serial ports")
+        # Provide some common defaults
+        if platform.system() == 'Windows':
+            ports = [(f"COM{i}", f"COM{i}") for i in range(1, 9)]
+        else:
+            ports = [
+                ("/dev/ttyUSB0", "/dev/ttyUSB0"),
+                ("/dev/ttyUSB1", "/dev/ttyUSB1"),
+                ("/dev/ttyACM0", "/dev/ttyACM0"),
+            ]
+
+    return ports
+
+
+class SettingsDialog(QDialog):
+    """Settings configuration dialog"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+        self.config_manager = get_config_manager()
+        self.config = self.config_manager.config
+
+        self.init_ui()
+        self.load_settings()
+
+    def init_ui(self):
+        """Initialize user interface"""
+        self.setWindowTitle("CQSentinel Settings")
+        self.setMinimumWidth(600)
+        self.setMinimumHeight(500)
+
+        layout = QVBoxLayout(self)
+
+        # Create tabbed interface
+        tabs = QTabWidget()
+        tabs.addTab(self.create_radio_tab(), "Radio")
+        tabs.addTab(self.create_audio_tab(), "Audio")
+        tabs.addTab(self.create_contest_tab(), "Contest")
+        tabs.addTab(self.create_advanced_tab(), "Advanced")
+
+        layout.addWidget(tabs)
+
+        # Dialog buttons
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok |
+            QDialogButtonBox.StandardButton.Cancel |
+            QDialogButtonBox.StandardButton.Apply
+        )
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        button_box.button(QDialogButtonBox.StandardButton.Apply).clicked.connect(self.apply_settings)
+
+        layout.addWidget(button_box)
+
+    def create_radio_tab(self) -> QWidget:
+        """Create radio configuration tab"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+
+        # Radio model group
+        model_group = QGroupBox("Radio Model")
+        model_layout = QFormLayout()
+
+        self.radio_combo = QComboBox()
+        for name, model_id in RADIO_MODELS:
+            self.radio_combo.addItem(name, model_id)
+        model_layout.addRow("Model:", self.radio_combo)
+
+        model_group.setLayout(model_layout)
+        layout.addWidget(model_group)
+
+        # Connection settings group
+        conn_group = QGroupBox("Connection Settings")
+        conn_layout = QFormLayout()
+
+        # Serial port
+        serial_layout = QHBoxLayout()
+        self.serial_combo = QComboBox()
+        self.serial_combo.setEditable(True)
+
+        # Populate serial ports
+        ports = get_serial_ports()
+        for port_name, port_desc in ports:
+            self.serial_combo.addItem(port_desc, port_name)
+
+        serial_layout.addWidget(self.serial_combo)
+
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.clicked.connect(self.refresh_serial_ports)
+        serial_layout.addWidget(refresh_btn)
+
+        conn_layout.addRow("Serial Port:", serial_layout)
+
+        # Baud rate
+        self.baud_combo = QComboBox()
+        for baud in [4800, 9600, 19200, 38400, 57600, 115200]:
+            self.baud_combo.addItem(str(baud), baud)
+        self.baud_combo.setCurrentText("115200")
+        conn_layout.addRow("Baud Rate:", self.baud_combo)
+
+        # rigctld settings
+        self.rigctld_host_edit = QLineEdit("localhost")
+        conn_layout.addRow("rigctld Host:", self.rigctld_host_edit)
+
+        self.rigctld_port_spin = QSpinBox()
+        self.rigctld_port_spin.setRange(1, 65535)
+        self.rigctld_port_spin.setValue(4532)
+        conn_layout.addRow("rigctld Port:", self.rigctld_port_spin)
+
+        # Auto-start rigctld checkbox
+        self.auto_start_check = QCheckBox("Automatically start rigctld when connecting")
+        self.auto_start_check.setChecked(True)
+        conn_layout.addRow("", self.auto_start_check)
+
+        conn_group.setLayout(conn_layout)
+        layout.addWidget(conn_group)
+
+        # CAT polling
+        poll_group = QGroupBox("CAT Polling")
+        poll_layout = QFormLayout()
+
+        self.poll_interval_spin = QSpinBox()
+        self.poll_interval_spin.setRange(100, 5000)
+        self.poll_interval_spin.setSingleStep(100)
+        self.poll_interval_spin.setValue(1000)
+        self.poll_interval_spin.setSuffix(" ms")
+        poll_layout.addRow("Poll Interval:", self.poll_interval_spin)
+
+        poll_group.setLayout(poll_layout)
+        layout.addWidget(poll_group)
+
+        layout.addStretch()
+        return widget
+
+    def create_audio_tab(self) -> QWidget:
+        """Create audio configuration tab"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+
+        # Audio device group
+        device_group = QGroupBox("Audio Device")
+        device_layout = QFormLayout()
+
+        self.audio_device_combo = QComboBox()
+        self.audio_device_combo.addItem("(Auto-detect)", "")
+
+        # Try to list audio devices
+        try:
+            from cqsentinel.audio import list_audio_devices
+            for device in list_audio_devices():
+                self.audio_device_combo.addItem(device['name'], device['index'])
+        except Exception as e:
+            logger.warning(f"Could not list audio devices: {e}")
+
+        device_layout.addRow("Input Device:", self.audio_device_combo)
+
+        self.sample_rate_combo = QComboBox()
+        for rate in [8000, 16000, 22050, 44100, 48000]:
+            self.sample_rate_combo.addItem(f"{rate} Hz", rate)
+        self.sample_rate_combo.setCurrentText("16000 Hz")
+        device_layout.addRow("Sample Rate:", self.sample_rate_combo)
+
+        device_group.setLayout(device_layout)
+        layout.addWidget(device_group)
+
+        # Processing group
+        proc_group = QGroupBox("Audio Processing")
+        proc_layout = QFormLayout()
+
+        self.noise_reduction_combo = QComboBox()
+        self.noise_reduction_combo.addItems(["Off", "Low", "Medium", "High"])
+        self.noise_reduction_combo.setCurrentText("Medium")
+        proc_layout.addRow("Noise Reduction:", self.noise_reduction_combo)
+
+        self.vad_sensitivity_spin = QSpinBox()
+        self.vad_sensitivity_spin.setRange(0, 100)
+        self.vad_sensitivity_spin.setValue(50)
+        self.vad_sensitivity_spin.setSuffix("%")
+        proc_layout.addRow("VAD Sensitivity:", self.vad_sensitivity_spin)
+
+        proc_group.setLayout(proc_layout)
+        layout.addWidget(proc_group)
+
+        layout.addStretch()
+        return widget
+
+    def create_contest_tab(self) -> QWidget:
+        """Create contest configuration tab"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+
+        # Contest profile group
+        profile_group = QGroupBox("Contest Profile")
+        profile_layout = QFormLayout()
+
+        self.contest_profile_combo = QComboBox()
+        self.contest_profile_combo.addItems([
+            "Field Day (FD)",
+            "Winter Field Day (WFD)",
+            "CQWW DX Contest",
+            "CQ WPX Contest",
+            "ARRL Sweepstakes",
+            "State QSO Party"
+        ])
+        profile_layout.addRow("Active Profile:", self.contest_profile_combo)
+
+        self.contestness_spin = QSpinBox()
+        self.contestness_spin.setRange(0, 100)
+        self.contestness_spin.setValue(70)
+        self.contestness_spin.setSuffix("%")
+        profile_layout.addRow("Contestness Threshold:", self.contestness_spin)
+
+        profile_group.setLayout(profile_layout)
+        layout.addWidget(profile_group)
+
+        # N3FJP integration group
+        n3fjp_group = QGroupBox("N3FJP Integration")
+        n3fjp_layout = QFormLayout()
+
+        self.n3fjp_enable_check = QCheckBox("Enable N3FJP integration")
+        n3fjp_layout.addRow("", self.n3fjp_enable_check)
+
+        self.n3fjp_host_edit = QLineEdit("localhost")
+        n3fjp_layout.addRow("N3FJP Host:", self.n3fjp_host_edit)
+
+        self.n3fjp_port_spin = QSpinBox()
+        self.n3fjp_port_spin.setRange(1, 65535)
+        self.n3fjp_port_spin.setValue(1100)
+        n3fjp_layout.addRow("N3FJP Port:", self.n3fjp_port_spin)
+
+        n3fjp_group.setLayout(n3fjp_layout)
+        layout.addWidget(n3fjp_group)
+
+        layout.addStretch()
+        return widget
+
+    def create_advanced_tab(self) -> QWidget:
+        """Create advanced settings tab"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+
+        # AI model group
+        ai_group = QGroupBox("AI Models")
+        ai_layout = QFormLayout()
+
+        self.whisper_model_combo = QComboBox()
+        self.whisper_model_combo.addItems(["tiny", "base", "small", "medium", "large"])
+        self.whisper_model_combo.setCurrentText("small")
+        ai_layout.addRow("Whisper Model:", self.whisper_model_combo)
+
+        self.use_crepe_check = QCheckBox("Use CREPE pitch detection (requires GPU)")
+        ai_layout.addRow("", self.use_crepe_check)
+
+        ai_group.setLayout(ai_layout)
+        layout.addWidget(ai_group)
+
+        # Voice database group
+        voice_group = QGroupBox("Voice Database")
+        voice_layout = QFormLayout()
+
+        self.voice_threshold_spin = QSpinBox()
+        self.voice_threshold_spin.setRange(50, 95)
+        self.voice_threshold_spin.setValue(75)
+        self.voice_threshold_spin.setSuffix("%")
+        voice_layout.addRow("Similarity Threshold:", self.voice_threshold_spin)
+
+        self.voice_age_spin = QSpinBox()
+        self.voice_age_spin.setRange(0, 30)
+        self.voice_age_spin.setValue(5)
+        self.voice_age_spin.setSuffix(" days")
+        self.voice_age_spin.setSpecialValueText("Never")
+        voice_layout.addRow("Warn Age:", self.voice_age_spin)
+
+        voice_group.setLayout(voice_layout)
+        layout.addWidget(voice_group)
+
+        # Logging group
+        log_group = QGroupBox("Logging")
+        log_layout = QFormLayout()
+
+        self.log_level_combo = QComboBox()
+        self.log_level_combo.addItems(["DEBUG", "INFO", "WARNING", "ERROR"])
+        self.log_level_combo.setCurrentText("INFO")
+        log_layout.addRow("Log Level:", self.log_level_combo)
+
+        log_group.setLayout(log_layout)
+        layout.addWidget(log_group)
+
+        layout.addStretch()
+        return widget
+
+    def refresh_serial_ports(self):
+        """Refresh the list of serial ports"""
+        current = self.serial_combo.currentData()
+        self.serial_combo.clear()
+
+        ports = get_serial_ports()
+        for port_name, port_desc in ports:
+            self.serial_combo.addItem(port_desc, port_name)
+
+        # Try to restore previous selection
+        if current:
+            index = self.serial_combo.findData(current)
+            if index >= 0:
+                self.serial_combo.setCurrentIndex(index)
+
+    def load_settings(self):
+        """Load settings from configuration"""
+        # Radio settings
+        model_index = self.radio_combo.findText(self.config.radio.model)
+        if model_index >= 0:
+            self.radio_combo.setCurrentIndex(model_index)
+
+        # Serial port
+        if self.config.radio.serial_port:
+            index = self.serial_combo.findData(self.config.radio.serial_port)
+            if index >= 0:
+                self.serial_combo.setCurrentIndex(index)
+            else:
+                # Add it if not in list
+                self.serial_combo.addItem(self.config.radio.serial_port, self.config.radio.serial_port)
+                self.serial_combo.setCurrentIndex(self.serial_combo.count() - 1)
+
+        # Baud rate
+        baud_index = self.baud_combo.findData(self.config.radio.baud_rate)
+        if baud_index >= 0:
+            self.baud_combo.setCurrentIndex(baud_index)
+
+        self.rigctld_host_edit.setText(self.config.radio.rigctld_host)
+        self.rigctld_port_spin.setValue(self.config.radio.rigctld_port)
+        self.auto_start_check.setChecked(self.config.radio.auto_start_rigctld)
+        self.poll_interval_spin.setValue(self.config.radio.cat_poll_interval_ms)
+
+        # Audio settings
+        if self.config.radio.audio_device_name:
+            index = self.audio_device_combo.findText(self.config.radio.audio_device_name)
+            if index >= 0:
+                self.audio_device_combo.setCurrentIndex(index)
+
+        sample_rate_text = f"{self.config.audio.sample_rate} Hz"
+        index = self.sample_rate_combo.findText(sample_rate_text)
+        if index >= 0:
+            self.sample_rate_combo.setCurrentIndex(index)
+
+        self.noise_reduction_combo.setCurrentText(self.config.audio.noise_reduction_level.title())
+        self.vad_sensitivity_spin.setValue(int(self.config.audio.vad_sensitivity * 100))
+
+        # Contest settings
+        self.contestness_spin.setValue(self.config.contest.contestness_threshold)
+        self.n3fjp_enable_check.setChecked(self.config.contest.n3fjp_enabled)
+        self.n3fjp_host_edit.setText(self.config.contest.n3fjp_host)
+        self.n3fjp_port_spin.setValue(self.config.contest.n3fjp_port)
+
+        # Advanced settings
+        self.whisper_model_combo.setCurrentText(self.config.audio.whisper_model_size)
+        self.use_crepe_check.setChecked(self.config.audio.use_crepe_pitch)
+        self.voice_threshold_spin.setValue(int(self.config.voice_db.similarity_threshold * 100))
+        self.voice_age_spin.setValue(self.config.voice_db.warn_age_days)
+        self.log_level_combo.setCurrentText(self.config.log_level)
+
+    def apply_settings(self):
+        """Apply settings to configuration"""
+        # Radio settings
+        self.config.radio.model = self.radio_combo.currentText()
+        self.config.radio.model_id = self.radio_combo.currentData()
+        self.config.radio.serial_port = self.serial_combo.currentData() or ""
+        self.config.radio.baud_rate = self.baud_combo.currentData()
+        self.config.radio.rigctld_host = self.rigctld_host_edit.text()
+        self.config.radio.rigctld_port = self.rigctld_port_spin.value()
+        self.config.radio.auto_start_rigctld = self.auto_start_check.isChecked()
+        self.config.radio.cat_poll_interval_ms = self.poll_interval_spin.value()
+
+        # Audio settings
+        audio_device = self.audio_device_combo.currentData()
+        self.config.radio.audio_device_name = audio_device if audio_device else ""
+        self.config.audio.sample_rate = self.sample_rate_combo.currentData()
+        self.config.audio.noise_reduction_level = self.noise_reduction_combo.currentText().lower()
+        self.config.audio.vad_sensitivity = self.vad_sensitivity_spin.value() / 100.0
+
+        # Contest settings
+        self.config.contest.contestness_threshold = self.contestness_spin.value()
+        self.config.contest.n3fjp_enabled = self.n3fjp_enable_check.isChecked()
+        self.config.contest.n3fjp_host = self.n3fjp_host_edit.text()
+        self.config.contest.n3fjp_port = self.n3fjp_port_spin.value()
+
+        # Advanced settings
+        self.config.audio.whisper_model_size = self.whisper_model_combo.currentText()
+        self.config.audio.use_crepe_pitch = self.use_crepe_check.isChecked()
+        self.config.voice_db.similarity_threshold = self.voice_threshold_spin.value() / 100.0
+        self.config.voice_db.warn_age_days = self.voice_age_spin.value()
+        self.config.log_level = self.log_level_combo.currentText()
+
+        # Save configuration
+        try:
+            self.config_manager.save()
+            logger.info("Settings saved successfully")
+        except Exception as e:
+            logger.error(f"Failed to save settings: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to save settings: {e}")
+
+    def accept(self):
+        """Accept and save settings"""
+        self.apply_settings()
+        super().accept()
+
+    def get_serial_port(self) -> str:
+        """Get selected serial port"""
+        return self.serial_combo.currentData() or ""
+
+    def get_baud_rate(self) -> int:
+        """Get selected baud rate"""
+        return self.baud_combo.currentData()
+
+    def get_radio_model_id(self) -> int:
+        """Get Hamlib model ID for selected radio"""
+        return self.radio_combo.currentData()
+
+    def is_auto_start_enabled(self) -> bool:
+        """Check if auto-start rigctld is enabled"""
+        return self.auto_start_check.isChecked()

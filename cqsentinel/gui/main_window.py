@@ -21,8 +21,9 @@ from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread
 from PyQt5.QtGui import QFont
 
 from cqsentinel.config import get_config, get_config_manager
-from cqsentinel.radio import HamlibController, RadioConnectionError
+from cqsentinel.radio import HamlibController, RadioConnectionError, RigctldManager, find_serial_port
 from cqsentinel.audio import AudioCapture, list_audio_devices
+from cqsentinel.gui.settings_dialog import SettingsDialog
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,7 @@ class MainWindow(QMainWindow):
 
         self.config = get_config()
         self.radio: HamlibController = None
+        self.rigctld_manager: RigctldManager = None
         self.audio: AudioCapture = None
 
         self.init_ui()
@@ -216,6 +218,41 @@ class MainWindow(QMainWindow):
     def connect_radio(self):
         """Connect to radio via Hamlib"""
         try:
+            # Auto-start rigctld if configured
+            if self.config.radio.auto_start_rigctld:
+                self.log("Starting rigctld...")
+                self.status_bar.showMessage("Starting rigctld...")
+
+                # Get serial port (auto-detect if not configured)
+                serial_port = self.config.radio.serial_port
+                if not serial_port:
+                    serial_port = find_serial_port()
+                    if not serial_port:
+                        raise RadioConnectionError(
+                            "No serial port configured and auto-detection failed. "
+                            "Please configure serial port in Settings."
+                        )
+                    self.log(f"Auto-detected serial port: {serial_port}")
+
+                # Create and start rigctld manager
+                self.rigctld_manager = RigctldManager(
+                    model_id=self.config.radio.model_id,
+                    serial_port=serial_port,
+                    baud_rate=self.config.radio.baud_rate,
+                    port=self.config.radio.rigctld_port
+                )
+
+                if not self.rigctld_manager.start():
+                    raise RadioConnectionError(
+                        "Failed to start rigctld. Check that:\n"
+                        "1. Hamlib is installed\n"
+                        "2. Radio is connected and powered on\n"
+                        "3. Serial port is correct\n"
+                        "4. No other program is using the radio"
+                    )
+
+                self.log("rigctld started successfully")
+
             self.log("Connecting to rigctld...")
             self.status_bar.showMessage("Connecting to radio...")
 
@@ -249,6 +286,11 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage("Connection failed")
             QMessageBox.critical(self, "Connection Error", str(e))
 
+            # Clean up rigctld if we started it
+            if self.rigctld_manager:
+                self.rigctld_manager.stop()
+                self.rigctld_manager = None
+
     def disconnect_radio(self):
         """Disconnect from radio"""
         if self.radio:
@@ -271,6 +313,12 @@ class MainWindow(QMainWindow):
             self.freq_label.setText("0.000 MHz")
             self.mode_label.setText("--")
             self.smeter_label.setText("S0")
+
+        # Stop rigctld if we started it
+        if self.rigctld_manager:
+            self.log("Stopping rigctld...")
+            self.rigctld_manager.stop()
+            self.rigctld_manager = None
 
     def toggle_scan(self):
         """Start or stop scanning"""
@@ -323,8 +371,12 @@ class MainWindow(QMainWindow):
 
     def show_settings(self):
         """Show settings dialog"""
-        # TODO: Implement settings dialog
-        QMessageBox.information(self, "Settings", "Settings dialog coming soon!")
+        dialog = SettingsDialog(self)
+        if dialog.exec():
+            # Settings were saved, reload config
+            self.config = get_config()
+            self.log("Settings updated")
+            logger.info("Settings updated by user")
 
     def show_about(self):
         """Show about dialog"""
