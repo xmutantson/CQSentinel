@@ -24,8 +24,66 @@ from cqsentinel.config import get_config, get_config_manager
 from cqsentinel.radio import HamlibController, RadioConnectionError, RigctldManager, find_serial_port
 from cqsentinel.audio import AudioCapture, list_audio_devices
 from cqsentinel.gui.settings_dialog import SettingsDialog
+from cqsentinel.scanner.profiles import BAND_PROFILES
 
 logger = logging.getLogger(__name__)
+
+
+class ScanThread(QThread):
+    """Background thread for band scanning (Phase 1)"""
+    log_signal = pyqtSignal(str)
+
+    def __init__(self, radio, bands, step_hz=1000, dwell_sec=2.0):
+        super().__init__()
+        self.radio = radio
+        self.bands = bands
+        self.step_hz = step_hz
+        self.dwell_sec = dwell_sec
+        self.running = True
+
+    def run(self):
+        """Scan loop"""
+        import time
+        try:
+            for band_name in self.bands:
+                if not self.running:
+                    break
+
+                if band_name not in BAND_PROFILES:
+                    self.log_signal.emit(f"Unknown band: {band_name}")
+                    continue
+
+                profile = BAND_PROFILES[band_name]
+                self.log_signal.emit(f"Scanning {profile.name}: {profile.freq_start/1e6:.3f}-{profile.freq_end/1e6:.3f} MHz")
+
+                freq = profile.freq_start
+                while freq <= profile.freq_end and self.running:
+                    try:
+                        # Tune radio
+                        self.radio.set_frequency(int(freq))
+                        self.log_signal.emit(f"  {freq/1e6:.4f} MHz")
+
+                        # Dwell
+                        time.sleep(self.dwell_sec)
+
+                        # Next frequency
+                        freq += self.step_hz
+
+                    except Exception as e:
+                        self.log_signal.emit(f"Error at {freq/1e6:.3f} MHz: {e}")
+                        break
+
+                if not self.running:
+                    break
+
+            self.log_signal.emit("Scan complete")
+        except Exception as e:
+            self.log_signal.emit(f"Scan error: {e}")
+            logger.error(f"Scan error: {e}", exc_info=True)
+
+    def stop(self):
+        """Stop scanning"""
+        self.running = False
 
 
 class MainWindow(QMainWindow):
@@ -38,6 +96,7 @@ class MainWindow(QMainWindow):
         self.radio: HamlibController = None
         self.rigctld_manager: RigctldManager = None
         self.audio: AudioCapture = None
+        self.scan_thread: ScanThread = None
 
         self.init_ui()
         self.setup_timers()
@@ -323,15 +382,57 @@ class MainWindow(QMainWindow):
 
     def toggle_scan(self):
         """Start or stop scanning"""
-        # TODO: Implement scanning logic
         if self.scan_btn.text() == "Start Scan":
-            self.log("Starting scan...")
+            # Check if radio is connected
+            if not self.radio or not self.radio.is_connected:
+                self.log("ERROR: Radio not connected. Please connect radio first.")
+                QMessageBox.warning(self, "Radio Not Connected",
+                    "Please connect to the radio before starting scan.")
+                return
+
+            # Get enabled bands
+            enabled_bands = [band for band, cb in self.band_checkboxes.items() if cb.isChecked()]
+            if not enabled_bands:
+                self.log("ERROR: No bands selected. Please select at least one band.")
+                QMessageBox.warning(self, "No Bands Selected",
+                    "Please select at least one band to scan.")
+                return
+
+            # Start scanner
+            self.log(f"Starting scan on bands: {', '.join(enabled_bands)}")
+            self.scan_thread = ScanThread(
+                radio=self.radio,
+                bands=enabled_bands,
+                step_hz=self.config.scan.step_size,
+                dwell_sec=2.0  # Phase 1: 2 second dwell per frequency
+            )
+            self.scan_thread.log_signal.connect(self.log)
+            self.scan_thread.finished.connect(self.on_scan_finished)
+            self.scan_thread.start()
+
             self.scan_btn.setText("Stop Scan")
-            # TODO: Start scanner
+            self.connect_btn.setEnabled(False)
+            for cb in self.band_checkboxes.values():
+                cb.setEnabled(False)
         else:
+            # Stop scanner
             self.log("Stopping scan...")
+            if self.scan_thread:
+                self.scan_thread.stop()
+                self.scan_thread.wait(3000)  # Wait up to 3 seconds
             self.scan_btn.setText("Start Scan")
-            # TODO: Stop scanner
+            self.connect_btn.setEnabled(True)
+            for cb in self.band_checkboxes.values():
+                cb.setEnabled(True)
+
+    def on_scan_finished(self):
+        """Called when scan completes"""
+        self.log("Scan finished")
+        self.scan_btn.setText("Start Scan")
+        self.connect_btn.setEnabled(True)
+        for cb in self.band_checkboxes.values():
+            cb.setEnabled(True)
+        self.scan_thread = None
 
     def update_radio_status(self):
         """Update radio status display"""
