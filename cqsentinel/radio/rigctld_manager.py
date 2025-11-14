@@ -164,6 +164,8 @@ class RigctldManager:
 
         try:
             # Start process
+            # Don't capture stdout/stderr to prevent pipe blocking on Windows
+            # rigctld with -vvvvv generates massive output that fills pipe buffers
             # On Windows, use CREATE_NO_WINDOW to hide console
             if platform.system() == 'Windows':
                 startupinfo = subprocess.STARTUPINFO()
@@ -172,79 +174,34 @@ class RigctldManager:
 
                 self.process = subprocess.Popen(
                     cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
                     startupinfo=startupinfo,
                     creationflags=subprocess.CREATE_NO_WINDOW,
-                    text=True,
-                    bufsize=1
                 )
             else:
-                self.process = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    bufsize=1
-                )
+                self.process = subprocess.Popen(cmd)
 
             self._is_managed = True
 
             # Wait for rigctld to be ready
             start_time = time.time()
-            last_check = start_time
-            stderr_output = []
 
             while time.time() - start_time < timeout:
                 # Check if process died
                 if self.process.poll() is not None:
                     # Process terminated
-                    stdout, stderr = self.process.communicate(timeout=1)
                     logger.error(f"rigctld process died with exit code {self.process.returncode}")
-                    if stderr:
-                        logger.error(f"rigctld stderr: {stderr}")
-                        stderr_output.append(stderr)
-                    if stdout:
-                        logger.info(f"rigctld stdout: {stdout}")
-
-                    # Provide specific error guidance
-                    error_msg = stderr.lower() if stderr else ""
-                    if "permission denied" in error_msg or "access is denied" in error_msg:
-                        logger.error("Serial port access denied. Check that:")
-                        logger.error("  1. No other program is using the radio")
-                        logger.error("  2. You have permission to access the serial port")
-                    elif "no such file" in error_msg or "cannot open" in error_msg:
-                        logger.error(f"Serial port {self.serial_port} not found.")
-                        logger.error("  Check Settings > Radio > Serial Port")
-                    elif "rig_init" in error_msg:
-                        logger.error("Failed to initialize radio. Check that:")
-                        logger.error("  1. Radio model is correct")
-                        logger.error("  2. Radio is powered on")
-                        logger.error("  3. Serial cable is connected")
-
+                    logger.error("Common causes:")
+                    logger.error("  1. Serial port access denied (check no other program is using the radio)")
+                    logger.error("  2. Serial port not found (check Settings > Radio > Serial Port)")
+                    logger.error("  3. Radio model incorrect or radio powered off")
+                    logger.error("  4. Serial cable not connected")
                     return False
 
                 # Check if rigctld is listening
                 if self.is_running():
-                    logger.info(f"rigctld started successfully (PID: {self.process.pid})")
+                    elapsed = time.time() - start_time
+                    logger.info(f"rigctld started successfully in {elapsed:.1f}s (PID: {self.process.pid})")
                     return True
-
-                # Log stderr periodically (non-blocking read)
-                if time.time() - last_check > 0.5:
-                    try:
-                        # Try to read any available stderr (non-blocking)
-                        import select
-                        if hasattr(select, 'select'):
-                            readable, _, _ = select.select([self.process.stderr], [], [], 0)
-                            if readable:
-                                line = self.process.stderr.readline()
-                                if line:
-                                    logger.debug(f"rigctld: {line.strip()}")
-                                    stderr_output.append(line)
-                    except:
-                        pass  # Non-blocking read not available
-
-                    last_check = time.time()
 
                 time.sleep(0.2)
 
@@ -255,20 +212,10 @@ class RigctldManager:
                 return True
 
             logger.error(f"rigctld failed to start within {timeout} seconds")
-
-            # Try to get stderr output
-            try:
-                # Give it a moment to write error messages
-                time.sleep(0.5)
-                if self.process.poll() is None:
-                    self.process.terminate()
-                stdout, stderr = self.process.communicate(timeout=2)
-                if stderr:
-                    logger.error(f"rigctld error output: {stderr}")
-                if stdout:
-                    logger.info(f"rigctld output: {stdout}")
-            except:
-                pass
+            logger.error("The process may still be initializing. Check:")
+            logger.error("  1. Radio is powered on and connected")
+            logger.error("  2. Serial port settings are correct")
+            logger.error("  3. No other program is using the radio")
 
             self.stop()
             return False
