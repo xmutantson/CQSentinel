@@ -211,6 +211,14 @@ class BandScanner:
                 logger.warning("Scan already in progress")
                 return
 
+            # Set SSB mode: LSB for 40m and below (≤10 MHz), USB for above 40m
+            ssb_mode = "LSB" if freq_start <= 10_000_000 else "USB"
+            try:
+                self.radio.set_mode(ssb_mode, 2400)
+                logger.info(f"Set mode to {ssb_mode} for {freq_start/1e6:.3f} MHz")
+            except Exception as e:
+                logger.warning(f"Failed to set mode to {ssb_mode}: {e}")
+
             # Initialize progress
             self.progress = ScanProgress(
                 state=ScanState.SCANNING,
@@ -239,7 +247,7 @@ class BandScanner:
 
             logger.info(
                 f"Started scan: {freq_start/1e6:.3f}-{freq_end/1e6:.3f} MHz, "
-                f"step={self.step_size_hz} Hz"
+                f"step={self.step_size_hz} Hz, mode={ssb_mode}"
             )
 
     def stop_scan(self):

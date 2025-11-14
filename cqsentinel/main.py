@@ -10,13 +10,6 @@ import traceback
 import atexit
 from pathlib import Path
 
-from PyQt5.QtWidgets import QApplication
-from PyQt5.QtCore import Qt
-
-from cqsentinel.config import get_config_manager, get_config
-from cqsentinel.utils.logging import setup_logging
-from cqsentinel.gui.splash_screen import SplashScreen
-
 logger = logging.getLogger(__name__)
 
 # Global reference to main window for cleanup
@@ -81,42 +74,54 @@ def main():
     """Main entry point"""
     global _main_window
 
-    # Load configuration
-    config_manager = get_config_manager()
-    config = config_manager.load()
-
-    # Setup logging
-    log_file = None
-    if config.config_dir:
-        log_dir = Path(config.config_dir) / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        log_file = str(log_dir / "cqsentinel.log")
-
-    setup_logging(log_level=config.log_level, log_file=log_file)
-
-    # Install global exception handler to catch crashes
-    sys.excepthook = excepthook
-
-    # Register cleanup handler for normal exit and crashes
-    atexit.register(cleanup_resources)
-
-    logger.info("=" * 60)
-    logger.info("CQSentinel starting...")
-    logger.info("=" * 60)
-
-    # Check for required components
-    check_dependencies()
-
     try:
-        # Create Qt application
+        # Import PyQt5 first (this is fast)
+        from PyQt5.QtWidgets import QApplication
+        from PyQt5.QtCore import Qt
+
+        # Create Qt application FIRST (very fast)
         app = QApplication(sys.argv)
         app.setApplicationName("CQSentinel")
         app.setOrganizationName("CQSentinel")
 
-        # Show splash screen immediately (before heavy imports)
+        # Show splash screen IMMEDIATELY (before any other imports)
+        from cqsentinel.gui.splash_screen import SplashScreen
         splash = SplashScreen()
-        splash.update_message("Loading application...")
-        app.processEvents()  # Update UI
+        splash.update_message("Starting CQSentinel...")
+        app.processEvents()  # Force UI update
+
+        # Now load configuration (after splash is visible)
+        splash.update_message("Loading configuration...")
+        app.processEvents()
+        from cqsentinel.config import get_config_manager, get_config
+        from cqsentinel.utils.logging import setup_logging
+
+        config_manager = get_config_manager()
+        config = config_manager.load()
+
+        # Setup logging
+        log_file = None
+        if config.config_dir:
+            log_dir = Path(config.config_dir) / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_file = str(log_dir / "cqsentinel.log")
+
+        setup_logging(log_level=config.log_level, log_file=log_file)
+
+        # Install global exception handler to catch crashes
+        sys.excepthook = excepthook
+
+        # Register cleanup handler for normal exit and crashes
+        atexit.register(cleanup_resources)
+
+        logger.info("=" * 60)
+        logger.info("CQSentinel starting...")
+        logger.info("=" * 60)
+
+        # Check for required components
+        splash.update_message("Checking dependencies...")
+        app.processEvents()
+        check_dependencies()
 
         # Import MainWindow after splash is shown (this is a slow import)
         splash.update_message("Loading modules...")

@@ -11,6 +11,7 @@ Provides the primary user interface with:
 
 import sys
 import logging
+import numpy as np
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QComboBox, QCheckBox,
@@ -169,6 +170,9 @@ class MainWindow(QMainWindow):
         self.band_scanner: BandScanner = None
         self.use_full_scanner = False  # Enable when Phase 2+ components ready
 
+        # Audio monitoring
+        self.last_audio_level = 0.0  # 0.0 to 1.0
+
         self.init_ui()
         self.setup_timers()
 
@@ -187,9 +191,13 @@ class MainWindow(QMainWindow):
             # Audio pipeline (denoiser + VAD)
             if not self.audio_pipeline:
                 self.log("  Initializing audio pipeline...")
-                denoiser = AudioDenoiser()
-                vad = VoiceActivityDetector()
-                self.audio_pipeline = AudioPipeline(denoiser=denoiser, vad=vad)
+                self.audio_pipeline = AudioPipeline(
+                    sample_rate=self.config.audio.sample_rate,
+                    denoise_level=self.config.audio.noise_reduction_level,
+                    vad_threshold=self.config.audio.vad_sensitivity,
+                    whisper_model=self.config.audio.whisper_model_size,
+                    enable_voice_id=True
+                )
 
             # SSB Auto-tuner
             if not self.auto_tuner:
@@ -229,6 +237,9 @@ class MainWindow(QMainWindow):
             self.log("✓ Advanced features initialized successfully!")
             self.log("  Full scanner with audio processing, AI transcription, and voice ID enabled.")
 
+            # Start audio monitoring for level meter
+            self.start_audio_monitoring()
+
             QMessageBox.information(self, "Advanced Features Enabled",
                 "All advanced features initialized:\n\n"
                 "✓ Audio processing (noise reduction, voice detection)\n"
@@ -246,6 +257,23 @@ class MainWindow(QMainWindow):
                 f"Could not initialize advanced features:\n{e}\n\n"
                 "Using basic scanner mode instead.")
             self.use_full_scanner = False
+
+    def start_audio_monitoring(self):
+        """Start audio stream for level monitoring"""
+        if not self.audio:
+            return
+
+        try:
+            def audio_callback(audio_chunk):
+                """Process audio chunks for level meter"""
+                # Calculate RMS level (0.0 to 1.0)
+                rms = np.sqrt(np.mean(audio_chunk**2))
+                self.last_audio_level = min(1.0, rms * 10)  # Scale up and clamp
+
+            self.audio.start_stream(audio_callback)
+            logger.info("Audio monitoring started for level meter")
+        except Exception as e:
+            logger.warning(f"Failed to start audio monitoring: {e}")
 
     def init_ui(self):
         """Initialize user interface"""
@@ -676,6 +704,10 @@ class MainWindow(QMainWindow):
                     self.smeter_label.setText(f"S{strength}")
                 else:
                     self.smeter_label.setText(f"S9+{strength-9}")
+
+            # Update audio level meter
+            audio_level_percent = int(self.last_audio_level * 100)
+            self.audio_meter.setValue(audio_level_percent)
 
         except RadioConnectionError:
             self.log("Lost connection to radio")
