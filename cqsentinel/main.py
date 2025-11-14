@@ -7,6 +7,7 @@ Main application entry point
 import sys
 import logging
 import traceback
+import atexit
 from pathlib import Path
 
 from PyQt5.QtWidgets import QApplication
@@ -19,6 +20,46 @@ from cqsentinel.gui.main_window import MainWindow
 
 logger = logging.getLogger(__name__)
 
+# Global reference to main window for cleanup
+_main_window = None
+
+
+def cleanup_resources():
+    """Cleanup all resources (rigctld, audio, etc.) on exit"""
+    global _main_window
+
+    if _main_window is None:
+        return
+
+    try:
+        logger.info("Cleaning up resources on exit...")
+
+        # Stop rigctld
+        if hasattr(_main_window, 'rigctld_manager') and _main_window.rigctld_manager:
+            logger.info("Stopping rigctld process...")
+            try:
+                _main_window.rigctld_manager.stop()
+            except Exception as e:
+                logger.error(f"Error stopping rigctld: {e}")
+
+        # Stop audio
+        if hasattr(_main_window, 'audio') and _main_window.audio:
+            try:
+                _main_window.audio.stop_stream()
+            except Exception as e:
+                logger.error(f"Error stopping audio: {e}")
+
+        # Disconnect radio
+        if hasattr(_main_window, 'radio') and _main_window.radio:
+            try:
+                _main_window.radio.disconnect()
+            except Exception as e:
+                logger.error(f"Error disconnecting radio: {e}")
+
+        logger.info("Resource cleanup complete")
+    except Exception as e:
+        logger.error(f"Error during cleanup: {e}")
+
 
 def excepthook(exc_type, exc_value, exc_tb):
     """Global exception handler to catch uncaught exceptions"""
@@ -28,12 +69,18 @@ def excepthook(exc_type, exc_value, exc_tb):
     logger.critical("=" * 60)
     logger.critical(error_msg)
     logger.critical("=" * 60)
+
+    # Clean up resources before crash
+    logger.critical("Attempting to clean up resources...")
+    cleanup_resources()
+
     # Call the default handler to ensure proper cleanup
     sys.__excepthook__(exc_type, exc_value, exc_tb)
 
 
 def main():
     """Main entry point"""
+    global _main_window
 
     # Load configuration
     config_manager = get_config_manager()
@@ -50,6 +97,9 @@ def main():
 
     # Install global exception handler to catch crashes
     sys.excepthook = excepthook
+
+    # Register cleanup handler for normal exit and crashes
+    atexit.register(cleanup_resources)
 
     logger.info("=" * 60)
     logger.info("CQSentinel starting...")
@@ -73,6 +123,7 @@ def main():
         splash.update_message("Initializing user interface...")
         app.processEvents()
         window = MainWindow()
+        _main_window = window  # Store globally for cleanup
 
         # Finish splash and show main window
         splash.finish_loading(window)
