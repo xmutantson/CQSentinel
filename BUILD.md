@@ -9,7 +9,12 @@ This guide explains how to build a self-contained Windows executable for CQSenti
 1. Install conda/radioconda
 2. Create `cqsentinel` environment
 3. Install all dependencies via `conda env update -f environment.yml`
-4. Verify all imports work (PyQt5, PyTorch, librosa, resemblyzer)
+4. **Install PyInstaller** (build tool, not included in environment.yml):
+   ```powershell
+   conda activate cqsentinel
+   pip install pyinstaller
+   ```
+5. Verify all imports work (PyQt5, PyTorch, librosa, resemblyzer)
 
 If you haven't done this yet, **stop here** and follow INSTALL.md first.
 
@@ -20,9 +25,12 @@ conda activate cqsentinel
 python -c "from PyQt5 import QtCore; print('✓ PyQt5')"
 python -c "import torch; print('✓ PyTorch')"
 python -c "from resemblyzer import VoiceEncoder; print('✓ Resemblyzer')"
+python -c "import PyInstaller; print('✓ PyInstaller')"
 ```
 
-If any fail, go back to INSTALL.md.
+If any fail:
+- PyQt5, PyTorch, Resemblyzer: Go back to INSTALL.md
+- PyInstaller: Run `pip install pyinstaller`
 
 ## Step-by-Step Build Process
 
