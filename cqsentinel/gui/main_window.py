@@ -187,9 +187,13 @@ class MainWindow(QMainWindow):
             # Audio pipeline (denoiser + VAD)
             if not self.audio_pipeline:
                 self.log("  Initializing audio pipeline...")
-                denoiser = AudioDenoiser()
-                vad = VoiceActivityDetector()
-                self.audio_pipeline = AudioPipeline(denoiser=denoiser, vad=vad)
+                self.audio_pipeline = AudioPipeline(
+                    sample_rate=self.config.audio.sample_rate,
+                    denoise_level=self.config.audio.noise_reduction_level,
+                    vad_threshold=self.config.audio.vad_sensitivity,
+                    whisper_model=self.config.audio.whisper_model_size,
+                    enable_voice_id=True
+                )
 
             # SSB Auto-tuner
             if not self.auto_tuner:
