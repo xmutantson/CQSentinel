@@ -40,7 +40,7 @@ def check_dependencies():
     print("🔍 Checking dependencies...")
 
     required = {
-        'pyinstaller': 'PyInstaller',
+        'PyInstaller': 'PyInstaller',
         'PyQt5': 'PyQt5',
     }
 
