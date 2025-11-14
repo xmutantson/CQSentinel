@@ -39,8 +39,8 @@ cd X:\Storage\Documents\CQSentinel\CQSentinel
 if (Test-Path build) { Remove-Item -Recurse -Force build }
 if (Test-Path dist) { Remove-Item -Recurse -Force dist }
 
-# 4. Build with PyInstaller
-pyinstaller cqsentinel.spec
+# 4. Build with build script (RECOMMENDED - auto-downloads Hamlib)
+python scripts/build_windows.py
 
 # 5. Test the executable
 .\dist\CQSentinel\CQSentinel.exe
@@ -51,42 +51,58 @@ Compress-Archive -Path dist\CQSentinel -DestinationPath CQSentinel-windows-porta
 
 **Output**: `dist/CQSentinel/CQSentinel.exe` (ready to distribute)
 
+**Important**: Always use `python scripts/build_windows.py` instead of running PyInstaller directly. The build script automatically downloads and bundles Hamlib (rigctld) with your application, ensuring zero-installation experience for end users.
+
 ---
 
 ## Build Methods
 
-### Method 1: Using Build Script (If Available)
+### Method 1: Using Build Script (RECOMMENDED)
 
-**Windows users:**
+**This is the ONLY recommended method for building CQSentinel.**
 
 ```powershell
 conda activate cqsentinel
-.\scripts\build_windows.bat
+python scripts/build_windows.py
 ```
 
 This will:
 - Check dependencies
+- **Automatically download Hamlib (rigctld) if not present**
+- Bundle Hamlib binaries with the executable
 - Build executable with PyInstaller
-- Create portable ZIP file
 - Output to `dist/CQSentinel/`
 
-### Method 2: Manual PyInstaller (Recommended)
+**Why use the build script?**
+- Ensures Hamlib is bundled (users won't need to install it separately)
+- Validates environment setup
+- Handles all build steps correctly
+- Provides clear error messages
+
+### Method 2: Manual PyInstaller (NOT RECOMMENDED)
+
+**WARNING**: Do NOT use this method unless you understand the consequences. Running PyInstaller directly will skip the Hamlib download step, resulting in an executable that fails at runtime.
 
 ```powershell
-# Make sure conda environment is activated!
+# ⚠️ This will NOT bundle Hamlib - executable will fail!
+# Use Method 1 instead!
+
 conda activate cqsentinel
-
-# Clean previous builds
-if (Test-Path build) { Remove-Item -Recurse -Force build }
-if (Test-Path dist) { Remove-Item -Recurse -Force dist }
-
-# Build with spec file
 pyinstaller cqsentinel.spec
-
-# Output: dist/CQSentinel/CQSentinel.exe
 ```
 
-### Method 3: Direct PyInstaller (without spec)
+**Why this doesn't work**:
+- Hamlib must be downloaded to `external/hamlib/` before building
+- PyInstaller bundles whatever exists in `external/hamlib/`
+- If that directory is empty, rigctld.exe won't be bundled
+- The executable will fail with "rigctld not found" error
+
+**Only use this if**:
+1. You've already run `python scripts/download_hamlib.py` manually
+2. You've verified `external/hamlib/bin/rigctld.exe` exists
+3. You're debugging the PyInstaller spec file
+
+### Method 3: Direct PyInstaller (ADVANCED - NOT RECOMMENDED)
 
 ```powershell
 conda activate cqsentinel
@@ -275,6 +291,33 @@ conda activate cqsentinel
 # Verify with:
 python -c "import PyQt5; print('OK')"
 ```
+
+### "rigctld not found" when running .exe
+
+**Error message**: "rigctld not found. Hamlib is bundled with CQSentinel but rigctld.exe was not found."
+
+**Cause**: You ran `pyinstaller cqsentinel.spec` directly instead of using the build script, so Hamlib was never downloaded.
+
+**Solution**:
+```powershell
+# 1. Clean previous build
+Remove-Item -Recurse -Force build, dist
+
+# 2. Use the correct build command
+conda activate cqsentinel
+python scripts/build_windows.py
+
+# This will download Hamlib automatically and bundle it
+```
+
+**Verification**:
+After building, verify Hamlib was bundled:
+```powershell
+# Should exist and contain rigctld.exe
+dir dist\CQSentinel\hamlib\bin\rigctld.exe
+```
+
+If the file exists, the executable will work correctly.
 
 ### "Failed to execute script" when running .exe
 
@@ -471,11 +514,13 @@ This prevents Windows SmartScreen warnings.
 
 **Prerequisites**: Follow INSTALL.md to set up conda environment with all dependencies
 
-**Build command**:
+**Build command (CORRECT)**:
 ```powershell
 conda activate cqsentinel
-pyinstaller cqsentinel.spec
+python scripts/build_windows.py
 ```
+
+**DO NOT use** `pyinstaller cqsentinel.spec` directly - it will skip Hamlib bundling!
 
 **Output files**:
 - Executable: `dist/CQSentinel/CQSentinel.exe`
@@ -485,7 +530,14 @@ pyinstaller cqsentinel.spec
 **Key points**:
 - ✅ Environment must be set up via INSTALL.md first
 - ✅ Always activate `cqsentinel` conda environment before building
+- ✅ **Use `python scripts/build_windows.py` to ensure Hamlib is bundled**
 - ✅ Test the .exe on a clean machine without Python installed
 - ✅ Use conda-forge packages to avoid compilation issues
 
-**Done!** You now have a distributable Windows executable.
+**What gets bundled automatically**:
+- All Python dependencies (PyQt5, PyTorch, librosa, etc.)
+- **Hamlib binaries (rigctld.exe and DLLs)** - downloaded automatically during build
+- Audio libraries
+- Application code and resources
+
+**Done!** You now have a distributable Windows executable with zero installation requirements for end users.
