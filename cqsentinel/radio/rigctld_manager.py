@@ -89,15 +89,19 @@ class RigctldManager:
         except (socket.error, ConnectionRefusedError):
             return False
 
-    def start(self, timeout: float = 10.0) -> bool:
+    def start(self, timeout: float = 30.0) -> bool:
         """
         Start rigctld daemon
 
         Args:
-            timeout: How long to wait for rigctld to start (seconds)
+            timeout: How long to wait for rigctld to start (seconds, default 30)
 
         Returns:
             True if rigctld is running (either already running or successfully started)
+
+        Note:
+            Some radios (like IC-705) may take 20+ seconds to start due to
+            initialization errors that are eventually ignored.
         """
         # Check if already running
         if self.is_running():

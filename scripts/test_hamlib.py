@@ -286,8 +286,8 @@ Common Model IDs:
                         help="Baud rate (default: 115200)")
     parser.add_argument("-a", "--address", type=str, default=None,
                         help="CI-V address in hex (e.g., 94), empty for default")
-    parser.add_argument("-t", "--timeout", type=float, default=15.0,
-                        help="Startup timeout in seconds (default: 15)")
+    parser.add_argument("-t", "--timeout", type=float, default=30.0,
+                        help="Startup timeout in seconds (default: 30)")
 
     args = parser.parse_args()
 
