@@ -4,81 +4,36 @@ This guide explains how to build a self-contained Windows executable for CQSenti
 
 ## Prerequisites
 
-### 1. Conda Environment (Recommended)
+**Before building, you MUST complete the development environment setup from INSTALL.md:**
 
-**If you haven't already, follow INSTALL.md first to set up your environment:**
+1. Install conda/radioconda
+2. Create `cqsentinel` environment
+3. Install all dependencies via `conda env update -f environment.yml`
+4. Verify all imports work (PyQt5, PyTorch, librosa, resemblyzer)
 
-```powershell
-# Create and activate conda environment
-conda create -n cqsentinel python=3.10
-conda activate cqsentinel
+If you haven't done this yet, **stop here** and follow INSTALL.md first.
 
-# Install all dependencies
-conda env update -f environment.yml
-```
-
-This is the **recommended method** because it handles all dependencies (including PyQt5, PyTorch, webrtcvad) with pre-built binaries.
-
-### 2. Verify Installation
-
-Before building, verify all imports work:
+**Quick verification** (should all show ✓):
 
 ```powershell
 conda activate cqsentinel
-
-# Test critical imports
-python -c "import torch; print('✓ PyTorch')"
 python -c "from PyQt5 import QtCore; print('✓ PyQt5')"
-python -c "import librosa; print('✓ librosa')"
+python -c "import torch; print('✓ PyTorch')"
 python -c "from resemblyzer import VoiceEncoder; print('✓ Resemblyzer')"
 ```
 
-All should show ✓ checkmarks. If any fail, go back to INSTALL.md.
-
-### 3. PyInstaller
-
-PyInstaller is already included in `environment.yml`, but if you need to install it manually:
-
-```powershell
-conda activate cqsentinel
-pip install pyinstaller pyinstaller-hooks-contrib
-```
-
-### 4. Inno Setup (Optional - for installer)
-
-Download from [jrsoftware.org/isinfo.php](https://jrsoftware.org/isinfo.php)
-
-Only needed if you want to create a Windows installer (.exe setup file).
-
----
-
-## Alternative: Using requirements.txt (Not Recommended)
-
-If you cannot use conda, you can try installing from `requirements.txt`:
-
-```bash
-# NOT RECOMMENDED - May require Visual Studio Build Tools
-pip install -r requirements.txt
-```
-
-**Warning**: This may fail on Windows because some packages (like webrtcvad) need C++ compilation. Use conda instead.
+If any fail, go back to INSTALL.md.
 
 ## Step-by-Step Build Process
 
-### Complete Workflow from Scratch
-
-Here's the full process from environment setup to distributable executable:
+**Assumes you've completed INSTALL.md and verified all imports work.**
 
 ```powershell
-# 1. Set up conda environment (if not already done)
-conda create -n cqsentinel python=3.10
+# 1. Activate your conda environment
 conda activate cqsentinel
-conda env update -f environment.yml
 
-# 2. Verify imports (all should show ✓)
-python -c "from PyQt5 import QtCore; print('✓ PyQt5')"
-python -c "import torch; print('✓ PyTorch')"
-python -c "from resemblyzer import VoiceEncoder; print('✓ Resemblyzer')"
+# 2. Navigate to project directory
+cd X:\Storage\Documents\CQSentinel\CQSentinel
 
 # 3. Clean previous builds (if any)
 if (Test-Path build) { Remove-Item -Recurse -Force build }
@@ -88,9 +43,9 @@ if (Test-Path dist) { Remove-Item -Recurse -Force dist }
 pyinstaller cqsentinel.spec
 
 # 5. Test the executable
-dist\CQSentinel\CQSentinel.exe
+.\dist\CQSentinel\CQSentinel.exe
 
-# 6. (Optional) Create portable ZIP
+# 6. (Optional) Create portable ZIP for distribution
 Compress-Archive -Path dist\CQSentinel -DestinationPath CQSentinel-windows-portable.zip
 ```
 
@@ -498,41 +453,25 @@ This prevents Windows SmartScreen warnings.
 
 ## Summary
 
-### Quick Build (Complete Steps)
+### Quick Reference
 
+**Prerequisites**: Follow INSTALL.md to set up conda environment with all dependencies
+
+**Build command**:
 ```powershell
-# 1. Set up environment (one-time)
-conda create -n cqsentinel python=3.10
 conda activate cqsentinel
-conda env update -f environment.yml
-
-# 2. Verify installation
-python -c "from PyQt5 import QtCore; print('✓ PyQt5')"
-python -c "import torch; print('✓ PyTorch')"
-
-# 3. Clean and build
-if (Test-Path build) { Remove-Item -Recurse -Force build }
-if (Test-Path dist) { Remove-Item -Recurse -Force dist }
 pyinstaller cqsentinel.spec
-
-# 4. Test
-.\dist\CQSentinel\CQSentinel.exe
-
-# 5. (Optional) Create ZIP
-Compress-Archive -Path dist\CQSentinel -DestinationPath CQSentinel-windows-portable.zip
 ```
 
-### Output Files
+**Output files**:
+- Executable: `dist/CQSentinel/CQSentinel.exe`
+- Portable ZIP: `CQSentinel-windows-portable.zip` (~350 MB without models)
+- Installer (optional): `Output/CQSentinel-Setup-0.1.0.exe`
 
-- **Executable**: `dist/CQSentinel/CQSentinel.exe`
-- **Portable ZIP**: `CQSentinel-windows-portable.zip` (~350 MB without models)
-- **Installer** (optional): `Output/CQSentinel-Setup-0.1.0.exe`
-
-### Key Points
-
-✅ **Always activate conda environment** before building
-✅ **Verify imports** before building to catch missing dependencies
-✅ **Test the .exe** on a clean machine without Python installed
-✅ **Use conda-forge packages** to avoid compilation issues
+**Key points**:
+- ✅ Environment must be set up via INSTALL.md first
+- ✅ Always activate `cqsentinel` conda environment before building
+- ✅ Test the .exe on a clean machine without Python installed
+- ✅ Use conda-forge packages to avoid compilation issues
 
 **Done!** You now have a distributable Windows executable.
