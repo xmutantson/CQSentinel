@@ -3,9 +3,15 @@ Logging configuration for CQSentinel
 """
 
 import logging
-import colorlog
 from pathlib import Path
 import sys
+
+# Try to import colorlog, fall back to standard logging if not available
+try:
+    import colorlog
+    HAS_COLORLOG = True
+except ImportError:
+    HAS_COLORLOG = False
 
 
 def setup_logging(log_level: str = "INFO", log_file: str = None) -> None:
@@ -16,17 +22,23 @@ def setup_logging(log_level: str = "INFO", log_file: str = None) -> None:
         log_level: Logging level (DEBUG, INFO, WARNING, ERROR)
         log_file: Optional file path for logging
     """
-    # Create formatter with colors for console
-    console_formatter = colorlog.ColoredFormatter(
-        "%(log_color)s%(levelname)-8s%(reset)s %(cyan)s%(name)s%(reset)s - %(message)s",
-        log_colors={
-            'DEBUG': 'blue',
-            'INFO': 'green',
-            'WARNING': 'yellow',
-            'ERROR': 'red',
-            'CRITICAL': 'red,bg_white',
-        }
-    )
+    # Create formatter with colors for console (if colorlog available)
+    if HAS_COLORLOG:
+        console_formatter = colorlog.ColoredFormatter(
+            "%(log_color)s%(levelname)-8s%(reset)s %(cyan)s%(name)s%(reset)s - %(message)s",
+            log_colors={
+                'DEBUG': 'blue',
+                'INFO': 'green',
+                'WARNING': 'yellow',
+                'ERROR': 'red',
+                'CRITICAL': 'red,bg_white',
+            }
+        )
+    else:
+        # Fall back to standard formatter
+        console_formatter = logging.Formatter(
+            "%(levelname)-8s %(name)s - %(message)s"
+        )
 
     # Console handler
     console_handler = logging.StreamHandler(sys.stdout)
