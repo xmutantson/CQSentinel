@@ -34,12 +34,12 @@ class RadioConfig:
 @dataclass
 class BandPlan:
     """Band plan configuration (in Hz)"""
-    band_160m: tuple = (1_800_000, 2_000_000)
-    band_80m: tuple = (3_700_000, 4_000_000)
-    band_40m: tuple = (7_125_000, 7_300_000)
-    band_20m: tuple = (14_150_000, 14_350_000)
-    band_15m: tuple = (21_200_000, 21_450_000)
-    band_10m: tuple = (28_300_000, 29_700_000)
+    band_160m: list = field(default_factory=lambda: [1_800_000, 2_000_000])
+    band_80m: list = field(default_factory=lambda: [3_700_000, 4_000_000])
+    band_40m: list = field(default_factory=lambda: [7_125_000, 7_300_000])
+    band_20m: list = field(default_factory=lambda: [14_150_000, 14_350_000])
+    band_15m: list = field(default_factory=lambda: [21_200_000, 21_450_000])
+    band_10m: list = field(default_factory=lambda: [28_300_000, 29_700_000])
 
     def get_band_edges(self, band_name: str) -> Optional[tuple]:
         """Get frequency edges for a band"""
@@ -171,7 +171,7 @@ class ConfigManager:
             os.makedirs(os.path.dirname(self.config_file), exist_ok=True)
 
             with open(self.config_file, 'w') as f:
-                yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+                yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
 
             logger.info(f"Configuration saved to {self.config_file}")
 
