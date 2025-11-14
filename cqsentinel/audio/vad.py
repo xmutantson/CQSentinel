@@ -4,12 +4,26 @@ Voice Activity Detection using Silero VAD
 Detects when speech is present in audio, ignoring silence and noise.
 """
 
-import torch
 import numpy as np
 import logging
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, TYPE_CHECKING
+
+# Lazy import for torch - only load when actually needed (saves ~10-15 seconds at startup)
+if TYPE_CHECKING:
+    import torch
 
 logger = logging.getLogger(__name__)
+
+_torch = None
+
+
+def _get_torch():
+    """Lazy import of torch (slow to load, ~10-15 seconds)"""
+    global _torch
+    if _torch is None:
+        import torch
+        _torch = torch
+    return _torch
 
 
 class VoiceActivityDetector:
@@ -51,7 +65,8 @@ class VoiceActivityDetector:
             return
 
         try:
-            logger.info("Loading Silero VAD model...")
+            logger.info("Loading Silero VAD model and PyTorch...")
+            torch = _get_torch()  # Lazy import torch here
 
             # Load Silero VAD
             model, utils = torch.hub.load(
@@ -91,6 +106,8 @@ class VoiceActivityDetector:
             return []
 
         try:
+            torch = _get_torch()  # Get torch for tensor conversion
+
             # Convert to tensor
             audio_tensor = torch.from_numpy(audio).float()
 

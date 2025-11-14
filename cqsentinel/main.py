@@ -9,9 +9,11 @@ import logging
 from pathlib import Path
 
 from PyQt5.QtWidgets import QApplication
+from PyQt5.QtCore import Qt
 
 from cqsentinel.config import get_config_manager, get_config
 from cqsentinel.utils.logging import setup_logging
+from cqsentinel.gui.splash_screen import SplashScreen
 from cqsentinel.gui.main_window import MainWindow
 
 logger = logging.getLogger(__name__)
@@ -45,8 +47,18 @@ def main():
     app.setApplicationName("CQSentinel")
     app.setOrganizationName("CQSentinel")
 
-    # Create and show main window
+    # Show splash screen immediately
+    splash = SplashScreen()
+    splash.update_message("Loading application...")
+    app.processEvents()  # Update UI
+
+    # Create main window (this loads heavy modules)
+    splash.update_message("Initializing user interface...")
+    app.processEvents()
     window = MainWindow()
+
+    # Finish splash and show main window
+    splash.finish_loading(window)
     window.show()
 
     logger.info("Main window displayed")
