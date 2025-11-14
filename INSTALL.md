@@ -18,6 +18,10 @@ cd X:\Storage\Documents\CQSentinel
 
 # Install all dependencies (including voice fingerprinting!)
 conda env update -f environment.yml
+
+# Fix: Remove obsolete typing package (incompatible with PyInstaller)
+# Note: Some pip packages incorrectly list it as a dependency, but Python 3.10 has typing built-in
+pip uninstall typing -y
 ```
 
 **That's it!** All dependencies including voice fingerprinting support are now installed.
@@ -339,6 +343,18 @@ Replace `<YOUR_USERNAME>` with your Windows username.
 
 # Restart terminal
 ```
+
+#### Error: "The 'typing' package is an obsolete backport and is incompatible with PyInstaller"
+
+**Cause**: Some pip packages (like `openai-whisper`) incorrectly depend on the obsolete `typing` backport package, even though Python 3.5+ has `typing` built-in.
+
+**Solution**:
+```powershell
+conda activate cqsentinel
+pip uninstall typing -y
+```
+
+**This is now included in INSTALL.md** and should be run automatically after `conda env update`.
 
 #### Error: "Failed building wheel for webrtcvad"
 

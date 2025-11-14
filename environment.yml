@@ -12,7 +12,7 @@ channels:
   - defaults
 
 dependencies:
-  - python>=3.10,<3.12
+  - python=3.10  # Pin to 3.10 for stability and PyInstaller compatibility
 
   # GUI (conda-forge has pre-built PyQt5)
   - pyqt=5.15  # PyQt5 from conda, more stable than PyQt6
@@ -66,6 +66,8 @@ dependencies:
     - resemblyzer>=0.1.1
     - noisereduce>=3.0.0
     - silero-vad>=4.0.0
+    # Note: openai-whisper may pull in obsolete 'typing' package as dependency
+    # If PyInstaller complains, run: pip uninstall typing -y
     - openai-whisper>=20230314
     - pyinstaller-hooks-contrib>=2023.6
     - pytest-qt>=4.2.0

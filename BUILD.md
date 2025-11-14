@@ -252,6 +252,20 @@ conda activate cqsentinel
 pip install pyinstaller pyinstaller-hooks-contrib
 ```
 
+### "The 'typing' package is an obsolete backport and is incompatible with PyInstaller"
+
+**Cause**: Some pip packages (like `openai-whisper`) incorrectly depend on the obsolete `typing` backport. Python 3.10 has `typing` built-in.
+
+**Solution**:
+```powershell
+conda activate cqsentinel
+pip uninstall typing -y
+# Then rebuild
+pyinstaller cqsentinel.spec
+```
+
+**Prevention**: This is automatically handled in INSTALL.md, but if you recreate your environment without following that guide, you may encounter this error.
+
 ### "ModuleNotFoundError" during build
 
 Make sure conda environment is activated:
