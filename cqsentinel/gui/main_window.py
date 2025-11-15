@@ -160,6 +160,7 @@ class MainWindow(QMainWindow):
     transcription_signal = pyqtSignal(float, str, str)  # freq_mhz, transcription, callsign
     audio_levels_signal = pyqtSignal(float, float)  # rms_level, peak_level
     voice_detection_signal = pyqtSignal(bool, float)  # has_speech, speech_ratio
+    log_signal = pyqtSignal(str)  # Log messages (thread-safe)
 
     def __init__(self):
         super().__init__()
@@ -241,6 +242,7 @@ class MainWindow(QMainWindow):
         self.transcription_signal.connect(self._handle_transcription)
         self.audio_levels_signal.connect(self._handle_audio_levels)
         self.voice_detection_signal.connect(self._handle_voice_detection)
+        self.log_signal.connect(self._handle_log)  # Thread-safe logging
 
         # Register audio consumers with broadcaster
         self.audio_broadcaster.register_consumer(self.audio_level_meter.process_chunk)
@@ -1474,19 +1476,24 @@ class MainWindow(QMainWindow):
             logger.error(f"Error handling voice detection: {e}", exc_info=True)
 
     def log(self, message: str):
-        """Add message to log panel with smart auto-scroll"""
+        """Add message to log panel (thread-safe via signal)"""
+        # Emit signal instead of directly manipulating widgets
+        # This allows log() to be called from any thread
+        self.log_signal.emit(message)
+        logger.info(message)
+
+    def _handle_log(self, message: str):
+        """Handle log message on main thread (slot for log_signal)"""
         # Check if user has scrolled up (not at bottom)
         scrollbar = self.log_text.verticalScrollBar()
         at_bottom = scrollbar.value() >= (scrollbar.maximum() - 10)  # Within 10 pixels of bottom
 
-        # Add message
+        # Add message to text widget (safe on main thread)
         self.log_text.append(message)
 
         # Auto-scroll only if user was at bottom (hasn't scrolled up to read)
         if at_bottom:
             scrollbar.setValue(scrollbar.maximum())
-
-        logger.info(message)
 
     def update_freq_display(self, freq_hz: int):
         """Update frequency display from scan thread (prevents race condition)"""
