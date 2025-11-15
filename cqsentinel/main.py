@@ -126,9 +126,13 @@ def main():
         # Check if AI models need to be downloaded
         splash.update_message("Checking AI models...")
         app.processEvents()
-        from cqsentinel.gui.model_downloader_dialog import check_models_exist, ModelDownloaderDialog, setup_cache_paths
+        from cqsentinel.gui.model_downloader_dialog import check_models_exist, ModelDownloaderDialog, setup_cache_paths, setup_packages_path
 
-        # Setup cache paths first (ensures models go to user home directory)
+        # Setup packages path first (for packaged builds)
+        # This ensures pip-installed packages can be imported
+        setup_packages_path()
+
+        # Setup cache paths (ensures models go to correct directory)
         setup_cache_paths()
 
         if not check_models_exist():

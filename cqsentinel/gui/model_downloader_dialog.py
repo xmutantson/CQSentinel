@@ -2,12 +2,14 @@
 Model Downloader Dialog
 
 Downloads AI models at application startup with progress feedback.
+Also handles on-demand installation of AI dependencies for packaged builds.
 """
 
 import os
 import sys
 import logging
 import threading
+import subprocess
 from pathlib import Path
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QLabel, QProgressBar, QPushButton,
@@ -69,8 +71,251 @@ def setup_cache_paths():
     logger.info(f"  TORCH_HOME: {os.environ['TORCH_HOME']}")
 
 
+def setup_packages_path():
+    """
+    Setup packages directory for packaged builds.
+
+    For packaged builds, creates a 'packages' directory next to the .exe
+    and adds it to sys.path so pip-installed packages can be imported.
+
+    Returns:
+        Path: Path to packages directory, or None if not a packaged build
+    """
+    if getattr(sys, 'frozen', False):
+        # Packaged build - create packages dir next to exe
+        base_path = Path(sys.executable).parent
+        packages_dir = base_path / "packages"
+        packages_dir.mkdir(parents=True, exist_ok=True)
+
+        # Add to sys.path if not already there
+        packages_path_str = str(packages_dir)
+        if packages_path_str not in sys.path:
+            sys.path.insert(0, packages_path_str)
+            logger.info(f"Added packages directory to sys.path: {packages_dir}")
+
+        return packages_dir
+    return None
+
+
+def check_dependencies_installed():
+    """
+    Check if AI dependencies are installed.
+
+    Returns:
+        list: List of missing package names (empty if all installed)
+    """
+    dependencies = {
+        'faster-whisper': 'faster_whisper',
+        'torch': 'torch',
+        'resemblyzer': 'resemblyzer'
+    }
+
+    missing = []
+    for package_name, import_name in dependencies.items():
+        try:
+            __import__(import_name)
+            logger.debug(f"✓ {package_name} is installed")
+        except ImportError:
+            logger.debug(f"✗ {package_name} is missing")
+            missing.append(package_name)
+
+    return missing
+
+
+def ensure_pip_available(progress_callback=None):
+    """
+    Ensure pip is available in the Python environment.
+
+    On fresh Windows machines or packaged builds, pip might not be available.
+    This function bootstraps pip using ensurepip if needed.
+
+    Args:
+        progress_callback: Optional callback(message: str) for progress updates
+
+    Returns:
+        bool: True if pip is available, False if failed to bootstrap
+    """
+    try:
+        # Check if pip is available
+        result = subprocess.run(
+            [sys.executable, '-m', 'pip', '--version'],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+
+        if result.returncode == 0:
+            if progress_callback:
+                progress_callback("✓ pip is available")
+            logger.info(f"pip is available: {result.stdout.strip()}")
+            return True
+
+    except Exception as e:
+        logger.warning(f"pip check failed: {e}")
+
+    # pip not available, try to bootstrap it
+    if progress_callback:
+        progress_callback("Installing pip (package installer)...")
+
+    try:
+        # Try using ensurepip (included in Python 3.4+)
+        result = subprocess.run(
+            [sys.executable, '-m', 'ensurepip', '--default-pip'],
+            capture_output=True,
+            text=True,
+            timeout=60
+        )
+
+        if result.returncode == 0:
+            if progress_callback:
+                progress_callback("✓ pip installed successfully")
+            logger.info("pip bootstrapped using ensurepip")
+            return True
+        else:
+            logger.warning(f"ensurepip failed: {result.stderr}")
+
+    except Exception as e:
+        logger.warning(f"ensurepip failed: {e}")
+
+    # ensurepip failed, try downloading get-pip.py
+    if progress_callback:
+        progress_callback("Downloading pip installer...")
+
+    try:
+        import urllib.request
+        import tempfile
+
+        # Download get-pip.py
+        get_pip_url = "https://bootstrap.pypa.io/get-pip.py"
+        with tempfile.NamedTemporaryFile(mode='wb', suffix='.py', delete=False) as tmp_file:
+            tmp_path = tmp_file.name
+
+            if progress_callback:
+                progress_callback(f"  Downloading from {get_pip_url}...")
+
+            with urllib.request.urlopen(get_pip_url, timeout=30) as response:
+                tmp_file.write(response.read())
+
+        if progress_callback:
+            progress_callback("  Running pip installer...")
+
+        # Run get-pip.py
+        result = subprocess.run(
+            [sys.executable, tmp_path],
+            capture_output=True,
+            text=True,
+            timeout=120
+        )
+
+        # Clean up temp file
+        try:
+            Path(tmp_path).unlink()
+        except:
+            pass
+
+        if result.returncode == 0:
+            if progress_callback:
+                progress_callback("✓ pip installed successfully")
+            logger.info("pip bootstrapped using get-pip.py")
+            return True
+        else:
+            logger.error(f"get-pip.py failed: {result.stderr}")
+
+    except Exception as e:
+        logger.error(f"Failed to download/run get-pip.py: {e}")
+
+    if progress_callback:
+        progress_callback("✗ Failed to install pip")
+        progress_callback("  Cannot proceed without pip")
+        progress_callback("  Please run from source installation instead")
+
+    return False
+
+
+def install_dependencies(packages_dir, progress_callback=None):
+    """
+    Install AI dependencies using pip subprocess.
+
+    Args:
+        packages_dir: Directory to install packages to
+        progress_callback: Optional callback(message: str) for progress updates
+
+    Returns:
+        bool: True if all packages installed successfully, False otherwise
+    """
+    # Ensure pip is available first
+    if not ensure_pip_available(progress_callback):
+        if progress_callback:
+            progress_callback("")
+            progress_callback("Cannot install dependencies without pip.")
+            progress_callback("Please install Python with pip support.")
+        return False
+
+    if progress_callback:
+        progress_callback("")
+
+    # List of packages to install
+    # Note: Installing torch is large (~700 MB), so we install CPU-only version
+    dependencies = [
+        'faster-whisper',
+        'torch',  # Will get CPU version
+        'torchaudio',
+        'resemblyzer'
+    ]
+
+    for dep in dependencies:
+        if progress_callback:
+            progress_callback(f"Installing {dep}...")
+            progress_callback(f"  (This may take several minutes, please wait)")
+
+        try:
+            # Use pip to install to specific directory
+            cmd = [
+                sys.executable, '-m', 'pip', 'install',
+                '--target', str(packages_dir),
+                '--upgrade',
+                dep
+            ]
+
+            logger.info(f"Running: {' '.join(cmd)}")
+
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=600  # 10 minute timeout per package (torch is large)
+            )
+
+            if result.returncode == 0:
+                if progress_callback:
+                    progress_callback(f"  ✓ {dep} installed successfully")
+                logger.info(f"✓ {dep} installed successfully")
+            else:
+                if progress_callback:
+                    progress_callback(f"  ✗ {dep} failed to install")
+                    progress_callback(f"  Error: {result.stderr[:200]}")  # First 200 chars
+                logger.error(f"✗ {dep} failed: {result.stderr}")
+                return False
+
+        except subprocess.TimeoutExpired:
+            if progress_callback:
+                progress_callback(f"  ✗ {dep} installation timed out")
+            logger.error(f"✗ {dep} installation timed out")
+            return False
+        except Exception as e:
+            if progress_callback:
+                progress_callback(f"  ✗ {dep} error: {e}")
+            logger.error(f"✗ {dep} error: {e}")
+            return False
+
+    if progress_callback:
+        progress_callback("✓ All dependencies installed successfully!")
+
+    return True
+
+
 class ModelDownloadThread(QThread):
-    """Background thread for downloading models"""
+    """Background thread for setting up AI features (dependencies + models)"""
 
     progress_signal = pyqtSignal(str)  # Status message
     finished_signal = pyqtSignal(bool)  # Success/failure
@@ -80,7 +325,7 @@ class ModelDownloadThread(QThread):
         self.model_size = model_size
 
     def run(self):
-        """Download all models"""
+        """Download all models (and install dependencies if needed)"""
         try:
             # Setup cache paths first
             setup_cache_paths()
@@ -90,6 +335,38 @@ class ModelDownloadThread(QThread):
             if is_frozen:
                 self.progress_signal.emit("Running in packaged mode")
                 self.progress_signal.emit("")
+
+                # Setup packages directory for packaged builds
+                packages_dir = setup_packages_path()
+
+                # Check if dependencies are installed
+                self.progress_signal.emit("Checking AI dependencies...")
+                missing_deps = check_dependencies_installed()
+
+                if missing_deps:
+                    self.progress_signal.emit(f"Missing dependencies: {', '.join(missing_deps)}")
+                    self.progress_signal.emit("")
+                    self.progress_signal.emit("Installing AI dependencies on demand...")
+                    self.progress_signal.emit("(This will download ~800 MB, please be patient)")
+                    self.progress_signal.emit("")
+
+                    # Install dependencies
+                    if not install_dependencies(packages_dir, progress_callback=self.progress_signal.emit):
+                        self.progress_signal.emit("")
+                        self.progress_signal.emit("✗ Dependency installation failed")
+                        self.progress_signal.emit("")
+                        self.progress_signal.emit("You can:")
+                        self.progress_signal.emit("1. Click 'Retry' to try again")
+                        self.progress_signal.emit("2. Click 'Skip' to continue in basic mode")
+                        self.finished_signal.emit(False)
+                        return
+
+                    self.progress_signal.emit("")
+                    self.progress_signal.emit("✓ All dependencies installed successfully!")
+                    self.progress_signal.emit("")
+                else:
+                    self.progress_signal.emit("✓ All dependencies already installed")
+                    self.progress_signal.emit("")
 
             success = True
             failures = []
@@ -117,13 +394,22 @@ class ModelDownloadThread(QThread):
             else:
                 self.progress_signal.emit(f"⚠ Failed to download: {', '.join(failures)}")
                 self.progress_signal.emit("")
-                self.progress_signal.emit("This may indicate missing dependencies.")
-                self.progress_signal.emit("")
-                self.progress_signal.emit("If running from source, install dependencies:")
-                self.progress_signal.emit("  pip install faster-whisper torch resemblyzer")
-                self.progress_signal.emit("")
-                self.progress_signal.emit("You can continue without these models.")
-                self.progress_signal.emit("Advanced features will be limited.")
+
+                if is_frozen:
+                    self.progress_signal.emit("Model download failed even though dependencies are installed.")
+                    self.progress_signal.emit("")
+                    self.progress_signal.emit("You can:")
+                    self.progress_signal.emit("1. Click 'Retry' to try again")
+                    self.progress_signal.emit("2. Click 'Skip' to continue in basic mode")
+                else:
+                    # Source build - show installation instructions
+                    self.progress_signal.emit("This may indicate missing dependencies.")
+                    self.progress_signal.emit("")
+                    self.progress_signal.emit("Install required packages:")
+                    self.progress_signal.emit("  pip install faster-whisper torch resemblyzer")
+                    self.progress_signal.emit("")
+                    self.progress_signal.emit("You can continue without these models.")
+                    self.progress_signal.emit("Advanced features will be limited.")
 
             self.finished_signal.emit(success)
 
@@ -235,9 +521,10 @@ class ModelDownloadThread(QThread):
 
 class ModelDownloaderDialog(QDialog):
     """
-    Dialog for downloading AI models at startup.
+    Dialog for setting up AI features at startup.
 
-    Shows progress and allows user to continue or skip if download fails.
+    Automatically installs dependencies (if needed) and downloads AI models.
+    Shows progress and allows user to continue or skip if setup fails.
     """
 
     def __init__(self, model_size="small", parent=None):
@@ -246,7 +533,7 @@ class ModelDownloaderDialog(QDialog):
         self.model_size = model_size
         self.download_success = False
 
-        self.setWindowTitle("Downloading AI Models")
+        self.setWindowTitle("Setting Up AI Features")
         self.setModal(True)
         self.setMinimumWidth(500)
         self.setMinimumHeight(350)
@@ -265,14 +552,14 @@ class ModelDownloaderDialog(QDialog):
         layout = QVBoxLayout()
 
         # Title
-        title_label = QLabel("Downloading AI Models")
+        title_label = QLabel("Setting Up AI Features")
         title_label.setStyleSheet("font-size: 16px; font-weight: bold;")
         layout.addWidget(title_label)
 
         # Description
         desc_label = QLabel(
-            "CQSentinel requires AI models for speech recognition and voice fingerprinting.\n"
-            "This is a one-time download (~500 MB total)."
+            "CQSentinel requires AI dependencies and models for speech recognition and voice fingerprinting.\n"
+            "If needed, dependencies will be installed automatically (~800 MB total)."
         )
         desc_label.setWordWrap(True)
         layout.addWidget(desc_label)
@@ -287,7 +574,7 @@ class ModelDownloaderDialog(QDialog):
         layout.addWidget(self.status_label)
 
         # Log output
-        log_label = QLabel("Download Log:")
+        log_label = QLabel("Setup Log:")
         layout.addWidget(log_label)
 
         self.log_text = QTextEdit()
@@ -309,8 +596,8 @@ class ModelDownloaderDialog(QDialog):
         self.setLayout(layout)
 
     def start_download(self):
-        """Start model download in background thread"""
-        self.log("Starting model download...")
+        """Start AI setup in background thread (dependencies + models)"""
+        self.log("Starting AI setup...")
 
         # Create download thread
         self.download_thread = ModelDownloadThread(model_size=self.model_size)
@@ -326,7 +613,7 @@ class ModelDownloaderDialog(QDialog):
         self.status_label.setText(message)
 
     def on_finished(self, success: bool):
-        """Handle download completion"""
+        """Handle setup completion"""
         self.download_success = success
 
         # Stop indeterminate progress bar
@@ -334,7 +621,7 @@ class ModelDownloaderDialog(QDialog):
         self.progress_bar.setValue(100 if success else 0)
 
         if success:
-            self.status_label.setText("✓ Download complete!")
+            self.status_label.setText("✓ Setup complete!")
             self.continue_btn.setText("Continue")
             self.continue_btn.setEnabled(True)
             self.skip_btn.setEnabled(False)
@@ -351,7 +638,7 @@ class ModelDownloaderDialog(QDialog):
 
             threading.Thread(target=auto_close, daemon=True).start()
         else:
-            self.status_label.setText("⚠ Download failed - see log for details")
+            self.status_label.setText("⚠ Setup failed - see log for details")
             self.continue_btn.setText("Retry")
             self.continue_btn.setEnabled(True)
             self.skip_btn.setEnabled(True)
@@ -363,30 +650,30 @@ class ModelDownloaderDialog(QDialog):
                 # Show message for packaged build
                 QMessageBox.warning(
                     self,
-                    "Model Download Failed",
-                    "AI models failed to download.\n\n"
-                    "This packaged build may be missing required dependencies.\n\n"
-                    "You can continue in basic mode (frequency scanning only)\n"
-                    "or install from source with:\n"
-                    "  pip install faster-whisper torch resemblyzer\n\n"
-                    "See the download log for details."
+                    "AI Setup Failed",
+                    "Failed to install AI dependencies or download models.\n\n"
+                    "You can:\n"
+                    "1. Click 'Retry' to try again\n"
+                    "2. Click 'Skip' to continue in basic mode\n"
+                    "   (radio control and frequency scanning only)\n\n"
+                    "Check the setup log for details."
                 )
             else:
                 # Show message for source installation
                 QMessageBox.warning(
                     self,
-                    "Model Download Failed",
-                    "Some AI models failed to download.\n\n"
+                    "AI Setup Failed",
+                    "Failed to download AI models.\n\n"
                     "Make sure dependencies are installed:\n"
                     "  pip install faster-whisper torch resemblyzer\n\n"
                     "You can continue in basic mode or retry after installing.\n\n"
-                    "Check the download log for details."
+                    "Check the setup log for details."
                 )
 
     def log(self, message: str):
         """Add message to log"""
         self.log_text.append(message)
-        logger.info(f"Model download: {message}")
+        logger.info(f"AI setup: {message}")
 
 
 def check_models_exist():
