@@ -507,28 +507,15 @@ class MainWindow(QMainWindow):
                                                     transcriber = self.audio_pipeline.transcriber
                                                     voice_embedder = self.voice_embedder
                                                     voice_db = self.voice_db
-                                                    # IMPORTANT: Don't pass signal directly! Create a wrapper to avoid Qt threading issues
+                                                    transcription_signal = self.transcription_signal
                                                     transcription_lock = self._transcription_lock
                                                     max_concurrent = self._max_concurrent_transcriptions
 
-                                                    # Thread-safe wrapper for emitting transcription signal
-                                                    # This avoids passing the signal object itself which is bound to MainWindow
-                                                    def emit_transcription(freq_mhz, text, callsign):
-                                                        self.transcription_signal.emit(freq_mhz, text, callsign)
-
                                                     # Transcribe in background thread
                                                     def transcribe_async_timeout(audio_to_transcribe, sample_rate, transcriber,
-                                                                                voice_embedder, voice_db, emit_callback,
+                                                                                voice_embedder, voice_db, transcription_signal,
                                                                                 transcription_lock, active_transcriptions_ref,
                                                                                 max_concurrent):
-                                                        # CRITICAL: Temporarily disable logging handlers to avoid Qt threading issues
-                                                        # faster-whisper and httpx log from this thread, triggering Qt timer errors
-                                                        import logging
-                                                        root_logger = logging.getLogger()
-                                                        saved_handlers = root_logger.handlers[:]
-                                                        for handler in saved_handlers:
-                                                            root_logger.removeHandler(handler)
-
                                                         try:
                                                             logger.info(f"Transcribing {len(audio_to_transcribe)/sample_rate:.1f}s of speech (timeout)...")
 
@@ -606,7 +593,7 @@ class MainWindow(QMainWindow):
                                                                             # Multiple speakers - show all
                                                                             text = f"[{'/'.join(unique_labels)}] {text}"
 
-                                                                    emit_callback(
+                                                                    transcription_signal.emit(
                                                                         0.0,  # freq_mhz (not scanning, just monitoring)
                                                                         text,
                                                                         None  # callsign (extract later if needed)
@@ -616,10 +603,6 @@ class MainWindow(QMainWindow):
                                                         except Exception as e:
                                                             logger.error(f"Transcription failed: {e}", exc_info=True)
                                                         finally:
-                                                            # Restore logging handlers
-                                                            for handler in saved_handlers:
-                                                                root_logger.addHandler(handler)
-
                                                             # Decrement active count
                                                             with transcription_lock:
                                                                 active_transcriptions_ref[0] -= 1
@@ -632,7 +615,7 @@ class MainWindow(QMainWindow):
                                                     threading.Thread(
                                                         target=transcribe_async_timeout,
                                                         args=(full_audio.copy(), sample_rate, transcriber,
-                                                              voice_embedder, voice_db, emit_transcription,
+                                                              voice_embedder, voice_db, transcription_signal,
                                                               transcription_lock, active_ref, max_concurrent),
                                                         daemon=True
                                                     ).start()
@@ -680,27 +663,15 @@ class MainWindow(QMainWindow):
                                                     transcriber = self.audio_pipeline.transcriber
                                                     voice_embedder = self.voice_embedder
                                                     voice_db = self.voice_db
-                                                    # IMPORTANT: Don't pass signal directly! Create a wrapper to avoid Qt threading issues
+                                                    transcription_signal = self.transcription_signal
                                                     transcription_lock = self._transcription_lock
                                                     max_concurrent = self._max_concurrent_transcriptions
 
-                                                    # Thread-safe wrapper for emitting transcription signal
-                                                    def emit_transcription_pause(freq_mhz, text, callsign):
-                                                        self.transcription_signal.emit(freq_mhz, text, callsign)
-
                                                     # Transcribe in background thread
                                                     def transcribe_async(audio_to_transcribe, sample_rate, transcriber,
-                                                                        voice_embedder, voice_db, emit_callback,
+                                                                        voice_embedder, voice_db, transcription_signal,
                                                                         transcription_lock, active_transcriptions_ref,
                                                                         max_concurrent):
-                                                        # CRITICAL: Temporarily disable logging handlers to avoid Qt threading issues
-                                                        # faster-whisper and httpx log from this thread, triggering Qt timer errors
-                                                        import logging
-                                                        root_logger = logging.getLogger()
-                                                        saved_handlers = root_logger.handlers[:]
-                                                        for handler in saved_handlers:
-                                                            root_logger.removeHandler(handler)
-
                                                         try:
                                                             logger.info(f"Transcribing {len(audio_to_transcribe)/sample_rate:.1f}s of speech...")
 
@@ -778,7 +749,7 @@ class MainWindow(QMainWindow):
                                                                             # Multiple speakers - show all
                                                                             text = f"[{'/'.join(unique_labels)}] {text}"
 
-                                                                    emit_callback(
+                                                                    transcription_signal.emit(
                                                                         0.0,  # freq_mhz (not scanning, just monitoring)
                                                                         text,
                                                                         None  # callsign (extract later if needed)
@@ -788,10 +759,6 @@ class MainWindow(QMainWindow):
                                                         except Exception as e:
                                                             logger.error(f"Transcription failed: {e}", exc_info=True)
                                                         finally:
-                                                            # Restore logging handlers
-                                                            for handler in saved_handlers:
-                                                                root_logger.addHandler(handler)
-
                                                             # Decrement active count
                                                             with transcription_lock:
                                                                 active_transcriptions_ref[0] -= 1
@@ -804,7 +771,7 @@ class MainWindow(QMainWindow):
                                                     threading.Thread(
                                                         target=transcribe_async,
                                                         args=(full_audio.copy(), sample_rate, transcriber,
-                                                              voice_embedder, voice_db, emit_transcription_pause,
+                                                              voice_embedder, voice_db, transcription_signal,
                                                               transcription_lock, active_ref, max_concurrent),
                                                         daemon=True
                                                     ).start()
