@@ -480,44 +480,58 @@ class MainWindow(QMainWindow):
                                                     try:
                                                         logger.info(f"Transcribing {len(audio_to_transcribe)/self.audio.sample_rate:.1f}s of speech (timeout)...")
 
-                                                        # Identify speaker(s) using voice embeddings
-                                                        speaker_label = None
+                                                        # Identify speaker(s) using sliding window voice embeddings
+                                                        speaker_labels = []
                                                         if self.voice_embedder and self.voice_db:
                                                             try:
-                                                                # Get speech timestamps for embedding extraction
-                                                                speech_timestamps = self.audio_pipeline.vad.detect_speech(
+                                                                # Detect speaker changes using sliding window analysis
+                                                                speaker_segments = self.voice_embedder.detect_speaker_changes(
                                                                     audio_to_transcribe,
-                                                                    return_seconds=False  # Need samples for extraction
+                                                                    sample_rate=self.audio.sample_rate,
+                                                                    window_duration=2.5,
+                                                                    stride=1.0,
+                                                                    similarity_threshold=0.75
                                                                 )
 
-                                                                if speech_timestamps:
-                                                                    # Extract voice embeddings
-                                                                    voice_segments = self.voice_embedder.extract_embeddings(
-                                                                        audio_to_transcribe,
-                                                                        speech_timestamps,
-                                                                        sample_rate=self.audio.sample_rate
-                                                                    )
-
-                                                                    # Try to match first voice segment
-                                                                    if voice_segments:
-                                                                        match = self.voice_db.find_matching_voice(voice_segments[0].embedding)
+                                                                # Map each speaker segment to voice ID
+                                                                for seg in speaker_segments:
+                                                                    if seg['embedding'] is not None:
+                                                                        # Try to match against voice database
+                                                                        match = self.voice_db.find_matching_voice(seg['embedding'])
                                                                         if match:
                                                                             voice_id, similarity = match
                                                                             operator = self.voice_db.get_operator(voice_id)
-                                                                            speaker_label = operator.callsign or f"Speaker {voice_id[:8]}"
-                                                                            logger.debug(f"Matched voice: {speaker_label} (similarity: {similarity:.2f})")
+                                                                            label = operator.callsign or f"Speaker {voice_id[:8]}"
+                                                                            logger.debug(
+                                                                                f"Matched voice at {seg['start']:.1f}-{seg['end']:.1f}s: "
+                                                                                f"{label} (similarity: {similarity:.2f})"
+                                                                            )
                                                                         else:
                                                                             # New speaker - add to database
                                                                             voice_id = self.voice_db.add_operator(
-                                                                                voice_segments[0].embedding,
+                                                                                seg['embedding'],
                                                                                 metadata={'first_heard': time.time()}
                                                                             )
-                                                                            # Use short ID for display
-                                                                            speaker_label = f"Speaker {voice_id[:8]}"
-                                                                            logger.debug(f"New speaker detected: {speaker_label}")
+                                                                            label = f"Speaker {voice_id[:8]}"
+                                                                            logger.debug(f"New speaker at {seg['start']:.1f}-{seg['end']:.1f}s: {label}")
+
+                                                                        speaker_labels.append({
+                                                                            'start': seg['start'],
+                                                                            'end': seg['end'],
+                                                                            'label': label,
+                                                                            'voice_id': voice_id
+                                                                        })
+
+                                                                # Log speaker changes if multiple speakers detected
+                                                                unique_speakers = len(set(s['voice_id'] for s in speaker_labels))
+                                                                if unique_speakers > 1:
+                                                                    logger.info(
+                                                                        f"Detected {unique_speakers} different speakers in segment "
+                                                                        f"({', '.join(set(s['label'] for s in speaker_labels))})"
+                                                                    )
 
                                                             except Exception as e:
-                                                                logger.debug(f"Voice ID failed: {e}")
+                                                                logger.debug(f"Speaker detection failed: {e}")
 
                                                         transcripts = self.audio_pipeline.transcriber.transcribe(
                                                             audio_to_transcribe,
@@ -525,13 +539,20 @@ class MainWindow(QMainWindow):
                                                             vad_filter=False  # We already did VAD
                                                         )
 
-                                                        # Emit transcriptions for display with speaker label
+                                                        # Emit transcriptions for display with speaker label(s)
                                                         for transcript in transcripts:
                                                             if transcript.text.strip():
                                                                 # Prefix with speaker label if available
                                                                 text = transcript.text
-                                                                if speaker_label:
-                                                                    text = f"[{speaker_label}] {text}"
+                                                                if speaker_labels:
+                                                                    # Get unique speaker labels
+                                                                    unique_labels = list(set(s['label'] for s in speaker_labels))
+                                                                    if len(unique_labels) == 1:
+                                                                        # Single speaker
+                                                                        text = f"[{unique_labels[0]}] {text}"
+                                                                    else:
+                                                                        # Multiple speakers - show all
+                                                                        text = f"[{'/'.join(unique_labels)}] {text}"
 
                                                                 self.transcription_signal.emit(
                                                                     0.0,  # freq_mhz (not scanning, just monitoring)
@@ -579,44 +600,58 @@ class MainWindow(QMainWindow):
                                                     try:
                                                         logger.info(f"Transcribing {len(audio_to_transcribe)/self.audio.sample_rate:.1f}s of speech...")
 
-                                                        # Identify speaker(s) using voice embeddings
-                                                        speaker_label = None
+                                                        # Identify speaker(s) using sliding window voice embeddings
+                                                        speaker_labels = []
                                                         if self.voice_embedder and self.voice_db:
                                                             try:
-                                                                # Get speech timestamps for embedding extraction
-                                                                speech_timestamps = self.audio_pipeline.vad.detect_speech(
+                                                                # Detect speaker changes using sliding window analysis
+                                                                speaker_segments = self.voice_embedder.detect_speaker_changes(
                                                                     audio_to_transcribe,
-                                                                    return_seconds=False  # Need samples for extraction
+                                                                    sample_rate=self.audio.sample_rate,
+                                                                    window_duration=2.5,
+                                                                    stride=1.0,
+                                                                    similarity_threshold=0.75
                                                                 )
 
-                                                                if speech_timestamps:
-                                                                    # Extract voice embeddings
-                                                                    voice_segments = self.voice_embedder.extract_embeddings(
-                                                                        audio_to_transcribe,
-                                                                        speech_timestamps,
-                                                                        sample_rate=self.audio.sample_rate
-                                                                    )
-
-                                                                    # Try to match first voice segment
-                                                                    if voice_segments:
-                                                                        match = self.voice_db.find_matching_voice(voice_segments[0].embedding)
+                                                                # Map each speaker segment to voice ID
+                                                                for seg in speaker_segments:
+                                                                    if seg['embedding'] is not None:
+                                                                        # Try to match against voice database
+                                                                        match = self.voice_db.find_matching_voice(seg['embedding'])
                                                                         if match:
                                                                             voice_id, similarity = match
                                                                             operator = self.voice_db.get_operator(voice_id)
-                                                                            speaker_label = operator.callsign or f"Speaker {voice_id[:8]}"
-                                                                            logger.debug(f"Matched voice: {speaker_label} (similarity: {similarity:.2f})")
+                                                                            label = operator.callsign or f"Speaker {voice_id[:8]}"
+                                                                            logger.debug(
+                                                                                f"Matched voice at {seg['start']:.1f}-{seg['end']:.1f}s: "
+                                                                                f"{label} (similarity: {similarity:.2f})"
+                                                                            )
                                                                         else:
                                                                             # New speaker - add to database
                                                                             voice_id = self.voice_db.add_operator(
-                                                                                voice_segments[0].embedding,
+                                                                                seg['embedding'],
                                                                                 metadata={'first_heard': time.time()}
                                                                             )
-                                                                            # Use short ID for display
-                                                                            speaker_label = f"Speaker {voice_id[:8]}"
-                                                                            logger.debug(f"New speaker detected: {speaker_label}")
+                                                                            label = f"Speaker {voice_id[:8]}"
+                                                                            logger.debug(f"New speaker at {seg['start']:.1f}-{seg['end']:.1f}s: {label}")
+
+                                                                        speaker_labels.append({
+                                                                            'start': seg['start'],
+                                                                            'end': seg['end'],
+                                                                            'label': label,
+                                                                            'voice_id': voice_id
+                                                                        })
+
+                                                                # Log speaker changes if multiple speakers detected
+                                                                unique_speakers = len(set(s['voice_id'] for s in speaker_labels))
+                                                                if unique_speakers > 1:
+                                                                    logger.info(
+                                                                        f"Detected {unique_speakers} different speakers in segment "
+                                                                        f"({', '.join(set(s['label'] for s in speaker_labels))})"
+                                                                    )
 
                                                             except Exception as e:
-                                                                logger.debug(f"Voice ID failed: {e}")
+                                                                logger.debug(f"Speaker detection failed: {e}")
 
                                                         transcripts = self.audio_pipeline.transcriber.transcribe(
                                                             audio_to_transcribe,
@@ -624,13 +659,20 @@ class MainWindow(QMainWindow):
                                                             vad_filter=False  # We already did VAD
                                                         )
 
-                                                        # Emit transcriptions for display with speaker label
+                                                        # Emit transcriptions for display with speaker label(s)
                                                         for transcript in transcripts:
                                                             if transcript.text.strip():
                                                                 # Prefix with speaker label if available
                                                                 text = transcript.text
-                                                                if speaker_label:
-                                                                    text = f"[{speaker_label}] {text}"
+                                                                if speaker_labels:
+                                                                    # Get unique speaker labels
+                                                                    unique_labels = list(set(s['label'] for s in speaker_labels))
+                                                                    if len(unique_labels) == 1:
+                                                                        # Single speaker
+                                                                        text = f"[{unique_labels[0]}] {text}"
+                                                                    else:
+                                                                        # Multiple speakers - show all
+                                                                        text = f"[{'/'.join(unique_labels)}] {text}"
 
                                                                 self.transcription_signal.emit(
                                                                     0.0,  # freq_mhz (not scanning, just monitoring)
