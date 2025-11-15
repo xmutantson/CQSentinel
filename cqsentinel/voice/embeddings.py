@@ -62,10 +62,13 @@ class VoiceEmbedder:
         """Lazy-load the Resemblyzer model."""
         if self.encoder is None:
             try:
+                logger.info("[EMBEDDER] About to import resemblyzer.VoiceEncoder...")
                 from resemblyzer import VoiceEncoder
-                logger.info("Loading Resemblyzer model...")
+                logger.info("[EMBEDDER] Import successful")
+
+                logger.info("[EMBEDDER] Loading Resemblyzer model (may download ~60MB on first use)...")
                 self.encoder = VoiceEncoder()
-                logger.info("Resemblyzer model loaded successfully")
+                logger.info("[EMBEDDER] ✓ Resemblyzer model loaded successfully")
             except ImportError:
                 logger.error(
                     "Resemblyzer not installed. Install with: pip install resemblyzer"
