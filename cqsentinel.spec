@@ -215,12 +215,13 @@ a = Analysis(
         'pytest',      # Testing framework not needed in exe
         'sphinx',      # Documentation not needed
         '_pytest',
-        # Torch modules we explicitly don't need
-        'torch.distributed',
-        'torch.testing',
-        # NOTE: torch.cuda must be included even for CPU-only builds
-        # PyTorch's initialization checks for CUDA availability by importing torch.cuda
-        # Excluding it causes "No module named 'torch.cuda'" errors at runtime
+        # NOTE: Cannot exclude any torch.* modules from PyInstaller builds!
+        # PyTorch's initialization imports various submodules to detect capabilities:
+        # - torch.cuda (checks CUDA availability)
+        # - torch.distributed (checks distributed training support)
+        # - torch.testing (internal checks)
+        # Excluding ANY of these causes "No module named 'torch.X'" errors at runtime
+        # even if we're only using CPU-only inference mode.
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
