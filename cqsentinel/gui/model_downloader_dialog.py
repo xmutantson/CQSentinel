@@ -520,27 +520,48 @@ class ModelDownloadThread(QThread):
     def _download_resemblyzer(self):
         """Download Resemblyzer model"""
         try:
-            self.progress_signal.emit("  Downloading Resemblyzer (~20 MB)...")
-
-            # Set up torch hub directory based on frozen/source
             import torch
-            if getattr(sys, 'frozen', False):
-                # Packaged - use models dir next to exe
-                torch_hub_dir = Path(sys.executable).parent / "models" / "torch" / "hub"
-            else:
-                # Source - use cache
-                torch_hub_dir = Path.home() / ".cache" / "torch" / "hub"
+            import sys
+            import io
 
-            torch.hub.set_dir(str(torch_hub_dir))
+            # CRITICAL: PyInstaller sets sys.stderr and sys.stdout to None in frozen builds
+            # This breaks torch operations that write progress or debugging info
+            # Solution: Redirect to StringIO instead
+            original_stderr = sys.stderr
+            original_stdout = sys.stdout
 
-            # Import and initialize encoder (downloads model if needed)
-            from resemblyzer import VoiceEncoder
+            if sys.stderr is None:
+                sys.stderr = io.StringIO()
+                logger.info("Restored sys.stderr for resemblyzer (was None in frozen build)")
+            if sys.stdout is None:
+                sys.stdout = io.StringIO()
+                logger.info("Restored sys.stdout for resemblyzer (was None in frozen build)")
 
-            # Initialize encoder (downloads model if needed)
-            encoder = VoiceEncoder()
+            try:
+                self.progress_signal.emit("  Downloading Resemblyzer (~20 MB)...")
 
-            self.progress_signal.emit("  ✓ Resemblyzer downloaded")
-            return True
+                # Set up torch hub directory based on frozen/source
+                if getattr(sys, 'frozen', False):
+                    # Packaged - use models dir next to exe
+                    torch_hub_dir = Path(sys.executable).parent / "models" / "torch" / "hub"
+                else:
+                    # Source - use cache
+                    torch_hub_dir = Path.home() / ".cache" / "torch" / "hub"
+
+                torch.hub.set_dir(str(torch_hub_dir))
+
+                # Import and initialize encoder (downloads model if needed)
+                from resemblyzer import VoiceEncoder
+
+                # Initialize encoder (downloads model if needed)
+                encoder = VoiceEncoder()
+
+                self.progress_signal.emit("  ✓ Resemblyzer downloaded")
+                return True
+            finally:
+                # Restore original stderr and stdout
+                sys.stderr = original_stderr
+                sys.stdout = original_stdout
 
         except ImportError as e:
             self.progress_signal.emit(f"  ✗ resemblyzer or torch not installed: {e}")
