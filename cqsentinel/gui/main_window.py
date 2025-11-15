@@ -197,6 +197,13 @@ class MainWindow(QMainWindow):
         self._speech_ratio_smoothed = 0.0
         self._speech_ratio_alpha = 0.3  # Smoothing factor (0.3 = 30% new, 70% old)
 
+        # Transcription buffering (accumulate audio during speech, transcribe on pauses)
+        self._transcription_buffer = []  # List of denoised audio chunks
+        self._is_speaking = False  # Track if currently speaking
+        self._silence_buffers = 0  # Count consecutive silent buffers
+        self._min_transcription_duration = 2.0  # Minimum 2 seconds before transcribing
+        self._max_silence_buffers = 2  # Transcribe after 2 consecutive silent buffers (2 seconds of silence)
+
         # Band map visualization (always available)
         self.band_map_widgets = {}  # Dictionary of BandMapWidget instances per band
         self.band_maps = {}  # Dictionary of BandMapState instances per band
@@ -413,7 +420,8 @@ class MainWindow(QMainWindow):
                                 # Emit signal for voice detection (thread-safe) with smoothed ratio
                                 self.voice_detection_signal.emit(has_speech, self._speech_ratio_smoothed)
 
-                                # === STEP 3: Create denoised audio and transcribe if speech detected ===
+                                # === STEP 3: Create denoised audio ===
+                                # Always denoise when we have speech, regardless of transcription
                                 if has_speech:
                                     speech_detected_count[0] += 1
 
@@ -421,7 +429,7 @@ class MainWindow(QMainWindow):
                                         # Denoise the buffered audio
                                         denoised = self.audio_pipeline.denoiser.denoise(buffered_audio)
 
-                                        # Broadcast denoised audio
+                                        # Broadcast denoised audio for real-time monitoring
                                         denoised_chunk = AudioChunk(
                                             stage=AudioStage.DENOISED,
                                             data=denoised,
@@ -443,38 +451,66 @@ class MainWindow(QMainWindow):
                                                 f"(speech_ratio: {speech_ratio:.2%}, buffer: {result.get('duration', 1.0):.2f}s)"
                                             )
 
-                                        # === STEP 4: Transcribe the denoised audio ===
-                                        # Run transcription in background thread (Whisper is slow)
-                                        def transcribe_async():
-                                            try:
-                                                # Transcribe denoised audio
-                                                # No need for vad_filter=True - we already did VAD above!
-                                                # (vad_filter requires onnxruntime which may not be installed)
-                                                transcripts = self.audio_pipeline.transcriber.transcribe(
-                                                    denoised,
-                                                    sample_rate=self.audio.sample_rate,
-                                                    vad_filter=False
-                                                )
-
-                                                # Emit transcriptions for display
-                                                for transcript in transcripts:
-                                                    if transcript.text.strip():  # Skip empty transcripts
-                                                        self.transcription_signal.emit(
-                                                            0.0,  # freq_mhz (not scanning, just monitoring)
-                                                            transcript.text,
-                                                            None  # callsign (extract later if needed)
-                                                        )
-                                                        logger.info(f"Transcribed: {transcript.text}")
-
-                                            except Exception as e:
-                                                logger.error(f"Transcription failed: {e}", exc_info=True)
-
-                                        # Run in background to avoid blocking audio callback
-                                        import threading
-                                        threading.Thread(target=transcribe_async, daemon=True).start()
+                                        # === STEP 4: Accumulate audio for transcription ===
+                                        # Add denoised audio to transcription buffer
+                                        self._transcription_buffer.append(denoised)
+                                        self._is_speaking = True
+                                        self._silence_buffers = 0
 
                                     except Exception as e:
                                         logger.error(f"Denoising failed: {e}", exc_info=True)
+
+                                else:
+                                    # No speech detected
+                                    if self._is_speaking:
+                                        # We were speaking, now silence - count it
+                                        self._silence_buffers += 1
+
+                                        # If we've had enough silence, transcribe accumulated audio
+                                        if self._silence_buffers >= self._max_silence_buffers:
+                                            # Check if we have enough audio to transcribe
+                                            total_duration = len(self._transcription_buffer)  # seconds (1 buffer = 1 second)
+
+                                            if total_duration >= self._min_transcription_duration:
+                                                # Concatenate all buffered audio
+                                                full_audio = np.concatenate(self._transcription_buffer)
+
+                                                # Transcribe in background thread
+                                                def transcribe_async(audio_to_transcribe):
+                                                    try:
+                                                        logger.info(f"Transcribing {len(audio_to_transcribe)/self.audio.sample_rate:.1f}s of speech...")
+
+                                                        transcripts = self.audio_pipeline.transcriber.transcribe(
+                                                            audio_to_transcribe,
+                                                            sample_rate=self.audio.sample_rate,
+                                                            vad_filter=False  # We already did VAD
+                                                        )
+
+                                                        # Emit transcriptions for display
+                                                        for transcript in transcripts:
+                                                            if transcript.text.strip():
+                                                                self.transcription_signal.emit(
+                                                                    0.0,  # freq_mhz (not scanning, just monitoring)
+                                                                    transcript.text,
+                                                                    None  # callsign (extract later if needed)
+                                                                )
+                                                                logger.info(f"Transcribed: {transcript.text}")
+
+                                                    except Exception as e:
+                                                        logger.error(f"Transcription failed: {e}", exc_info=True)
+
+                                                # Run in background
+                                                import threading
+                                                threading.Thread(
+                                                    target=transcribe_async,
+                                                    args=(full_audio.copy(),),  # Copy to avoid race condition
+                                                    daemon=True
+                                                ).start()
+
+                                            # Clear buffer and reset state
+                                            self._transcription_buffer.clear()
+                                            self._is_speaking = False
+                                            self._silence_buffers = 0
 
                                 # Periodic diagnostics every 10 buffers
                                 if buffers_processed[0] % 10 == 0:
