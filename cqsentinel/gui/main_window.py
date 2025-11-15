@@ -192,6 +192,7 @@ class TranscriptionWorker(QObject):
             import logging
             import sys
             import io
+            import os
             from logging.handlers import QueueHandler
 
             # Configure thread-safe logging using QueueHandler
@@ -232,8 +233,25 @@ class TranscriptionWorker(QObject):
                 # In frozen builds, sys.stdout/stderr are Qt-wrapped and cause threading violations
                 saved_stdout = sys.stdout
                 saved_stderr = sys.stderr
-                sys.stdout = io.StringIO()  # Capture stdout
-                sys.stderr = io.StringIO()  # Capture stderr
+                sys.stdout = io.StringIO()  # Capture stdout (Python level)
+                sys.stderr = io.StringIO()  # Capture stderr (Python level)
+
+                # CRITICAL: Also redirect at OS level for C++ libraries (ctranslate2, PyTorch)
+                # C++ code writes directly to file descriptors 1/2, bypassing Python's sys.stdout/stderr
+                saved_stdout_fd = None
+                saved_stderr_fd = None
+                devnull_fd = None
+                try:
+                    # Duplicate original file descriptors
+                    saved_stdout_fd = os.dup(1)  # Duplicate stdout fd
+                    saved_stderr_fd = os.dup(2)  # Duplicate stderr fd
+                    # Redirect to devnull at OS level
+                    devnull_fd = os.open(os.devnull, os.O_WRONLY)
+                    os.dup2(devnull_fd, 1)  # Redirect stdout fd to devnull
+                    os.dup2(devnull_fd, 2)  # Redirect stderr fd to devnull
+                except (OSError, AttributeError):
+                    # OS-level redirection failed (shouldn't happen, but fallback gracefully)
+                    pass
 
                 try:
                     logger.info(f"Transcribing {len(self._audio)/self._sample_rate:.1f}s of speech...")
@@ -312,7 +330,26 @@ class TranscriptionWorker(QObject):
 
                     self.transcription_complete.emit()
                 finally:
-                    # Restore stdout/stderr
+                    # Restore OS-level file descriptors
+                    if saved_stdout_fd is not None:
+                        try:
+                            os.dup2(saved_stdout_fd, 1)  # Restore stdout fd
+                            os.close(saved_stdout_fd)
+                        except (OSError, AttributeError):
+                            pass
+                    if saved_stderr_fd is not None:
+                        try:
+                            os.dup2(saved_stderr_fd, 2)  # Restore stderr fd
+                            os.close(saved_stderr_fd)
+                        except (OSError, AttributeError):
+                            pass
+                    if devnull_fd is not None:
+                        try:
+                            os.close(devnull_fd)
+                        except (OSError, AttributeError):
+                            pass
+
+                    # Restore Python-level stdout/stderr
                     sys.stdout = saved_stdout
                     sys.stderr = saved_stderr
 
