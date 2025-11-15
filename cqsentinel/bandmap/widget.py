@@ -80,6 +80,9 @@ class BandMapWidget(QWidget):
         self.drag_start_pos = None
         self.drag_start_center_freq = None
 
+        # Current tuning indicator
+        self.current_tuning_freq = None  # Current radio frequency (for scanning indicator)
+
         self._init_ui()
 
         logger.info("BandMapWidget initialized")
@@ -209,6 +212,9 @@ class BandMapWidget(QWidget):
         # Draw stations
         self._draw_stations(painter, width, height)
 
+        # Draw tuning indicator (if set)
+        self._draw_tuning_indicator(painter, width, height)
+
         painter.end()
 
     def _draw_frequency_grid(self, painter: QPainter, width: int, height: int):
@@ -249,7 +255,7 @@ class BandMapWidget(QWidget):
             # Draw frequency label
             freq_mhz = freq / 1e6
             label = f"{freq_mhz:.3f}"
-            painter.setPen(QColor(150, 150, 150))
+            painter.setPen(QColor(255, 255, 255))  # White text for better visibility
             painter.drawText(x - 30, height - 5, label)
             painter.setPen(pen)
 
@@ -323,7 +329,7 @@ class BandMapWidget(QWidget):
             font.setBold(False)
             font.setPointSize(7)
             painter.setFont(font)
-            painter.setPen(color)
+            painter.setPen(QColor(255, 255, 255))  # White text for better visibility
             status_text = station.display_status
             painter.drawText(text_x, y + self.marker_size + 12, status_text)
 
@@ -680,3 +686,47 @@ class BandMapWidget(QWidget):
         """Toggle signal strength indicator display."""
         self.show_signal_strength = not self.show_signal_strength
         self.update()
+
+    def set_tuning_frequency(self, frequency_hz: Optional[float]):
+        """
+        Set the current tuning frequency to display an indicator line.
+
+        Args:
+            frequency_hz: Current radio frequency in Hz (None to hide indicator)
+        """
+        self.current_tuning_freq = frequency_hz
+        self.update()
+
+    def _draw_tuning_indicator(self, painter: QPainter, width: int, height: int):
+        """
+        Draw a vertical line indicating the current tuning frequency.
+
+        Args:
+            painter: QPainter instance
+            width: Widget width
+            height: Widget height
+        """
+        if self.current_tuning_freq is None:
+            return
+
+        # Check if frequency is within visible range
+        freq_min_visible, freq_max_visible = self.get_visible_freq_range()
+        if self.current_tuning_freq < freq_min_visible or self.current_tuning_freq > freq_max_visible:
+            return
+
+        # Calculate x position
+        x = self._freq_to_x(self.current_tuning_freq, width)
+
+        # Draw bright indicator line
+        pen = QPen(QColor(255, 255, 0), 2)  # Yellow, 2px wide
+        pen.setStyle(Qt.PenStyle.DashLine)
+        painter.setPen(pen)
+        painter.drawLine(x, 0, x, height)
+
+        # Draw label at top
+        painter.setPen(QColor(255, 255, 0))
+        font = QFont("Monospace", 8, QFont.Weight.Bold)
+        painter.setFont(font)
+        freq_mhz = self.current_tuning_freq / 1e6
+        label = f"▼ {freq_mhz:.4f}"
+        painter.drawText(x - 40, 15, label)

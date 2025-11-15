@@ -295,13 +295,30 @@ class MainWindow(QMainWindow):
 
         try:
             def audio_callback(audio_chunk):
-                """Process audio chunks for level meter"""
+                """Process audio chunks for level meter and voice detection"""
                 # Calculate RMS level (0.0 to 1.0)
                 rms = np.sqrt(np.mean(audio_chunk**2))
                 self.last_audio_level = min(1.0, rms * 10)  # Scale up and clamp
 
+                # If audio pipeline is available, check for voice
+                if self.audio_pipeline:
+                    try:
+                        result = self.audio_pipeline.process_quick(audio_chunk, check_voice_only=True)
+                        has_speech = result.get('has_speech', False)
+                        speech_ratio = result.get('speech_ratio', 0.0)
+
+                        # Update voice detection UI
+                        if has_speech:
+                            self.voice_detected_label.setStyleSheet("color: green; font-size: 20px;")
+                            self.speech_ratio_bar.setValue(int(speech_ratio * 100))
+                        else:
+                            self.voice_detected_label.setStyleSheet("color: gray; font-size: 20px;")
+                            self.speech_ratio_bar.setValue(0)
+                    except Exception as e:
+                        logger.debug(f"Voice detection check failed: {e}")
+
             self.audio.start_stream(audio_callback)
-            logger.info("Audio monitoring started for level meter")
+            logger.info("Audio monitoring started for level meter and voice detection")
         except Exception as e:
             logger.warning(f"Failed to start audio monitoring: {e}")
 
@@ -326,10 +343,13 @@ class MainWindow(QMainWindow):
         # Radio status panel
         main_layout.addWidget(self.create_radio_panel())
 
-        # Band map and station detail panel (side by side)
-        bandmap_layout = QHBoxLayout()
+        # Main content area: 2 columns
+        content_layout = QHBoxLayout()
 
-        # Left side: Stacked band maps (70% width)
+        # LEFT COLUMN: Band maps + Activity log
+        left_column = QVBoxLayout()
+
+        # Stacked band maps
         bandmaps_container = QWidget()
         bandmaps_layout = QVBoxLayout(bandmaps_container)
         bandmaps_layout.setContentsMargins(0, 0, 0, 0)
@@ -355,26 +375,33 @@ class MainWindow(QMainWindow):
                 # Add to layout
                 bandmaps_layout.addWidget(band_map_widget)
 
-        # Don't add stretch - we'll manage heights dynamically
-        # bandmaps_layout.addStretch()
-
         # Make scrollable
         self.bandmaps_scroll_area = QScrollArea()
         self.bandmaps_scroll_area.setWidget(bandmaps_container)
         self.bandmaps_scroll_area.setWidgetResizable(True)
         self.bandmaps_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        bandmap_layout.addWidget(self.bandmaps_scroll_area, stretch=7)
+        left_column.addWidget(self.bandmaps_scroll_area, stretch=6)
 
-        # Station detail panel (right side, 30% width)
+        # Activity log (below band maps, same width)
+        left_column.addWidget(self.create_log_panel(), stretch=2)
+
+        # RIGHT COLUMN: Station detail + Pipeline status
+        right_column = QVBoxLayout()
+
+        # Station detail panel (top right)
         self.station_detail_panel = StationDetailPanel()
         self.station_detail_panel.tune_requested.connect(self.on_station_clicked)
         self.station_detail_panel.mark_worked_requested.connect(self.on_mark_station_worked)
-        bandmap_layout.addWidget(self.station_detail_panel, stretch=3)
+        right_column.addWidget(self.station_detail_panel, stretch=3)
 
-        main_layout.addLayout(bandmap_layout)
+        # Pipeline status panel (bottom right)
+        right_column.addWidget(self.create_pipeline_status_panel(), stretch=5)
 
-        # Log/transcript panel
-        main_layout.addWidget(self.create_log_panel())
+        # Add columns to content layout
+        content_layout.addLayout(left_column, stretch=17)
+        content_layout.addLayout(right_column, stretch=3)
+
+        main_layout.addLayout(content_layout)
 
         # Status bar
         self.status_bar = QStatusBar()
@@ -552,8 +579,51 @@ class MainWindow(QMainWindow):
 
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
-        self.log_text.setMaximumHeight(200)
         layout.addWidget(self.log_text)
+
+        group.setLayout(layout)
+        return group
+
+    def create_pipeline_status_panel(self) -> QGroupBox:
+        """Create realtime pipeline status panel"""
+        group = QGroupBox("Pipeline Status")
+        layout = QVBoxLayout()
+
+        # Voice detection status
+        status_layout = QHBoxLayout()
+        status_layout.addWidget(QLabel("Voice Detected:"))
+        self.voice_detected_label = QLabel("●")
+        self.voice_detected_label.setStyleSheet("color: gray; font-size: 20px;")
+        status_layout.addWidget(self.voice_detected_label)
+        status_layout.addStretch()
+        layout.addLayout(status_layout)
+
+        # Audio level for voice
+        voice_level_layout = QHBoxLayout()
+        voice_level_layout.addWidget(QLabel("Speech Ratio:"))
+        self.speech_ratio_bar = QProgressBar()
+        self.speech_ratio_bar.setRange(0, 100)
+        self.speech_ratio_bar.setValue(0)
+        self.speech_ratio_bar.setFormat("%p%")
+        voice_level_layout.addWidget(self.speech_ratio_bar)
+        layout.addLayout(voice_level_layout)
+
+        # Transcription display
+        layout.addWidget(QLabel("Recent Transcriptions:"))
+        self.transcription_text = QTextEdit()
+        self.transcription_text.setReadOnly(True)
+        self.transcription_text.setFont(QFont("Monospace", 9))
+        self.transcription_text.setPlaceholderText("Transcriptions will appear here when voice is detected...")
+        layout.addWidget(self.transcription_text)
+
+        # Scanning status
+        scan_status_layout = QHBoxLayout()
+        scan_status_layout.addWidget(QLabel("Scan Status:"))
+        self.scan_status_label = QLabel("Idle")
+        self.scan_status_label.setStyleSheet("color: gray;")
+        scan_status_layout.addWidget(self.scan_status_label)
+        scan_status_layout.addStretch()
+        layout.addLayout(scan_status_layout)
 
         group.setLayout(layout)
         return group
@@ -701,6 +771,7 @@ class MainWindow(QMainWindow):
 
             # Start scanner
             self.log(f"Starting scan on bands: {', '.join(enabled_bands)}")
+            self.update_scan_status("Starting scan...", "yellow")
 
             if self.use_full_scanner and self.audio_pipeline:
                 # Use full-featured BandScanner with all Phase 2-8 features
@@ -711,7 +782,24 @@ class MainWindow(QMainWindow):
                 self.log("  ✓ SSB auto-centering")
                 self.log("  ✓ Contest logic (callsign extraction)")
 
-                # Initialize BandScanner
+                # Initialize BandScanner with transcription callback
+                def on_station_detected_callback(station):
+                    self.log(f"STATION: {station.callsign if hasattr(station, 'callsign') else station}")
+                    # If station has transcripts, display them
+                    if hasattr(station, 'transcripts') and station.transcripts:
+                        for transcript in station.transcripts[-3:]:  # Last 3
+                            self.add_transcription(
+                                station.frequency_mhz,
+                                transcript,
+                                station.callsign if hasattr(station, 'callsign') else None
+                            )
+
+                def on_progress_update_callback(prog):
+                    status_text = f"Scanning: {prog.progress_percent:.1f}% ({prog.current_frequency/1e6:.3f} MHz)"
+                    self.update_scan_status(status_text, "green")
+                    if prog.progress_percent > 0:
+                        self.log(f"Progress: {prog.progress_percent:.1f}%")
+
                 self.band_scanner = BandScanner(
                     radio_controller=self.radio,
                     audio_capture=self.audio,
@@ -721,8 +809,8 @@ class MainWindow(QMainWindow):
                     callsign_extractor=self.callsign_extractor,
                     behavior_analyzer=self.behavior_analyzer,
                     band_map=self.band_map,
-                    on_station_detected=lambda station: self.log(f"STATION: {station}"),
-                    on_progress_update=lambda prog: self.log(f"Progress: {prog.progress_percent:.1f}%")
+                    on_station_detected=on_station_detected_callback,
+                    on_progress_update=on_progress_update_callback
                 )
 
                 # Queue up all bands to scan
@@ -762,6 +850,7 @@ class MainWindow(QMainWindow):
         else:
             # Stop scanner
             self.log("Stopping scan...")
+            self.update_scan_status("Stopping...", "yellow")
             if self.band_scanner:
                 self.band_scanner.stop_scan()
                 self.band_scanner = None
@@ -769,6 +858,7 @@ class MainWindow(QMainWindow):
                 self.scan_thread.stop()
                 self.scan_thread.wait(3000)  # Wait up to 3 seconds
 
+            self.update_scan_status("Idle", "gray")
             self.scan_btn.setText("Start Scan")
             self.connect_btn.setEnabled(True)
             for cb in self.band_checkboxes.values():
@@ -777,6 +867,7 @@ class MainWindow(QMainWindow):
     def on_scan_finished(self):
         """Called when scan completes"""
         self.log("Scan finished")
+        self.update_scan_status("Scan complete", "green")
         self.scan_btn.setText("Start Scan")
         self.connect_btn.setEnabled(True)
         for cb in self.band_checkboxes.values():
@@ -792,6 +883,9 @@ class MainWindow(QMainWindow):
             # Get frequency
             freq = self.radio.get_frequency()
             self.freq_label.setText(f"{freq/1e6:.4f} MHz")
+
+            # Update tuning indicators on all band maps
+            self._update_tuning_indicators(freq)
 
             # Get mode (less frequently to reduce load)
             if hasattr(self, '_mode_update_counter'):
@@ -820,13 +914,92 @@ class MainWindow(QMainWindow):
             self.disconnect_radio()
 
     def log(self, message: str):
-        """Add message to log panel"""
+        """Add message to log panel with smart auto-scroll"""
+        # Check if user has scrolled up (not at bottom)
+        scrollbar = self.log_text.verticalScrollBar()
+        at_bottom = scrollbar.value() >= (scrollbar.maximum() - 10)  # Within 10 pixels of bottom
+
+        # Add message
         self.log_text.append(message)
+
+        # Auto-scroll only if user was at bottom (hasn't scrolled up to read)
+        if at_bottom:
+            scrollbar.setValue(scrollbar.maximum())
+
         logger.info(message)
 
     def update_freq_display(self, freq_hz: int):
         """Update frequency display from scan thread (prevents race condition)"""
         self.freq_label.setText(f"{freq_hz/1e6:.4f} MHz")
+        # Update tuning indicators
+        self._update_tuning_indicators(freq_hz)
+
+    def _update_tuning_indicators(self, freq_hz: float):
+        """
+        Update tuning indicator on all band map widgets.
+
+        Args:
+            freq_hz: Current radio frequency in Hz
+        """
+        # Update tuning indicator for each band
+        for band_name, band_widget in self.band_map_widgets.items():
+            # Check if frequency falls within this band's range
+            if band_name in BAND_PROFILES:
+                profile = BAND_PROFILES[band_name]
+                if profile.freq_start <= freq_hz <= profile.freq_end:
+                    # Frequency is in this band - show indicator
+                    band_widget.set_tuning_frequency(freq_hz)
+                else:
+                    # Frequency is not in this band - hide indicator
+                    band_widget.set_tuning_frequency(None)
+            else:
+                band_widget.set_tuning_frequency(None)
+
+    def add_transcription(self, frequency_mhz: float, transcription: str, callsign: str = None):
+        """
+        Add a transcription to the pipeline status panel.
+
+        Args:
+            frequency_mhz: Frequency in MHz
+            transcription: Transcribed text
+            callsign: Optional callsign if extracted
+        """
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%H:%M:%S")
+
+        # Format transcription entry
+        if callsign:
+            entry = f"[{timestamp}] {frequency_mhz:.3f} MHz - {callsign}: {transcription}"
+        else:
+            entry = f"[{timestamp}] {frequency_mhz:.3f} MHz: {transcription}"
+
+        # Check if at bottom for auto-scroll
+        scrollbar = self.transcription_text.verticalScrollBar()
+        at_bottom = scrollbar.value() >= (scrollbar.maximum() - 10)
+
+        # Add to transcription display
+        self.transcription_text.append(entry)
+
+        # Auto-scroll if at bottom
+        if at_bottom:
+            scrollbar.setValue(scrollbar.maximum())
+
+        # Also add to activity log
+        if callsign:
+            self.log(f"TRANSCRIPTION [{callsign}]: {transcription}")
+        else:
+            self.log(f"TRANSCRIPTION: {transcription}")
+
+    def update_scan_status(self, status: str, color: str = "gray"):
+        """
+        Update the scan status label.
+
+        Args:
+            status: Status text
+            color: Color name (gray, green, yellow, red, etc.)
+        """
+        self.scan_status_label.setText(status)
+        self.scan_status_label.setStyleSheet(f"color: {color};")
 
     def on_station_clicked(self, frequency_hz: float):
         """Handle band map station click - tune radio to frequency"""
@@ -1012,6 +1185,24 @@ class MainWindow(QMainWindow):
         # Get the band map for this specific band
         current_band_map = self.band_maps.get(self.current_scan_band)
 
+        # Create callbacks with transcription support
+        def on_station_detected_callback(station):
+            self.log(f"STATION on {self.current_scan_band}: {station.callsign if hasattr(station, 'callsign') else station}")
+            # If station has transcripts, display them
+            if hasattr(station, 'transcripts') and station.transcripts:
+                for transcript in station.transcripts[-3:]:  # Last 3
+                    self.add_transcription(
+                        station.frequency_mhz,
+                        transcript,
+                        station.callsign if hasattr(station, 'callsign') else None
+                    )
+
+        def on_progress_update_callback(prog):
+            status_text = f"Scanning {self.current_scan_band}: {prog.progress_percent:.1f}% ({prog.current_frequency/1e6:.3f} MHz)"
+            self.update_scan_status(status_text, "green")
+            if prog.progress_percent % 10 == 0:  # Log every 10%
+                self.log(f"{self.current_scan_band}: {prog.progress_percent:.1f}%")
+
         # Reinitialize BandScanner with the correct band map
         self.band_scanner = BandScanner(
             radio_controller=self.radio,
@@ -1022,8 +1213,8 @@ class MainWindow(QMainWindow):
             callsign_extractor=self.callsign_extractor,
             behavior_analyzer=self.behavior_analyzer,
             band_map=current_band_map,
-            on_station_detected=lambda station: self.log(f"STATION on {self.current_scan_band}: {station.callsign}"),
-            on_progress_update=lambda prog: self.log(f"{self.current_scan_band}: {prog.progress_percent:.1f}%")
+            on_station_detected=on_station_detected_callback,
+            on_progress_update=on_progress_update_callback
         )
 
         # Start scan for this band
