@@ -7,12 +7,21 @@ to improve startup time.
 
 # Import lightweight modules immediately
 from cqsentinel.audio.capture import AudioCapture, list_audio_devices
+from cqsentinel.audio.monitor import (
+    AudioBroadcaster, AudioMonitor, AudioLevelMeter,
+    AudioStage, AudioChunk
+)
 
 # Lazy imports for heavy modules (contains torch/ML dependencies)
 # These will only be loaded when actually instantiated
 __all__ = [
     'AudioCapture',
     'list_audio_devices',
+    'AudioBroadcaster',
+    'AudioMonitor',
+    'AudioLevelMeter',
+    'AudioStage',
+    'AudioChunk',
     'AudioDenoiser',
     'VoiceActivityDetector'
 ]
