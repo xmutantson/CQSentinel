@@ -8,8 +8,9 @@ at different processing stages for diagnostics.
 import numpy as np
 import sounddevice as sd
 import logging
+import threading
 from typing import List, Callable, Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 logger = logging.getLogger(__name__)
@@ -29,7 +30,7 @@ class AudioChunk:
     data: np.ndarray
     sample_rate: int
     timestamp: float
-    metadata: dict = None
+    metadata: Optional[dict] = field(default_factory=dict)
 
 
 class AudioBroadcaster:
@@ -201,7 +202,7 @@ class AudioLevelMeter:
         """Initialize level meter"""
         self.rms_level = 0.0  # 0.0 to 1.0
         self.peak_level = 0.0  # 0.0 to 1.0
-        self._lock = __import__('threading').Lock()
+        self._lock = threading.Lock()
 
     def process_chunk(self, chunk: AudioChunk):
         """
