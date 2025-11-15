@@ -183,71 +183,88 @@ class TranscriptionWorker(QObject):
         """Perform transcription (runs in worker thread)"""
         try:
             import time
-            logger.info(f"Transcribing {len(self._audio)/self._sample_rate:.1f}s of speech...")
+            import logging
 
-            # Identify speaker(s) using sliding window voice embeddings
-            speaker_labels = []
-            if self._voice_embedder and self._voice_db:
-                try:
-                    # Detect speaker changes
-                    speaker_segments = self._voice_embedder.detect_speaker_changes(
-                        self._audio,
-                        sample_rate=self._sample_rate,
-                        window_duration=2.5,
-                        stride=1.0,
-                        similarity_threshold=0.75
-                    )
+            # CRITICAL: Suppress faster-whisper and httpx logging in worker thread
+            # These libraries log from the worker thread, which can trigger Qt's
+            # timer system in PyInstaller frozen builds causing threading violations
+            faster_whisper_logger = logging.getLogger('faster_whisper')
+            httpx_logger = logging.getLogger('httpx')
+            saved_fw_level = faster_whisper_logger.level
+            saved_httpx_level = httpx_logger.level
+            faster_whisper_logger.setLevel(logging.CRITICAL)  # Suppress all logging
+            httpx_logger.setLevel(logging.CRITICAL)
 
-                    # Map each speaker segment to voice ID
-                    for seg in speaker_segments:
-                        if seg['embedding'] is not None:
-                            match = self._voice_db.find_matching_voice(seg['embedding'])
-                            if match:
-                                voice_id, similarity = match
-                                operator = self._voice_db.get_operator(voice_id)
-                                label = operator.callsign or f"Speaker {voice_id[:8]}"
-                                logger.debug(f"Matched voice at {seg['start']:.1f}-{seg['end']:.1f}s: {label} (similarity: {similarity:.2f})")
+            try:
+                logger.info(f"Transcribing {len(self._audio)/self._sample_rate:.1f}s of speech...")
+
+                # Identify speaker(s) using sliding window voice embeddings
+                speaker_labels = []
+                if self._voice_embedder and self._voice_db:
+                    try:
+                        # Detect speaker changes
+                        speaker_segments = self._voice_embedder.detect_speaker_changes(
+                            self._audio,
+                            sample_rate=self._sample_rate,
+                            window_duration=2.5,
+                            stride=1.0,
+                            similarity_threshold=0.75
+                        )
+
+                        # Map each speaker segment to voice ID
+                        for seg in speaker_segments:
+                            if seg['embedding'] is not None:
+                                match = self._voice_db.find_matching_voice(seg['embedding'])
+                                if match:
+                                    voice_id, similarity = match
+                                    operator = self._voice_db.get_operator(voice_id)
+                                    label = operator.callsign or f"Speaker {voice_id[:8]}"
+                                    logger.debug(f"Matched voice at {seg['start']:.1f}-{seg['end']:.1f}s: {label} (similarity: {similarity:.2f})")
+                                else:
+                                    voice_id = self._voice_db.add_operator(seg['embedding'], metadata={'first_heard': time.time()})
+                                    label = f"Speaker {voice_id[:8]}"
+                                    logger.debug(f"New speaker at {seg['start']:.1f}-{seg['end']:.1f}s: {label}")
+
+                                speaker_labels.append({
+                                    'start': seg['start'],
+                                    'end': seg['end'],
+                                    'label': label,
+                                    'voice_id': voice_id
+                                })
+
+                        unique_speakers = len(set(s['voice_id'] for s in speaker_labels))
+                        if unique_speakers > 1:
+                            logger.info(f"Detected {unique_speakers} different speakers in segment ({', '.join(set(s['label'] for s in speaker_labels))})")
+
+                    except Exception as e:
+                        logger.debug(f"Speaker detection failed: {e}")
+
+                # Transcribe
+                transcripts = self._transcriber.transcribe(
+                    self._audio,
+                    sample_rate=self._sample_rate,
+                    vad_filter=False
+                )
+
+                # Emit results
+                for transcript in transcripts:
+                    if transcript.text.strip():
+                        text = transcript.text
+                        if speaker_labels:
+                            unique_labels = list(set(s['label'] for s in speaker_labels))
+                            if len(unique_labels) == 1:
+                                text = f"[{unique_labels[0]}] {text}"
                             else:
-                                voice_id = self._voice_db.add_operator(seg['embedding'], metadata={'first_heard': time.time()})
-                                label = f"Speaker {voice_id[:8]}"
-                                logger.debug(f"New speaker at {seg['start']:.1f}-{seg['end']:.1f}s: {label}")
+                                text = f"[{'/'.join(unique_labels)}] {text}"
 
-                            speaker_labels.append({
-                                'start': seg['start'],
-                                'end': seg['end'],
-                                'label': label,
-                                'voice_id': voice_id
-                            })
+                        self.transcription_ready.emit(0.0, text, None)
+                        logger.info(f"Transcribed: {text}")
 
-                    unique_speakers = len(set(s['voice_id'] for s in speaker_labels))
-                    if unique_speakers > 1:
-                        logger.info(f"Detected {unique_speakers} different speakers in segment ({', '.join(set(s['label'] for s in speaker_labels))})")
-
-                except Exception as e:
-                    logger.debug(f"Speaker detection failed: {e}")
-
-            # Transcribe
-            transcripts = self._transcriber.transcribe(
-                self._audio,
-                sample_rate=self._sample_rate,
-                vad_filter=False
-            )
-
-            # Emit results
-            for transcript in transcripts:
-                if transcript.text.strip():
-                    text = transcript.text
-                    if speaker_labels:
-                        unique_labels = list(set(s['label'] for s in speaker_labels))
-                        if len(unique_labels) == 1:
-                            text = f"[{unique_labels[0]}] {text}"
-                        else:
-                            text = f"[{'/'.join(unique_labels)}] {text}"
-
-                    self.transcription_ready.emit(0.0, text, None)
-                    logger.info(f"Transcribed: {text}")
-
-            self.transcription_complete.emit()
+                self.transcription_complete.emit()
+            finally:
+                # Restore logging levels
+                faster_whisper_logger.setLevel(saved_fw_level)
+                httpx_logger.setLevel(saved_httpx_level)
 
         except Exception as e:
             logger.error(f"Transcription failed: {e}", exc_info=True)
