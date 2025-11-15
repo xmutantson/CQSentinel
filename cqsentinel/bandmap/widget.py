@@ -80,8 +80,10 @@ class BandMapWidget(QWidget):
         # Header
         header_layout = QHBoxLayout()
 
+        # Band label hidden - frequency marks provide sufficient context
         self.band_label = QLabel(f"Band: {self.band_map.band or 'Unknown'}")
         self.band_label.setStyleSheet("font-weight: bold;")
+        self.band_label.setVisible(False)  # Hide - frequency marks are enough
         header_layout.addWidget(self.band_label)
 
         header_layout.addStretch()
@@ -92,7 +94,9 @@ class BandMapWidget(QWidget):
         layout.addLayout(header_layout)
 
         # Canvas for drawing
-        self.setMinimumHeight(400)
+        # Reduced height to fit 6 bands on screen without scrolling (600-900px total)
+        self.setMinimumHeight(100)
+        self.setMaximumHeight(150)
         self.setMouseTracking(True)
 
         layout.addStretch()
