@@ -290,14 +290,14 @@ class MainWindow(QMainWindow):
             self.log("  Band maps initialized for all bands")
 
             self.use_full_scanner = True
-            self.log("✓ Advanced features initialized successfully!")
+            self.log("[OK] Advanced features initialized successfully!")
             self.log("  Full scanner with audio processing, AI transcription, and voice ID enabled.")
             logger.info("Advanced features initialized: audio pipeline, transcription, voice ID, contest logic")
 
         except Exception as e:
             self.log(f"ERROR initializing advanced features: {e}")
             logger.error(f"Failed to initialize advanced features: {e}", exc_info=True)
-            self.log("⚠ Using basic scanner mode (advanced features unavailable)")
+            self.log("[WARNING] Using basic scanner mode (advanced features unavailable)")
             self.use_full_scanner = False
 
     def start_audio_monitoring(self):
@@ -874,11 +874,11 @@ class MainWindow(QMainWindow):
             if self.use_full_scanner and self.audio_pipeline:
                 # Use full-featured BandScanner with all Phase 2-8 features
                 self.log("Using FULL SCANNER with AI features:")
-                self.log("  ✓ Audio processing (noise reduction + voice detection)")
-                self.log("  ✓ Speech transcription (Whisper AI)")
-                self.log("  ✓ Voice fingerprinting (speaker identification)")
-                self.log("  ✓ SSB auto-centering")
-                self.log("  ✓ Contest logic (callsign extraction)")
+                self.log("  [OK] Audio processing (noise reduction + voice detection)")
+                self.log("  [OK] Speech transcription (Whisper AI)")
+                self.log("  [OK] Voice fingerprinting (speaker identification)")
+                self.log("  [OK] SSB auto-centering")
+                self.log("  [OK] Contest logic (callsign extraction)")
 
                 # Initialize BandScanner with transcription callback
                 def on_station_detected_callback(station):
@@ -1242,7 +1242,7 @@ class MainWindow(QMainWindow):
             warn_threshold = self.config.voice_db.warn_age_days
 
             if age_days > warn_threshold:
-                self.log(f"⚠ Voice database is {age_days:.1f} days old (>{warn_threshold} days)")
+                self.log(f"[WARNING] Voice database is {age_days:.1f} days old (>{warn_threshold} days)")
 
                 result = QMessageBox.question(
                     self,
@@ -1257,7 +1257,7 @@ class MainWindow(QMainWindow):
 
                 if result == QMessageBox.StandardButton.Yes:
                     self.voice_db.reset()
-                    self.log("✓ Voice database reset")
+                    self.log("[OK] Voice database reset")
                     QMessageBox.information(self, "Database Reset", "Voice database has been reset.")
                 else:
                     self.log("Voice database kept (user chose not to reset)")
@@ -1280,14 +1280,14 @@ class MainWindow(QMainWindow):
             )
 
             if self.n3fjp_client.connect():
-                self.log("✓ Connected to N3FJP successfully")
+                self.log("[OK] Connected to N3FJP successfully")
                 self.n3fjp_status_label.setStyleSheet("color: green;")
                 self.n3fjp_status_label.setToolTip("N3FJP: Connected")
             else:
                 raise Exception("Connection failed")
 
         except Exception as e:
-            self.log(f"✗ Failed to connect to N3FJP: {e}")
+            self.log(f"[FAIL] Failed to connect to N3FJP: {e}")
             self.log("  Make sure N3FJP is running with network server enabled")
             self.n3fjp_status_label.setStyleSheet("color: red;")
             self.n3fjp_status_label.setToolTip(f"N3FJP: Failed - {e}")

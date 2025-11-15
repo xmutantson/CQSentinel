@@ -183,7 +183,7 @@ class SSBAutoTuner:
             # Check if centered
             if is_centered:
                 logger.info(
-                    f"✓ Signal centered at {current_freq/1e6:.4f} MHz "
+                    f"[OK] Signal centered at {current_freq/1e6:.4f} MHz "
                     f"after {iteration + 1} iteration(s)"
                 )
                 return CenteringResult(
@@ -200,7 +200,7 @@ class SSBAutoTuner:
             if abs(correction) < self.tolerance_hz:
                 # Close enough
                 logger.info(
-                    f"✓ Signal acceptably centered at {current_freq/1e6:.4f} MHz "
+                    f"[OK] Signal acceptably centered at {current_freq/1e6:.4f} MHz "
                     f"(offset: {correction} Hz)"
                 )
                 return CenteringResult(
@@ -244,7 +244,7 @@ class SSBAutoTuner:
 
         # Max iterations reached
         logger.warning(
-            f"⚠ Could not center signal after {self.max_iterations} iterations"
+            f"[WARNING] Could not center signal after {self.max_iterations} iterations"
         )
 
         # Get final analysis

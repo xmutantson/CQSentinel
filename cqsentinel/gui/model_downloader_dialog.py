@@ -114,9 +114,9 @@ def check_dependencies_installed():
     for package_name, import_name in dependencies.items():
         try:
             __import__(import_name)
-            logger.debug(f"✓ {package_name} is installed")
+            logger.debug(f"[OK] {package_name} is installed")
         except ImportError:
-            logger.debug(f"✗ {package_name} is missing")
+            logger.debug(f"[MISSING] {package_name} is missing")
             missing.append(package_name)
 
     return missing
@@ -140,7 +140,7 @@ def ensure_pip_available(progress_callback=None):
     # spawning of application windows!
     if getattr(sys, 'frozen', False):
         if progress_callback:
-            progress_callback("⚠ Packaged build detected")
+            progress_callback("[WARNING] Packaged build detected")
             progress_callback("  Cannot install dependencies via pip in packaged builds")
         logger.warning("Frozen build - cannot use subprocess pip installation")
         return False
@@ -156,7 +156,7 @@ def ensure_pip_available(progress_callback=None):
 
         if result.returncode == 0:
             if progress_callback:
-                progress_callback("✓ pip is available")
+                progress_callback("[OK] pip is available")
             logger.info(f"pip is available: {result.stdout.strip()}")
             return True
 
@@ -178,7 +178,7 @@ def ensure_pip_available(progress_callback=None):
 
         if result.returncode == 0:
             if progress_callback:
-                progress_callback("✓ pip installed successfully")
+                progress_callback("[OK] pip installed successfully")
             logger.info("pip bootstrapped using ensurepip")
             return True
         else:
@@ -225,7 +225,7 @@ def ensure_pip_available(progress_callback=None):
 
         if result.returncode == 0:
             if progress_callback:
-                progress_callback("✓ pip installed successfully")
+                progress_callback("[OK] pip installed successfully")
             logger.info("pip bootstrapped using get-pip.py")
             return True
         else:
@@ -235,7 +235,7 @@ def ensure_pip_available(progress_callback=None):
         logger.error(f"Failed to download/run get-pip.py: {e}")
 
     if progress_callback:
-        progress_callback("✗ Failed to install pip")
+        progress_callback("[FAIL] Failed to install pip")
         progress_callback("  Cannot proceed without pip")
         progress_callback("  Please run from source installation instead")
 
@@ -298,28 +298,28 @@ def install_dependencies(packages_dir, progress_callback=None):
 
             if result.returncode == 0:
                 if progress_callback:
-                    progress_callback(f"  ✓ {dep} installed successfully")
-                logger.info(f"✓ {dep} installed successfully")
+                    progress_callback(f"  [OK] {dep} installed successfully")
+                logger.info(f"[OK] {dep} installed successfully")
             else:
                 if progress_callback:
-                    progress_callback(f"  ✗ {dep} failed to install")
+                    progress_callback(f"  [FAIL] {dep} failed to install")
                     progress_callback(f"  Error: {result.stderr[:200]}")  # First 200 chars
-                logger.error(f"✗ {dep} failed: {result.stderr}")
+                logger.error(f"[FAIL] {dep} failed: {result.stderr}")
                 return False
 
         except subprocess.TimeoutExpired:
             if progress_callback:
-                progress_callback(f"  ✗ {dep} installation timed out")
-            logger.error(f"✗ {dep} installation timed out")
+                progress_callback(f"  [FAIL] {dep} installation timed out")
+            logger.error(f"[FAIL] {dep} installation timed out")
             return False
         except Exception as e:
             if progress_callback:
-                progress_callback(f"  ✗ {dep} error: {e}")
-            logger.error(f"✗ {dep} error: {e}")
+                progress_callback(f"  [FAIL] {dep} error: {e}")
+            logger.error(f"[FAIL] {dep} error: {e}")
             return False
 
     if progress_callback:
-        progress_callback("✓ All dependencies installed successfully!")
+        progress_callback("[OK] All dependencies installed successfully!")
 
     return True
 
@@ -362,7 +362,7 @@ class ModelDownloadThread(QThread):
                     self.finished_signal.emit(False)
                     return
                 else:
-                    self.progress_signal.emit("✓ All dependencies installed")
+                    self.progress_signal.emit("[OK] All dependencies installed")
                     self.progress_signal.emit("")
 
             success = True
@@ -387,9 +387,9 @@ class ModelDownloadThread(QThread):
                 failures.append("Resemblyzer")
 
             if success:
-                self.progress_signal.emit("✓ All models downloaded successfully!")
+                self.progress_signal.emit("[OK] All models downloaded successfully!")
             else:
-                self.progress_signal.emit(f"⚠ Failed to download: {', '.join(failures)}")
+                self.progress_signal.emit(f"[WARNING] Failed to download: {', '.join(failures)}")
                 self.progress_signal.emit("")
 
                 if is_frozen:
@@ -412,7 +412,7 @@ class ModelDownloadThread(QThread):
 
         except Exception as e:
             logger.error(f"Model download failed: {e}", exc_info=True)
-            self.progress_signal.emit(f"✗ Download failed: {e}")
+            self.progress_signal.emit(f"[FAIL] Download failed: {e}")
             self.finished_signal.emit(False)
 
     def _download_whisper(self):
@@ -424,7 +424,7 @@ class ModelDownloadThread(QThread):
                 logger.info(f"ctranslate2 version: {ctranslate2.__version__}")
                 self.progress_signal.emit(f"  Using ctranslate2 {ctranslate2.__version__}")
             except ImportError:
-                self.progress_signal.emit("  ✗ ctranslate2 not installed")
+                self.progress_signal.emit("  [FAIL] ctranslate2 not installed")
                 logger.error("ctranslate2 not installed")
                 return False
 
@@ -440,21 +440,21 @@ class ModelDownloadThread(QThread):
                 download_root=None  # Use default cache
             )
 
-            self.progress_signal.emit(f"  ✓ Whisper {self.model_size} downloaded")
+            self.progress_signal.emit(f"  [OK] Whisper {self.model_size} downloaded")
             return True
 
         except ImportError as e:
-            self.progress_signal.emit(f"  ✗ faster-whisper import failed: {e}")
+            self.progress_signal.emit(f"  [FAIL] faster-whisper import failed: {e}")
             logger.error(f"faster-whisper import failed: {e}")
             return False
         except AttributeError as e:
             # Version mismatch between faster-whisper and ctranslate2
-            self.progress_signal.emit(f"  ✗ faster-whisper/ctranslate2 version mismatch")
+            self.progress_signal.emit(f"  [FAIL] faster-whisper/ctranslate2 version mismatch")
             self.progress_signal.emit(f"    Error: {e}")
             logger.error(f"Version compatibility issue: {e}", exc_info=True)
             return False
         except Exception as e:
-            self.progress_signal.emit(f"  ✗ Whisper download failed: {e}")
+            self.progress_signal.emit(f"  [FAIL] Whisper download failed: {e}")
             logger.error(f"Whisper download failed: {e}", exc_info=True)
             return False
 
@@ -501,7 +501,7 @@ class ModelDownloadThread(QThread):
                     trust_repo=True  # Trust the repository
                 )
 
-                self.progress_signal.emit("  ✓ Silero VAD downloaded")
+                self.progress_signal.emit("  [OK] Silero VAD downloaded")
                 return True
             finally:
                 # Restore original stderr and stdout
@@ -509,11 +509,11 @@ class ModelDownloadThread(QThread):
                 sys.stdout = original_stdout
 
         except ImportError as e:
-            self.progress_signal.emit(f"  ✗ torch not installed: {e}")
+            self.progress_signal.emit(f"  [FAIL] torch not installed: {e}")
             logger.error(f"torch not installed: {e}")
             return False
         except Exception as e:
-            self.progress_signal.emit(f"  ✗ Silero VAD download failed: {e}")
+            self.progress_signal.emit(f"  [FAIL] Silero VAD download failed: {e}")
             logger.error(f"Silero VAD download failed: {e}", exc_info=True)
             return False
 
@@ -558,7 +558,7 @@ class ModelDownloadThread(QThread):
 
                     logger.info(f"Resemblyzer: Looking for model at {model_path}")
                     if not model_path.exists():
-                        self.progress_signal.emit(f"  ✗ Model file not found at: {model_path}")
+                        self.progress_signal.emit(f"  [FAIL] Model file not found at: {model_path}")
                         logger.error(f"Resemblyzer pretrained.pt not found at {model_path}")
                         # List what's actually in the resemblyzer directory
                         resemblyzer_dir = base_path / "resemblyzer"
@@ -576,7 +576,7 @@ class ModelDownloadThread(QThread):
                         logger.info(f"Resemblyzer: File is readable, header: {header[:20]}...")
                     except Exception as e:
                         logger.error(f"Resemblyzer: Cannot read model file: {e}", exc_info=True)
-                        self.progress_signal.emit(f"  ✗ Cannot read model file: {e}")
+                        self.progress_signal.emit(f"  [FAIL] Cannot read model file: {e}")
                         return False
 
                     logger.info(f"Resemblyzer: Initializing encoder with weights from {model_path}")
@@ -592,7 +592,7 @@ class ModelDownloadThread(QThread):
                         logger.info("Resemblyzer: Encoder initialized successfully!")
                     except Exception as e:
                         logger.error(f"Resemblyzer: Failed to initialize encoder: {e}", exc_info=True)
-                        self.progress_signal.emit(f"  ✗ Encoder init failed: {type(e).__name__}: {e}")
+                        self.progress_signal.emit(f"  [FAIL] Encoder init failed: {type(e).__name__}: {e}")
                         raise
                     finally:
                         # Restore original PYTORCH_JIT setting
@@ -610,7 +610,7 @@ class ModelDownloadThread(QThread):
                         logger.error(f"Resemblyzer: Failed to initialize encoder: {e}", exc_info=True)
                         raise
 
-                self.progress_signal.emit("  ✓ Resemblyzer loaded")
+                self.progress_signal.emit("  [OK] Resemblyzer loaded")
                 logger.info("Resemblyzer: Load complete")
                 return True
             finally:
@@ -619,11 +619,11 @@ class ModelDownloadThread(QThread):
                 sys.stdout = original_stdout
 
         except ImportError as e:
-            self.progress_signal.emit(f"  ✗ resemblyzer or torch not installed: {e}")
+            self.progress_signal.emit(f"  [FAIL] resemblyzer or torch not installed: {e}")
             logger.error(f"resemblyzer or torch not installed: {e}")
             return False
         except Exception as e:
-            self.progress_signal.emit(f"  ✗ Resemblyzer download failed: {e}")
+            self.progress_signal.emit(f"  [FAIL] Resemblyzer download failed: {e}")
             logger.error(f"Resemblyzer download failed: {e}", exc_info=True)
             return False
 
@@ -731,7 +731,7 @@ class ModelDownloaderDialog(QDialog):
         self.progress_bar.setValue(100 if success else 0)
 
         if success:
-            self.status_label.setText("✓ Setup complete!")
+            self.status_label.setText("[OK] Setup complete!")
             self.continue_btn.setText("Continue")
             self.continue_btn.setEnabled(True)
             self.skip_btn.setEnabled(False)
@@ -748,7 +748,7 @@ class ModelDownloaderDialog(QDialog):
 
             threading.Thread(target=auto_close, daemon=True).start()
         else:
-            self.status_label.setText("⚠ Setup failed - see log for details")
+            self.status_label.setText("[WARNING] Setup failed - see log for details")
             self.continue_btn.setText("Retry")
             self.continue_btn.setEnabled(True)
             self.skip_btn.setEnabled(True)
@@ -839,7 +839,7 @@ def check_models_exist():
         models_ready = whisper_exists and vad_exists and resemblyzer_exists
 
         if models_ready:
-            logger.info("✓ AI models already downloaded")
+            logger.info("[OK] AI models already downloaded")
         else:
             logger.info(f"Models status: Whisper={whisper_exists}, VAD={vad_exists}, Resemblyzer={resemblyzer_exists}")
             logger.info("AI models need to be downloaded")
