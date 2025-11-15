@@ -489,6 +489,14 @@ class MainWindow(QMainWindow):
         enable_advanced_action.triggered.connect(self.init_advanced_features)
         scanner_menu.addAction(enable_advanced_action)
 
+        # Tools menu
+        tools_menu = menubar.addMenu("&Tools")
+
+        audio_diag_action = QAction("&Audio Diagnostics", self)
+        audio_diag_action.setToolTip("Run audio subsystem self-test")
+        audio_diag_action.triggered.connect(self.run_audio_diagnostics)
+        tools_menu.addAction(audio_diag_action)
+
         # Help menu
         help_menu = menubar.addMenu("&Help")
 
@@ -1402,6 +1410,46 @@ class MainWindow(QMainWindow):
             self.config = get_config()
             self.log("Settings updated")
             logger.info("Settings updated by user")
+
+    def run_audio_diagnostics(self):
+        """Run audio subsystem diagnostic tests"""
+        from cqsentinel.audio.diagnostics import AudioDiagnostics
+
+        # Show message
+        QMessageBox.information(
+            self,
+            "Audio Diagnostics",
+            "The audio diagnostic tests will now run in the console window.\n\n"
+            "Check the console for detailed results.\n\n"
+            "Make sure to make noise during input tests!"
+        )
+
+        # Run diagnostics (output goes to console)
+        try:
+            input_dev = self.audio.device if self.audio else None
+            output_dev = self.audio_monitor.output_device if self.audio_monitor else None
+
+            self.log("Running audio diagnostics... (check console)")
+            logger.info("Starting audio diagnostics")
+
+            # Run in background thread so UI doesn't freeze
+            import threading
+            def run_diag():
+                try:
+                    result = AudioDiagnostics.run_full_diagnostic(input_dev, output_dev)
+                    if result:
+                        self.log("[OK] Audio diagnostics passed - check console for details")
+                    else:
+                        self.log("[WARNING] Audio diagnostics found issues - check console")
+                except Exception as e:
+                    logger.error(f"Diagnostic error: {e}", exc_info=True)
+                    self.log(f"[ERROR] Diagnostic failed: {e}")
+
+            threading.Thread(target=run_diag, daemon=True).start()
+
+        except Exception as e:
+            logger.error(f"Failed to run diagnostics: {e}", exc_info=True)
+            QMessageBox.critical(self, "Error", f"Failed to run diagnostics:\n{e}")
 
     def show_about(self):
         """Show about dialog"""
