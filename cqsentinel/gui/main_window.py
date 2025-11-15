@@ -256,79 +256,83 @@ class TranscriptionWorker(QObject):
 
                 # CRITICAL: Also redirect at OS level for C++ libraries (ctranslate2, PyTorch)
                 # C++ code writes directly to file descriptors 1/2, bypassing Python's sys.stdout/stderr
-                # Instead of discarding, capture to a pipe and forward to logging
+                # NOTE: os.pipe() crashes in PyInstaller frozen builds on Windows
+                # SOLUTION: Use temporary file instead - reliable, cross-platform, captures all output
                 saved_stdout_fd = None
                 saved_stderr_fd = None
-                pipe_read_fd = None
-                pipe_write_fd = None
-                pipe_reader_thread = None
+                stderr_tempfile = None
+                stderr_reader_thread = None
 
-                def read_from_pipe(read_fd, log_func):
-                    """Background thread to read C++ output from pipe and forward to logging"""
+                def tail_tempfile(filepath, log_func, stop_event):
+                    """Background thread to tail temp file and forward C++ output to logging"""
                     try:
-                        # Read in blocking mode with line buffering
-                        # Thread is daemon so it will be killed when main thread exits
-                        buffer = b''
-                        while True:
-                            try:
-                                # Read one byte at a time to handle line buffering
-                                chunk = os.read(read_fd, 1024)
-                                if not chunk:
-                                    break  # EOF - pipe closed
+                        import time
+                        with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+                            # Start at beginning of file
+                            f.seek(0)
+                            while not stop_event.is_set():
+                                line = f.readline()
+                                if line:
+                                    line = line.rstrip('\n\r')
+                                    if line.strip():
+                                        log_func(f"[C++] {line}")
+                                else:
+                                    # No data, sleep briefly
+                                    time.sleep(0.01)
 
-                                buffer += chunk
-                                # Process complete lines
-                                while b'\n' in buffer:
-                                    line, buffer = buffer.split(b'\n', 1)
-                                    text = line.decode('utf-8', errors='replace').strip()
-                                    if text:
-                                        log_func(f"[C++] {text}")
-                            except (OSError, ValueError):
-                                break  # Pipe closed or error
-
-                        # Process any remaining buffer
-                        if buffer:
-                            text = buffer.decode('utf-8', errors='replace').strip()
-                            if text:
-                                log_func(f"[C++] {text}")
-                    except Exception:
-                        # Silently fail - pipe reading is best-effort
+                            # Process any remaining lines after stop
+                            for line in f:
+                                line = line.rstrip('\n\r')
+                                if line.strip():
+                                    log_func(f"[C++] {line}")
+                    except Exception as e:
+                        # Tail thread failure is non-critical
                         pass
 
                 try:
-                    logger.info("[WORKER] Setting up OS-level pipe redirection...")
+                    logger.info("[WORKER] Setting up OS-level fd redirection...")
                     # Duplicate original file descriptors
                     saved_stdout_fd = os.dup(1)  # Duplicate stdout fd
                     saved_stderr_fd = os.dup(2)  # Duplicate stderr fd
                     logger.info(f"[WORKER] Saved original fds: stdout={saved_stdout_fd}, stderr={saved_stderr_fd}")
 
-                    # Create a pipe for capturing C++ stderr output
-                    pipe_read_fd, pipe_write_fd = os.pipe()
-                    logger.info(f"[WORKER] Created pipe: read_fd={pipe_read_fd}, write_fd={pipe_write_fd}")
+                    # Create temporary file for capturing C++ stderr
+                    import tempfile
+                    import threading
+                    stderr_tempfile = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.log')
+                    stderr_tempfile.close()  # Close Python handle, we'll use fd directly
+                    logger.info(f"[WORKER] Created temp file: {stderr_tempfile.name}")
 
-                    # Redirect stderr to pipe (stdout to devnull since we don't expect stdout output)
-                    os.dup2(pipe_write_fd, 2)  # Redirect stderr fd to pipe
-                    logger.info("[WORKER] Redirected stderr to pipe")
+                    # Open temp file for writing at OS level
+                    stderr_fd = os.open(stderr_tempfile.name, os.O_WRONLY | os.O_APPEND)
+                    logger.info(f"[WORKER] Opened temp file: fd={stderr_fd}")
 
-                    # For stdout, just redirect to devnull to avoid Qt issues
+                    # Redirect stderr to temp file (stdout to devnull, we don't expect stdout output)
+                    os.dup2(stderr_fd, 2)  # Redirect stderr fd to temp file
+                    os.close(stderr_fd)  # Close our copy, fd 2 still points to file
+
+                    # Redirect stdout to devnull
                     devnull_fd = os.open(os.devnull, os.O_WRONLY)
                     os.dup2(devnull_fd, 1)
                     os.close(devnull_fd)
-                    logger.info("[WORKER] Redirected stdout to devnull")
+                    logger.info("[WORKER] Redirected stderr to tempfile, stdout to devnull")
 
-                    # Start background thread to read from pipe and forward to logging
-                    import threading
-                    pipe_reader_thread = threading.Thread(
-                        target=read_from_pipe,
-                        args=(pipe_read_fd, logger.debug),
+                    # Start background thread to tail the temp file
+                    from threading import Event
+                    stop_tail = Event()
+                    stderr_reader_thread = threading.Thread(
+                        target=tail_tempfile,
+                        args=(stderr_tempfile.name, logger.debug, stop_tail),
                         daemon=True
                     )
-                    pipe_reader_thread.start()
-                    logger.info("[WORKER] Started pipe reader thread")
+                    stderr_reader_thread.start()
+                    logger.info("[WORKER] Started stderr tail thread")
 
                 except (OSError, AttributeError) as e:
                     # OS-level redirection failed (shouldn't happen, but fallback gracefully)
-                    logger.error(f"[WORKER] ERROR: Failed to set up pipe redirection: {e}")
+                    logger.error(f"[WORKER] ERROR: Failed to set up fd redirection: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
                     pass
 
                 try:
@@ -408,40 +412,44 @@ class TranscriptionWorker(QObject):
 
                     self.transcription_complete.emit()
                 finally:
-                    # Restore OS-level file descriptors first (stops C++ output to pipe)
+                    # Stop stderr tail thread and clean up temp file
+                    if stderr_reader_thread is not None and stderr_reader_thread.is_alive():
+                        try:
+                            logger.info("[WORKER] Stopping stderr tail thread...")
+                            stop_tail.set()
+                            stderr_reader_thread.join(timeout=2.0)  # Wait up to 2 seconds
+                            if stderr_reader_thread.is_alive():
+                                logger.warning("[WORKER] Tail thread did not stop in time")
+                            else:
+                                logger.info("[WORKER] Tail thread stopped")
+                        except Exception as e:
+                            logger.debug(f"[WORKER] Error stopping tail thread: {e}")
+
+                    # Delete temporary file
+                    if stderr_tempfile is not None:
+                        try:
+                            import os
+                            if os.path.exists(stderr_tempfile.name):
+                                os.unlink(stderr_tempfile.name)
+                                logger.info(f"[WORKER] Deleted temp file: {stderr_tempfile.name}")
+                        except Exception as e:
+                            logger.debug(f"[WORKER] Error deleting temp file: {e}")
+
+                    # Restore OS-level file descriptors
                     if saved_stderr_fd is not None:
                         try:
                             os.dup2(saved_stderr_fd, 2)  # Restore stderr fd
                             os.close(saved_stderr_fd)
-                        except (OSError, AttributeError):
-                            pass
+                            logger.info("[WORKER] Restored stderr fd")
+                        except (OSError, AttributeError) as e:
+                            logger.debug(f"[WORKER] Error restoring stderr fd: {e}")
                     if saved_stdout_fd is not None:
                         try:
                             os.dup2(saved_stdout_fd, 1)  # Restore stdout fd
                             os.close(saved_stdout_fd)
-                        except (OSError, AttributeError):
-                            pass
-
-                    # Close pipe write end (signals EOF to reader thread)
-                    if pipe_write_fd is not None:
-                        try:
-                            os.close(pipe_write_fd)
-                        except (OSError, AttributeError):
-                            pass
-
-                    # Wait briefly for reader thread to finish
-                    if pipe_reader_thread is not None and pipe_reader_thread.is_alive():
-                        try:
-                            pipe_reader_thread.join(timeout=0.5)
-                        except:
-                            pass
-
-                    # Close pipe read end
-                    if pipe_read_fd is not None:
-                        try:
-                            os.close(pipe_read_fd)
-                        except (OSError, AttributeError):
-                            pass
+                            logger.info("[WORKER] Restored stdout fd")
+                        except (OSError, AttributeError) as e:
+                            logger.debug(f"[WORKER] Error restoring stdout fd: {e}")
 
                     # Restore Python-level stdout/stderr
                     sys.stdout = saved_stdout
