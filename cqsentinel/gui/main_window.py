@@ -11,6 +11,8 @@ Provides the primary user interface with:
 
 import sys
 import logging
+import threading
+import time
 import numpy as np
 from typing import Optional
 from PyQt5.QtWidgets import (
