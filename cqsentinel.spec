@@ -119,7 +119,7 @@ hiddenimports = [
 
 # Add torch submodules - SELECTIVE IMPORT for speed!
 # NOTE: collect_submodules('torch') scans 500+ modules and takes 20+ minutes!
-# Instead, only include what Resemblyzer actually needs:
+# Instead, only include what Resemblyzer and Silero VAD actually need:
 torch_modules = [
     'torch',
     'torch.nn',
@@ -131,12 +131,15 @@ torch_modules = [
     'torch.nn.modules.linear',
     'torch.nn.modules.normalization',
     'torch.nn.modules.pooling',
+    'torch.nn.modules.rnn',  # For Resemblyzer's LSTM
     'torch.autograd',
     'torch.jit',
     'torch.serialization',
     'torch.utils',
     'torch.utils.data',
     'torch._utils',
+    'torch.hub',  # For Silero VAD model loading
+    'torch.hub.load',
 ]
 hiddenimports += torch_modules
 
