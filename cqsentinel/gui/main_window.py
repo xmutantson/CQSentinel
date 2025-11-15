@@ -23,7 +23,11 @@ from PyQt5.QtGui import QFont
 
 from cqsentinel.config import get_config, get_config_manager
 from cqsentinel.radio import HamlibController, RadioConnectionError, RigctldManager, find_serial_port, SSBAutoTuner
-from cqsentinel.audio import AudioCapture, list_audio_devices
+from cqsentinel.audio import (
+    AudioCapture, list_audio_devices,
+    AudioBroadcaster, AudioMonitor, AudioLevelMeter,
+    AudioStage, AudioChunk
+)
 from cqsentinel.audio.pipeline import AudioPipeline
 from cqsentinel.audio.denoiser import AudioDenoiser
 from cqsentinel.audio.vad import VoiceActivityDetector
@@ -151,6 +155,8 @@ class MainWindow(QMainWindow):
     station_detected_signal = pyqtSignal(object)  # Station object
     progress_update_signal = pyqtSignal(object)  # ScanProgress object
     transcription_signal = pyqtSignal(float, str, str)  # freq_mhz, transcription, callsign
+    audio_levels_signal = pyqtSignal(float, float)  # rms_level, peak_level
+    voice_detection_signal = pyqtSignal(bool, float)  # has_speech, speech_ratio
 
     def __init__(self):
         super().__init__()
@@ -179,8 +185,10 @@ class MainWindow(QMainWindow):
         self.scan_queue = []  # Queue of bands to scan
         self.current_scan_band = None  # Current band being scanned
 
-        # Audio monitoring
-        self.last_audio_level = 0.0  # 0.0 to 1.0
+        # Audio monitoring (new broadcaster pattern)
+        self.audio_broadcaster = AudioBroadcaster()
+        self.audio_level_meter = AudioLevelMeter()
+        self.audio_monitor = AudioMonitor()  # For diagnostic playback
 
         # Band map visualization (always available)
         self.band_map_widgets = {}  # Dictionary of BandMapWidget instances per band
@@ -203,6 +211,12 @@ class MainWindow(QMainWindow):
         self.station_detected_signal.connect(self._handle_station_detected)
         self.progress_update_signal.connect(self._handle_progress_update)
         self.transcription_signal.connect(self._handle_transcription)
+        self.audio_levels_signal.connect(self._handle_audio_levels)
+        self.voice_detection_signal.connect(self._handle_voice_detection)
+
+        # Register audio consumers with broadcaster
+        self.audio_broadcaster.register_consumer(self.audio_level_meter.process_chunk)
+        self.audio_broadcaster.register_consumer(self.audio_monitor.process_chunk)
 
         logger.info("Main window initialized")
 
@@ -286,7 +300,7 @@ class MainWindow(QMainWindow):
             self.use_full_scanner = False
 
     def start_audio_monitoring(self):
-        """Start audio stream for level monitoring"""
+        """Start audio stream with broadcaster pattern for multiple consumers"""
         if not self.audio:
             return
 
@@ -296,31 +310,59 @@ class MainWindow(QMainWindow):
             return
 
         try:
+            import time
+
             def audio_callback(audio_chunk):
-                """Process audio chunks for level meter and voice detection"""
-                # Calculate RMS level (0.0 to 1.0)
-                rms = np.sqrt(np.mean(audio_chunk**2))
-                self.last_audio_level = min(1.0, rms * 10)  # Scale up and clamp
+                """Process audio chunks - broadcast to all consumers"""
+                try:
+                    # Create audio chunk for raw stage
+                    raw_chunk = AudioChunk(
+                        stage=AudioStage.RAW,
+                        data=audio_chunk,
+                        sample_rate=self.audio.sample_rate,
+                        timestamp=time.time()
+                    )
 
-                # If audio pipeline is available, check for voice
-                if self.audio_pipeline:
-                    try:
-                        result = self.audio_pipeline.process_quick(audio_chunk, check_voice_only=True)
-                        has_speech = result.get('has_speech', False)
-                        speech_ratio = result.get('speech_ratio', 0.0)
+                    # Broadcast to all consumers (level meter, monitor, etc.)
+                    self.audio_broadcaster.broadcast(raw_chunk)
 
-                        # Update voice detection UI
-                        if has_speech:
-                            self.voice_detected_label.setStyleSheet("color: green; font-size: 20px;")
-                            self.speech_ratio_bar.setValue(int(speech_ratio * 100))
-                        else:
-                            self.voice_detected_label.setStyleSheet("color: gray; font-size: 20px;")
-                            self.speech_ratio_bar.setValue(0)
-                    except Exception as e:
-                        logger.debug(f"Voice detection check failed: {e}")
+                    # Emit signal for level meter update (thread-safe)
+                    rms, peak = self.audio_level_meter.get_levels()
+                    self.audio_levels_signal.emit(rms, peak)
+
+                    # If audio pipeline is available, check for voice
+                    if self.audio_pipeline:
+                        try:
+                            result = self.audio_pipeline.process_quick(audio_chunk, check_voice_only=True)
+                            has_speech = result.get('has_speech', False)
+                            speech_ratio = result.get('speech_ratio', 0.0)
+
+                            # Emit signal for voice detection (thread-safe)
+                            self.voice_detection_signal.emit(has_speech, speech_ratio)
+
+                            # If denoising, create denoised chunk
+                            if has_speech:
+                                try:
+                                    denoised = self.audio_pipeline.denoiser.denoise(audio_chunk)
+                                    denoised_chunk = AudioChunk(
+                                        stage=AudioStage.DENOISED,
+                                        data=denoised,
+                                        sample_rate=self.audio.sample_rate,
+                                        timestamp=time.time(),
+                                        metadata={'has_speech': True, 'speech_ratio': speech_ratio}
+                                    )
+                                    self.audio_broadcaster.broadcast(denoised_chunk)
+                                except Exception as e:
+                                    logger.debug(f"Denoising failed: {e}")
+
+                        except Exception as e:
+                            logger.debug(f"Voice detection check failed: {e}")
+
+                except Exception as e:
+                    logger.error(f"Audio callback error: {e}", exc_info=True)
 
             self.audio.start_stream(audio_callback)
-            logger.info("Audio monitoring started for level meter and voice detection")
+            logger.info("Audio monitoring started with broadcaster pattern")
         except Exception as e:
             logger.warning(f"Failed to start audio monitoring: {e}")
 
@@ -610,6 +652,37 @@ class MainWindow(QMainWindow):
         voice_level_layout.addWidget(self.speech_ratio_bar)
         layout.addLayout(voice_level_layout)
 
+        # Audio monitor diagnostic controls
+        monitor_group = QGroupBox("Audio Diagnostic Monitor")
+        monitor_layout = QVBoxLayout()
+
+        monitor_btn_layout = QHBoxLayout()
+        monitor_btn_layout.addWidget(QLabel("Listen to:"))
+
+        self.monitor_off_btn = QPushButton("Off")
+        self.monitor_off_btn.setCheckable(True)
+        self.monitor_off_btn.setChecked(True)
+        self.monitor_off_btn.clicked.connect(lambda: self.set_audio_monitor(None))
+        monitor_btn_layout.addWidget(self.monitor_off_btn)
+
+        self.monitor_raw_btn = QPushButton("Raw Input")
+        self.monitor_raw_btn.setCheckable(True)
+        self.monitor_raw_btn.setToolTip("Listen to raw audio from radio")
+        self.monitor_raw_btn.clicked.connect(lambda: self.set_audio_monitor(AudioStage.RAW))
+        monitor_btn_layout.addWidget(self.monitor_raw_btn)
+
+        self.monitor_denoised_btn = QPushButton("Denoised")
+        self.monitor_denoised_btn.setCheckable(True)
+        self.monitor_denoised_btn.setToolTip("Listen to audio after noise reduction")
+        self.monitor_denoised_btn.clicked.connect(lambda: self.set_audio_monitor(AudioStage.DENOISED))
+        monitor_btn_layout.addWidget(self.monitor_denoised_btn)
+
+        monitor_btn_layout.addStretch()
+        monitor_layout.addLayout(monitor_btn_layout)
+
+        monitor_group.setLayout(monitor_layout)
+        layout.addWidget(monitor_group)
+
         # Transcription display
         layout.addWidget(QLabel("Recent Transcriptions:"))
         self.transcription_text = QTextEdit()
@@ -629,6 +702,28 @@ class MainWindow(QMainWindow):
 
         group.setLayout(layout)
         return group
+
+    def set_audio_monitor(self, stage: Optional[AudioStage]):
+        """
+        Enable/disable audio monitoring at a specific stage.
+
+        Args:
+            stage: AudioStage to monitor, or None to disable
+        """
+        # Update button states
+        self.monitor_off_btn.setChecked(stage is None)
+        self.monitor_raw_btn.setChecked(stage == AudioStage.RAW)
+        self.monitor_denoised_btn.setChecked(stage == AudioStage.DENOISED)
+
+        # Stop any existing monitoring
+        self.audio_monitor.stop_monitoring()
+
+        # Start monitoring if stage is specified
+        if stage is not None:
+            self.audio_monitor.start_monitoring(stage, volume=0.7)
+            self.log(f"Audio monitor: listening to {stage.value} audio")
+        else:
+            self.log("Audio monitor: off")
 
     def setup_timers(self):
         """Setup periodic update timers"""
@@ -898,13 +993,30 @@ class MainWindow(QMainWindow):
                 else:
                     self.smeter_label.setText(f"S9+{strength-9}")
 
-            # Update audio level meter
-            audio_level_percent = int(self.last_audio_level * 100)
-            self.audio_meter.setValue(audio_level_percent)
-
         except RadioConnectionError:
             self.log("Lost connection to radio")
             self.disconnect_radio()
+
+    def _handle_audio_levels(self, rms_level: float, peak_level: float):
+        """Handle audio levels signal (thread-safe GUI update)"""
+        try:
+            # Update audio meter with RMS level
+            audio_level_percent = int(rms_level * 100)
+            self.audio_meter.setValue(audio_level_percent)
+        except Exception as e:
+            logger.error(f"Error handling audio levels: {e}", exc_info=True)
+
+    def _handle_voice_detection(self, has_speech: bool, speech_ratio: float):
+        """Handle voice detection signal (thread-safe GUI update)"""
+        try:
+            if has_speech:
+                self.voice_detected_label.setStyleSheet("color: green; font-size: 20px;")
+                self.speech_ratio_bar.setValue(int(speech_ratio * 100))
+            else:
+                self.voice_detected_label.setStyleSheet("color: gray; font-size: 20px;")
+                self.speech_ratio_bar.setValue(0)
+        except Exception as e:
+            logger.error(f"Error handling voice detection: {e}", exc_info=True)
 
     def log(self, message: str):
         """Add message to log panel with smart auto-scroll"""
