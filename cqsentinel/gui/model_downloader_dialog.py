@@ -538,25 +538,30 @@ class ModelDownloadThread(QThread):
                 logger.info("Restored sys.stdout for resemblyzer (was None in frozen build)")
 
             try:
-                self.progress_signal.emit("  Downloading Resemblyzer (~20 MB)...")
+                self.progress_signal.emit("  Loading Resemblyzer model...")
 
-                # Set up torch hub directory based on frozen/source
-                if getattr(sys, 'frozen', False):
-                    # Packaged - use models dir next to exe
-                    torch_hub_dir = Path(sys.executable).parent / "models" / "torch" / "hub"
-                else:
-                    # Source - use cache
-                    torch_hub_dir = Path.home() / ".cache" / "torch" / "hub"
-
-                torch.hub.set_dir(str(torch_hub_dir))
-
-                # Import and initialize encoder (downloads model if needed)
+                # Import VoiceEncoder
                 from resemblyzer import VoiceEncoder
 
-                # Initialize encoder (downloads model if needed)
-                encoder = VoiceEncoder()
+                # In frozen builds, we need to find the bundled pretrained.pt
+                # In source builds, VoiceEncoder finds it automatically
+                if getattr(sys, 'frozen', False):
+                    # Get the path to bundled resemblyzer data
+                    base_path = Path(sys._MEIPASS)
+                    model_path = base_path / "resemblyzer" / "pretrained.pt"
 
-                self.progress_signal.emit("  ✓ Resemblyzer downloaded")
+                    if not model_path.exists():
+                        self.progress_signal.emit(f"  ✗ Model file not found at: {model_path}")
+                        logger.error(f"Resemblyzer pretrained.pt not found at {model_path}")
+                        return False
+
+                    logger.info(f"Loading Resemblyzer model from: {model_path}")
+                    encoder = VoiceEncoder(weights_fpath=str(model_path))
+                else:
+                    # Source build - use default path
+                    encoder = VoiceEncoder()
+
+                self.progress_signal.emit("  ✓ Resemblyzer loaded")
                 return True
             finally:
                 # Restore original stderr and stdout
