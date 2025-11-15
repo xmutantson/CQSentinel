@@ -177,7 +177,16 @@ class VoiceActivityDetector:
         total_speech = sum(seg['duration'] for seg in segments)
         total_duration = len(audio) / self.sample_rate
 
-        return total_speech / total_duration if total_duration > 0 else 0.0
+        ratio = total_speech / total_duration if total_duration > 0 else 0.0
+
+        # Diagnostic logging for debugging VAD issues
+        if ratio > 0.0:
+            logger.debug(
+                f"VAD detected speech: {len(segments)} segments, "
+                f"{total_speech:.3f}s/{total_duration:.3f}s = {ratio:.2%}"
+            )
+
+        return ratio
 
     def extract_speech_segments(
         self,

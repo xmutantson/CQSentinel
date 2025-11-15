@@ -9,6 +9,7 @@ import numpy as np
 import sounddevice as sd
 import logging
 import threading
+import time
 from typing import List, Callable, Optional
 from dataclasses import dataclass, field
 from enum import Enum
@@ -31,6 +32,88 @@ class AudioChunk:
     sample_rate: int
     timestamp: float
     metadata: Optional[dict] = field(default_factory=dict)
+
+
+class AudioBuffer:
+    """
+    Buffers small audio chunks into larger segments for processing.
+
+    Speech detection needs context - typically 0.5-1 second of audio.
+    This buffers small chunks (64ms) from sounddevice into larger
+    segments (1s) suitable for VAD/transcription.
+    """
+
+    def __init__(self, buffer_duration: float = 1.0, sample_rate: int = 16000):
+        """
+        Initialize audio buffer.
+
+        Args:
+            buffer_duration: Target buffer size in seconds
+            sample_rate: Audio sample rate
+        """
+        self.buffer_duration = buffer_duration
+        self.sample_rate = sample_rate
+        self.buffer_size_samples = int(buffer_duration * sample_rate)
+
+        self._buffer = np.array([], dtype='float32')
+        self._lock = threading.Lock()
+        self._chunks_buffered = 0
+        self._buffers_released = 0
+
+        logger.info(
+            f"AudioBuffer initialized: {buffer_duration}s buffer "
+            f"({self.buffer_size_samples} samples @ {sample_rate}Hz)"
+        )
+
+    def add_chunk(self, audio_chunk: np.ndarray) -> Optional[np.ndarray]:
+        """
+        Add audio chunk to buffer.
+
+        Args:
+            audio_chunk: Audio data to add
+
+        Returns:
+            Full buffer if ready, None otherwise
+        """
+        with self._lock:
+            # Append to buffer
+            self._buffer = np.concatenate([self._buffer, audio_chunk])
+            self._chunks_buffered += 1
+
+            # Check if buffer is full
+            if len(self._buffer) >= self.buffer_size_samples:
+                # Extract full buffer
+                full_buffer = self._buffer[:self.buffer_size_samples]
+
+                # Keep overflow for next buffer (overlap)
+                # Use 50% overlap for better speech boundary detection
+                overlap_size = self.buffer_size_samples // 2
+                self._buffer = self._buffer[overlap_size:]
+
+                self._buffers_released += 1
+
+                # Log every 10 buffers
+                if self._buffers_released % 10 == 0:
+                    logger.debug(
+                        f"AudioBuffer: released {self._buffers_released} buffers, "
+                        f"buffered {self._chunks_buffered} chunks"
+                    )
+
+                return full_buffer
+
+            return None
+
+    def get_stats(self) -> dict:
+        """Get buffer statistics"""
+        with self._lock:
+            return {
+                'buffer_duration': self.buffer_duration,
+                'current_samples': len(self._buffer),
+                'target_samples': self.buffer_size_samples,
+                'fill_percent': (len(self._buffer) / self.buffer_size_samples) * 100,
+                'chunks_buffered': self._chunks_buffered,
+                'buffers_released': self._buffers_released
+            }
 
 
 class AudioBroadcaster:
@@ -120,6 +203,11 @@ class AudioMonitor:
         self._monitoring_stage: Optional[AudioStage] = None
         self._volume = 1.0
 
+        # Diagnostics counters
+        self._chunks_received = 0
+        self._chunks_played = 0
+        self._last_chunk_time = None
+
         logger.info(f"AudioMonitor initialized: sample_rate={sample_rate}, output_device={output_device}")
 
     def start_monitoring(self, stage: AudioStage, volume: float = 1.0):
@@ -135,6 +223,11 @@ class AudioMonitor:
 
         self._monitoring_stage = stage
         self._volume = max(0.0, min(1.0, volume))
+
+        # Reset diagnostics
+        self._chunks_received = 0
+        self._chunks_played = 0
+        self._last_chunk_time = None
 
         try:
             # Create output stream for playback
@@ -173,6 +266,21 @@ class AudioMonitor:
         Args:
             chunk: AudioChunk to process
         """
+        import time
+
+        # Track all chunks received (for diagnostics)
+        if self._monitoring_stage is not None:
+            self._chunks_received += 1
+            self._last_chunk_time = time.time()
+
+            # Log every 50 chunks for diagnostics
+            if self._chunks_received % 50 == 0:
+                logger.debug(
+                    f"AudioMonitor: received {self._chunks_received} chunks total, "
+                    f"played {self._chunks_played}, monitoring {self._monitoring_stage.value}, "
+                    f"chunk stage: {chunk.stage.value}"
+                )
+
         # Only play back if monitoring this stage
         if (self._playback_stream is not None and
             self._monitoring_stage == chunk.stage):
@@ -181,8 +289,16 @@ class AudioMonitor:
                 # Apply volume and write to output stream
                 audio_data = chunk.data * self._volume
                 self._playback_stream.write(audio_data.astype('float32'))
+                self._chunks_played += 1
+
+                # Log first few chunks to confirm playback started
+                if self._chunks_played <= 3:
+                    logger.info(
+                        f"AudioMonitor: playing chunk #{self._chunks_played} "
+                        f"({len(audio_data)} samples, stage: {chunk.stage.value})"
+                    )
             except Exception as e:
-                logger.debug(f"Playback error: {e}")
+                logger.error(f"Playback error: {e}", exc_info=True)
 
     @property
     def is_monitoring(self) -> bool:
@@ -193,6 +309,23 @@ class AudioMonitor:
     def monitoring_stage(self) -> Optional[AudioStage]:
         """Get current monitoring stage"""
         return self._monitoring_stage
+
+    def get_diagnostics(self) -> dict:
+        """
+        Get monitoring diagnostics.
+
+        Returns:
+            Dict with diagnostics info
+        """
+        import time
+        return {
+            'monitoring_stage': self._monitoring_stage.value if self._monitoring_stage else None,
+            'chunks_received': self._chunks_received,
+            'chunks_played': self._chunks_played,
+            'playback_active': self._playback_stream is not None,
+            'last_chunk_time': self._last_chunk_time,
+            'seconds_since_last_chunk': time.time() - self._last_chunk_time if self._last_chunk_time else None
+        }
 
 
 class AudioLevelMeter:

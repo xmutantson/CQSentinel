@@ -9,7 +9,7 @@ to improve startup time.
 from cqsentinel.audio.capture import AudioCapture, list_audio_devices, list_audio_output_devices
 from cqsentinel.audio.monitor import (
     AudioBroadcaster, AudioMonitor, AudioLevelMeter,
-    AudioStage, AudioChunk
+    AudioStage, AudioChunk, AudioBuffer
 )
 
 # Lazy imports for heavy modules (contains torch/ML dependencies)
@@ -23,6 +23,7 @@ __all__ = [
     'AudioLevelMeter',
     'AudioStage',
     'AudioChunk',
+    'AudioBuffer',
     'AudioDenoiser',
     'VoiceActivityDetector'
 ]
