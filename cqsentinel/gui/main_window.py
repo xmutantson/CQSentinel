@@ -173,8 +173,9 @@ class TranscriptionWorker(QObject):
         self._voice_embedder = None
         self._voice_db = None
         self._log_queue = None  # For thread-safe logging
+        self._transcriber_lock = None  # Lock for shared transcriber
 
-    def set_parameters(self, audio, sample_rate, transcriber, voice_embedder, voice_db, log_queue=None):
+    def set_parameters(self, audio, sample_rate, transcriber, voice_embedder, voice_db, log_queue=None, transcriber_lock=None):
         """Set transcription parameters (call from main thread before starting)"""
         self._audio = audio
         self._sample_rate = sample_rate
@@ -182,6 +183,7 @@ class TranscriptionWorker(QObject):
         self._voice_embedder = voice_embedder
         self._voice_db = voice_db
         self._log_queue = log_queue  # Queue for thread-safe logging
+        self._transcriber_lock = transcriber_lock  # Lock for shared transcriber
 
     def transcribe(self):
         """Perform transcription (runs in worker thread)"""
@@ -277,12 +279,22 @@ class TranscriptionWorker(QObject):
                         except Exception as e:
                             logger.debug(f"Speaker detection failed: {e}")
 
-                    # Transcribe
-                    transcripts = self._transcriber.transcribe(
-                        self._audio,
-                        sample_rate=self._sample_rate,
-                        vad_filter=False
-                    )
+                    # Transcribe (acquire lock because WhisperModel is NOT thread-safe)
+                    # Multiple workers sharing the same transcriber would crash in C++ code
+                    if self._transcriber_lock is not None:
+                        with self._transcriber_lock:
+                            transcripts = self._transcriber.transcribe(
+                                self._audio,
+                                sample_rate=self._sample_rate,
+                                vad_filter=False
+                            )
+                    else:
+                        # No lock provided (shouldn't happen, but fallback)
+                        transcripts = self._transcriber.transcribe(
+                            self._audio,
+                            sample_rate=self._sample_rate,
+                            vad_filter=False
+                        )
 
                     # Emit results
                     for transcript in transcripts:
@@ -355,12 +367,21 @@ class TranscriptionWorker(QObject):
                     except Exception as e:
                         logger.debug(f"Speaker detection failed: {e}")
 
-                # Transcribe
-                transcripts = self._transcriber.transcribe(
-                    self._audio,
-                    sample_rate=self._sample_rate,
-                    vad_filter=False
-                )
+                # Transcribe (acquire lock because WhisperModel is NOT thread-safe)
+                if self._transcriber_lock is not None:
+                    with self._transcriber_lock:
+                        transcripts = self._transcriber.transcribe(
+                            self._audio,
+                            sample_rate=self._sample_rate,
+                            vad_filter=False
+                        )
+                else:
+                    # No lock provided (shouldn't happen, but fallback)
+                    transcripts = self._transcriber.transcribe(
+                        self._audio,
+                        sample_rate=self._sample_rate,
+                        vad_filter=False
+                    )
 
                 # Emit results
                 for transcript in transcripts:
@@ -448,6 +469,7 @@ class MainWindow(QMainWindow):
         self._active_transcriptions = 0  # Counter for in-flight transcriptions
         self._max_concurrent_transcriptions = 3  # Maximum parallel transcriptions
         self._transcription_lock = threading.Lock()  # Protect counter
+        self._transcriber_lock = threading.Lock()  # Protect shared transcriber (WhisperModel is NOT thread-safe)
 
         # Thread-safe logging with QueueHandler/QueueListener pattern
         # This prevents Qt threading violations when worker threads log to stdout/stderr
@@ -854,7 +876,8 @@ class MainWindow(QMainWindow):
             transcriber=self.audio_pipeline.transcriber,
             voice_embedder=self.voice_embedder,
             voice_db=self.voice_db,
-            log_queue=self._log_queue  # Thread-safe logging
+            log_queue=self._log_queue,  # Thread-safe logging
+            transcriber_lock=self._transcriber_lock  # Protect shared transcriber
         )
 
         # Start worker when thread starts
