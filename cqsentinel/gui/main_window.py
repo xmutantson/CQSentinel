@@ -187,6 +187,8 @@ class TranscriptionWorker(QObject):
 
     def transcribe(self):
         """Perform transcription (runs in worker thread)"""
+        # DIAGNOSTIC: Print to console immediately (before any imports)
+        print("[WORKER] transcribe() called - worker thread started")
         try:
             import time
             import logging
@@ -194,6 +196,8 @@ class TranscriptionWorker(QObject):
             import io
             import os
             from logging.handlers import QueueHandler
+
+            print("[WORKER] Imports complete, configuring logging...")
 
             # Configure thread-safe logging using QueueHandler
             # This prevents Qt threading violations in PyInstaller frozen builds
@@ -278,19 +282,25 @@ class TranscriptionWorker(QObject):
                         pass
 
                 try:
+                    print("[WORKER] Setting up OS-level pipe redirection...")
                     # Duplicate original file descriptors
                     saved_stdout_fd = os.dup(1)  # Duplicate stdout fd
                     saved_stderr_fd = os.dup(2)  # Duplicate stderr fd
+                    print(f"[WORKER] Saved original fds: stdout={saved_stdout_fd}, stderr={saved_stderr_fd}")
 
                     # Create a pipe for capturing C++ stderr output
                     pipe_read_fd, pipe_write_fd = os.pipe()
+                    print(f"[WORKER] Created pipe: read_fd={pipe_read_fd}, write_fd={pipe_write_fd}")
 
                     # Redirect stderr to pipe (stdout to devnull since we don't expect stdout output)
                     os.dup2(pipe_write_fd, 2)  # Redirect stderr fd to pipe
+                    print("[WORKER] Redirected stderr to pipe")
+
                     # For stdout, just redirect to devnull to avoid Qt issues
                     devnull_fd = os.open(os.devnull, os.O_WRONLY)
                     os.dup2(devnull_fd, 1)
                     os.close(devnull_fd)
+                    print("[WORKER] Redirected stdout to devnull")
 
                     # Start background thread to read from pipe and forward to logging
                     import threading
@@ -300,9 +310,11 @@ class TranscriptionWorker(QObject):
                         daemon=True
                     )
                     pipe_reader_thread.start()
+                    print("[WORKER] Started pipe reader thread")
 
                 except (OSError, AttributeError) as e:
                     # OS-level redirection failed (shouldn't happen, but fallback gracefully)
+                    print(f"[WORKER] ERROR: Failed to set up pipe redirection: {e}")
                     logger.debug(f"Failed to set up pipe redirection: {e}")
                     pass
 
