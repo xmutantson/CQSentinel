@@ -48,6 +48,12 @@ datas += collect_data_files('sounddevice')
 
 # AI model packages - include data files
 try:
+    datas += collect_data_files('av')
+    print("✓ Including PyAV data files")
+except:
+    print("⚠ PyAV (av) not found")
+
+try:
     datas += collect_data_files('faster_whisper')
     print("✓ Including faster-whisper data files")
 except:
@@ -89,6 +95,11 @@ hiddenimports = [
     'colorlog',
     'yaml',
     # AI packages
+    'av',  # PyAV - required by faster-whisper
+    'av.audio',
+    'av.video',
+    'av.container',
+    'av.codec',
     'faster_whisper',
     'ctranslate2',
     'resemblyzer',
@@ -100,6 +111,12 @@ hiddenimports += collect_submodules('torch')
 hiddenimports += collect_submodules('torchaudio')
 
 # Add AI package submodules
+try:
+    hiddenimports += collect_submodules('av')
+    print("✓ Including PyAV submodules")
+except:
+    pass
+
 try:
     hiddenimports += collect_submodules('faster_whisper')
     print("✓ Including faster-whisper submodules")
