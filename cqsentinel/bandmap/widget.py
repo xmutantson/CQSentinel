@@ -69,6 +69,12 @@ class BandMapWidget(QWidget):
         self.show_callsigns = True
         self.show_signal_strength = True
 
+        # Zoom settings
+        self.zoom_level = 1.0  # 1.0 = show entire band, higher = zoomed in
+        self.zoom_center_freq = None  # Center frequency when zoomed (None = center of band)
+        self.min_zoom = 1.0
+        self.max_zoom = 10.0
+
         self._init_ui()
 
         logger.info("BandMapWidget initialized")
@@ -91,15 +97,46 @@ class BandMapWidget(QWidget):
         self.stats_label = QLabel("Stations: 0 | New: 0 | Worked: 0")
         header_layout.addWidget(self.stats_label)
 
+        # Zoom controls
+        from PyQt5.QtWidgets import QSlider
+        from PyQt5.QtCore import Qt
+        header_layout.addWidget(QLabel("Zoom:"))
+        self.zoom_slider = QSlider(Qt.Orientation.Horizontal)
+        self.zoom_slider.setMinimum(int(self.min_zoom * 10))
+        self.zoom_slider.setMaximum(int(self.max_zoom * 10))
+        self.zoom_slider.setValue(int(self.zoom_level * 10))
+        self.zoom_slider.setMaximumWidth(100)
+        self.zoom_slider.setToolTip("Zoom level: 1x = entire band, 10x = maximum zoom")
+        self.zoom_slider.valueChanged.connect(self.on_zoom_changed)
+        header_layout.addWidget(self.zoom_slider)
+
+        self.zoom_label = QLabel("1.0x")
+        header_layout.addWidget(self.zoom_label)
+
         layout.addLayout(header_layout)
 
-        # Canvas for drawing
+        # Canvas for drawing (wrapped in scroll area for horizontal scrolling when zoomed)
+        from PyQt5.QtWidgets import QScrollArea
+        self.canvas_scroll_area = QScrollArea()
+        self.canvas_scroll_area.setWidgetResizable(False)  # Don't auto-resize - we control width
+        self.canvas_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.canvas_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        # Create canvas widget
+        self.canvas = QWidget()
+        self.canvas.setMouseTracking(True)
+        self.canvas.paintEvent = self.paintEvent  # Forward paint events to our handler
+        self.canvas.mousePressEvent = self.mousePressEvent
+        self.canvas.mouseDoubleClickEvent = self.mouseDoubleClickEvent
+
+        self.canvas_scroll_area.setWidget(self.canvas)
+        layout.addWidget(self.canvas_scroll_area)
+
         # Reduced height to fit 6 bands on screen without scrolling (600-900px total)
         self.setMinimumHeight(100)
         self.setMaximumHeight(150)
         self.setMouseTracking(True)
 
-        layout.addStretch()
         self.setLayout(layout)
 
         # Update display
@@ -126,7 +163,37 @@ class BandMapWidget(QWidget):
         """
         self.freq_min = freq_min_hz
         self.freq_max = freq_max_hz
+        # Reset zoom when changing frequency range
+        self.zoom_level = 1.0
+        self.zoom_center_freq = None
+        if hasattr(self, 'zoom_slider'):
+            self.zoom_slider.setValue(int(self.zoom_level * 10))
         self.update()
+
+    def on_zoom_changed(self, value):
+        """Handle zoom slider changes"""
+        self.zoom_level = value / 10.0
+        self.zoom_label.setText(f"{self.zoom_level:.1f}x")
+
+        # If first time zooming, center on middle of band
+        if self.zoom_center_freq is None:
+            self.zoom_center_freq = (self.freq_min + self.freq_max) / 2
+
+        # Update canvas width and redraw
+        self.update_canvas_geometry()
+        self.update()
+
+    def update_canvas_geometry(self):
+        """Update canvas size based on zoom level"""
+        # Get the viewport width (available space)
+        viewport_width = self.canvas_scroll_area.viewport().width()
+
+        # Canvas width = viewport width * zoom level
+        canvas_width = int(viewport_width * self.zoom_level)
+
+        # Set canvas size
+        canvas_height = self.canvas_scroll_area.viewport().height()
+        self.canvas.setFixedSize(canvas_width, max(80, canvas_height))
 
     def update_display(self):
         """Update the display with current band map data."""

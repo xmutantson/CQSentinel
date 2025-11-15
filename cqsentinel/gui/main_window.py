@@ -196,6 +196,11 @@ class MainWindow(QMainWindow):
 
         logger.info("Main window initialized")
 
+        # Set initial band visibility based on checkbox state
+        # Use QTimer to ensure UI is fully rendered before calculating heights
+        from PyQt5.QtCore import QTimer
+        QTimer.singleShot(100, self.update_band_visibility)
+
     def init_advanced_features(self):
         """Initialize Phase 2-8 advanced features (audio processing, AI models, etc.)"""
         try:
@@ -350,13 +355,15 @@ class MainWindow(QMainWindow):
                 # Add to layout
                 bandmaps_layout.addWidget(band_map_widget)
 
-        bandmaps_layout.addStretch()
+        # Don't add stretch - we'll manage heights dynamically
+        # bandmaps_layout.addStretch()
 
         # Make scrollable
-        scroll_area = QScrollArea()
-        scroll_area.setWidget(bandmaps_container)
-        scroll_area.setWidgetResizable(True)
-        bandmap_layout.addWidget(scroll_area, stretch=7)
+        self.bandmaps_scroll_area = QScrollArea()
+        self.bandmaps_scroll_area.setWidget(bandmaps_container)
+        self.bandmaps_scroll_area.setWidgetResizable(True)
+        self.bandmaps_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        bandmap_layout.addWidget(self.bandmaps_scroll_area, stretch=7)
 
         # Station detail panel (right side, 30% width)
         self.station_detail_panel = StationDetailPanel()
@@ -429,6 +436,7 @@ class MainWindow(QMainWindow):
         for band in ["160m", "80m", "40m", "20m", "15m", "10m"]:
             cb = QCheckBox(band)
             cb.setChecked(band in self.config.scan.enabled_bands)
+            cb.stateChanged.connect(self.on_band_selection_changed)
             self.band_checkboxes[band] = cb
             layout.addWidget(cb)
 
@@ -881,6 +889,50 @@ class MainWindow(QMainWindow):
                 except:
                     pass
                 self.n3fjp_client = None
+
+    def on_band_selection_changed(self):
+        """Handle band checkbox state changes - show/hide bands and adjust heights"""
+        self.update_band_visibility()
+
+    def update_band_visibility(self):
+        """Update which band displays are visible and adjust their heights to fit viewport"""
+        # Get list of enabled bands
+        enabled_bands = [band for band, cb in self.band_checkboxes.items() if cb.isChecked()]
+        num_visible = len(enabled_bands)
+
+        if num_visible == 0:
+            # Hide all if none selected
+            for band_widget in self.band_map_widgets.values():
+                band_widget.setVisible(False)
+            return
+
+        # Show/hide bands based on checkbox state
+        for band_name, band_widget in self.band_map_widgets.items():
+            should_be_visible = band_name in enabled_bands
+            band_widget.setVisible(should_be_visible)
+
+        # Calculate height for each visible band to fit in viewport
+        # Get available height from scroll area
+        available_height = self.bandmaps_scroll_area.viewport().height()
+
+        # Reserve some space for margins/spacing (10px per band)
+        spacing_total = num_visible * 10
+        usable_height = max(100, available_height - spacing_total)
+
+        # Divide equally among visible bands
+        height_per_band = usable_height // num_visible if num_visible > 0 else 150
+
+        # Ensure reasonable min/max bounds
+        height_per_band = max(80, min(height_per_band, 250))
+
+        # Apply heights to all visible bands
+        for band_name in enabled_bands:
+            if band_name in self.band_map_widgets:
+                widget = self.band_map_widgets[band_name]
+                widget.setMinimumHeight(height_per_band)
+                widget.setMaximumHeight(height_per_band)
+
+        logger.info(f"Updated band visibility: {num_visible} bands visible, {height_per_band}px each")
 
     def _check_voice_db_age(self):
         """Check voice database age and warn if stale"""
