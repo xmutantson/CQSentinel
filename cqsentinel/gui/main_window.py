@@ -202,43 +202,57 @@ class TranscriptionWorker(QObject):
             # Configure thread-safe logging using QueueHandler
             # This prevents Qt threading violations in PyInstaller frozen builds
             if self._log_queue is not None:
-                # Create QueueHandler for this worker thread
-                queue_handler = QueueHandler(self._log_queue)
+                try:
+                    # Create QueueHandler for this worker thread
+                    queue_handler = QueueHandler(self._log_queue)
+                    print("[WORKER] Created QueueHandler")
 
-                # Get all relevant loggers that may be used in worker thread
-                # External libraries
-                fw_logger = logging.getLogger('faster_whisper')
-                httpx_logger = logging.getLogger('httpx')
-                # CQSentinel modules used by worker
-                worker_logger = logging.getLogger(__name__)
-                speech_logger = logging.getLogger('cqsentinel.speech.transcription')
-                voice_embed_logger = logging.getLogger('cqsentinel.voice.embeddings')
-                voice_db_logger = logging.getLogger('cqsentinel.voice.database')
-                # Root logger (catches everything not caught by specific loggers)
-                root_logger = logging.getLogger()
+                    # Get all relevant loggers that may be used in worker thread
+                    # External libraries
+                    fw_logger = logging.getLogger('faster_whisper')
+                    httpx_logger = logging.getLogger('httpx')
+                    # CQSentinel modules used by worker
+                    worker_logger = logging.getLogger(__name__)
+                    speech_logger = logging.getLogger('cqsentinel.speech.transcription')
+                    voice_embed_logger = logging.getLogger('cqsentinel.voice.embeddings')
+                    voice_db_logger = logging.getLogger('cqsentinel.voice.database')
+                    # Root logger (catches everything not caught by specific loggers)
+                    root_logger = logging.getLogger()
+                    print("[WORKER] Got all loggers")
 
-                # Redirect Python warnings to logging (they might be escaping)
-                import warnings
-                logging.captureWarnings(True)
-                warnings_logger = logging.getLogger('py.warnings')
+                    # Redirect Python warnings to logging (they might be escaping)
+                    import warnings
+                    logging.captureWarnings(True)
+                    warnings_logger = logging.getLogger('py.warnings')
+                    print("[WORKER] Configured warnings capture")
 
-                # Save original handlers and propagate settings
-                saved_state = []
-                for log in [worker_logger, fw_logger, httpx_logger, speech_logger, voice_embed_logger, voice_db_logger, root_logger, warnings_logger]:
-                    saved_state.append((log, log.handlers[:], log.propagate))
-                    log.handlers.clear()
-                    log.addHandler(queue_handler)
-                    # CRITICAL: Disable propagation to prevent records from reaching parent loggers
-                    # Parent loggers may have Qt-unsafe handlers that cause threading violations
-                    log.propagate = False
+                    # Save original handlers and propagate settings
+                    saved_state = []
+                    for log in [worker_logger, fw_logger, httpx_logger, speech_logger, voice_embed_logger, voice_db_logger, root_logger, warnings_logger]:
+                        saved_state.append((log, log.handlers[:], log.propagate))
+                        log.handlers.clear()
+                        log.addHandler(queue_handler)
+                        # CRITICAL: Disable propagation to prevent records from reaching parent loggers
+                        # Parent loggers may have Qt-unsafe handlers that cause threading violations
+                        log.propagate = False
+                    print("[WORKER] Logger handlers configured")
+
+                    print("[WORKER] Logger setup complete, about to redirect stdout/stderr...")
+                except Exception as e:
+                    print(f"[WORKER] EXCEPTION during logger setup: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    raise
 
                 # CRITICAL: Redirect stdout/stderr to prevent direct writes from touching Qt
                 # Libraries like tqdm, print() statements, or C++ code might write directly
                 # In frozen builds, sys.stdout/stderr are Qt-wrapped and cause threading violations
                 saved_stdout = sys.stdout
                 saved_stderr = sys.stderr
+                print(f"[WORKER] Saved stdout={saved_stdout}, stderr={saved_stderr}")
                 sys.stdout = io.StringIO()  # Capture stdout (Python level)
                 sys.stderr = io.StringIO()  # Capture stderr (Python level)
+                # NOTE: print() no longer works after this point!
 
                 # CRITICAL: Also redirect at OS level for C++ libraries (ctranslate2, PyTorch)
                 # C++ code writes directly to file descriptors 1/2, bypassing Python's sys.stdout/stderr
@@ -282,25 +296,25 @@ class TranscriptionWorker(QObject):
                         pass
 
                 try:
-                    print("[WORKER] Setting up OS-level pipe redirection...")
+                    logger.info("[WORKER] Setting up OS-level pipe redirection...")
                     # Duplicate original file descriptors
                     saved_stdout_fd = os.dup(1)  # Duplicate stdout fd
                     saved_stderr_fd = os.dup(2)  # Duplicate stderr fd
-                    print(f"[WORKER] Saved original fds: stdout={saved_stdout_fd}, stderr={saved_stderr_fd}")
+                    logger.info(f"[WORKER] Saved original fds: stdout={saved_stdout_fd}, stderr={saved_stderr_fd}")
 
                     # Create a pipe for capturing C++ stderr output
                     pipe_read_fd, pipe_write_fd = os.pipe()
-                    print(f"[WORKER] Created pipe: read_fd={pipe_read_fd}, write_fd={pipe_write_fd}")
+                    logger.info(f"[WORKER] Created pipe: read_fd={pipe_read_fd}, write_fd={pipe_write_fd}")
 
                     # Redirect stderr to pipe (stdout to devnull since we don't expect stdout output)
                     os.dup2(pipe_write_fd, 2)  # Redirect stderr fd to pipe
-                    print("[WORKER] Redirected stderr to pipe")
+                    logger.info("[WORKER] Redirected stderr to pipe")
 
                     # For stdout, just redirect to devnull to avoid Qt issues
                     devnull_fd = os.open(os.devnull, os.O_WRONLY)
                     os.dup2(devnull_fd, 1)
                     os.close(devnull_fd)
-                    print("[WORKER] Redirected stdout to devnull")
+                    logger.info("[WORKER] Redirected stdout to devnull")
 
                     # Start background thread to read from pipe and forward to logging
                     import threading
@@ -310,12 +324,11 @@ class TranscriptionWorker(QObject):
                         daemon=True
                     )
                     pipe_reader_thread.start()
-                    print("[WORKER] Started pipe reader thread")
+                    logger.info("[WORKER] Started pipe reader thread")
 
                 except (OSError, AttributeError) as e:
                     # OS-level redirection failed (shouldn't happen, but fallback gracefully)
-                    print(f"[WORKER] ERROR: Failed to set up pipe redirection: {e}")
-                    logger.debug(f"Failed to set up pipe redirection: {e}")
+                    logger.error(f"[WORKER] ERROR: Failed to set up pipe redirection: {e}")
                     pass
 
                 try:
@@ -518,9 +531,13 @@ class TranscriptionWorker(QObject):
                 self.transcription_complete.emit()
 
         except Exception as e:
+            print(f"[WORKER] EXCEPTION in transcribe(): {e}")
+            import traceback
+            traceback.print_exc()
             logger.error(f"Transcription failed: {e}", exc_info=True)
             self.error_occurred.emit(str(e))
         finally:
+            print("[WORKER] transcribe() finally block - emitting completion signal")
             self.transcription_complete.emit()
 
 
