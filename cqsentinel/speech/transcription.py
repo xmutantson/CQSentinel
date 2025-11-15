@@ -64,10 +64,14 @@ class SpeechTranscriber:
             return
 
         try:
-            logger.info(f"Loading Whisper {self.model_size} model...")
+            logger.info(f"[TRANSCRIBER] Loading Whisper {self.model_size} model...")
+            logger.info(f"[TRANSCRIBER] Device: {self.device}, Compute type: {self.compute_type}")
 
+            logger.info("[TRANSCRIBER] Importing faster_whisper.WhisperModel...")
             from faster_whisper import WhisperModel
+            logger.info("[TRANSCRIBER] Import successful")
 
+            logger.info("[TRANSCRIBER] Instantiating WhisperModel (this may download model files)...")
             self.model = WhisperModel(
                 self.model_size,
                 device=self.device,
@@ -75,7 +79,7 @@ class SpeechTranscriber:
                 download_root=None  # Use default cache
             )
 
-            logger.info(f"[OK] Whisper {self.model_size} model loaded")
+            logger.info(f"[TRANSCRIBER] ✓ Whisper {self.model_size} model loaded successfully")
 
         except ImportError:
             logger.error("faster-whisper not installed. Install with: pip install faster-whisper")

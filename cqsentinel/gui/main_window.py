@@ -244,6 +244,23 @@ class TranscriptionWorker(QObject):
                     traceback.print_exc()
                     raise
 
+                # DIAGNOSTIC: Test if os.pipe() works before we try to use it
+                print("[WORKER] DIAGNOSTIC: Testing os.pipe() functionality...")
+                pipe_test_passed = False
+                try:
+                    test_read_fd, test_write_fd = os.pipe()
+                    print(f"[WORKER] DIAGNOSTIC: os.pipe() SUCCESS - created fds: read={test_read_fd}, write={test_write_fd}")
+                    # Clean up test pipe
+                    os.close(test_read_fd)
+                    os.close(test_write_fd)
+                    pipe_test_passed = True
+                    print("[WORKER] DIAGNOSTIC: os.pipe() test PASSED")
+                except Exception as e:
+                    print(f"[WORKER] DIAGNOSTIC: os.pipe() FAILED with error: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    pipe_test_passed = False
+
                 # CRITICAL: Redirect stdout/stderr to prevent direct writes from touching Qt
                 # Libraries like tqdm, print() statements, or C++ code might write directly
                 # In frozen builds, sys.stdout/stderr are Qt-wrapped and cause threading violations
@@ -338,10 +355,18 @@ class TranscriptionWorker(QObject):
                 try:
                     logger.info(f"Transcribing {len(self._audio)/self._sample_rate:.1f}s of speech...")
 
+                    # DIAGNOSTIC: Check model states before loading
+                    logger.info("[WORKER] Checking model states...")
+                    if self._voice_embedder:
+                        logger.info(f"[WORKER] VoiceEmbedder present, encoder loaded: {self._voice_embedder.encoder is not None}")
+                    if self._transcriber:
+                        logger.info(f"[WORKER] Transcriber present, model loaded: {self._transcriber.model is not None}")
+
                     # Identify speaker(s) using sliding window voice embeddings
                     speaker_labels = []
                     if self._voice_embedder and self._voice_db:
                         try:
+                            logger.info("[WORKER] About to call detect_speaker_changes (may load Resemblyzer model)...")
                             # Detect speaker changes
                             speaker_segments = self._voice_embedder.detect_speaker_changes(
                                 self._audio,
@@ -381,6 +406,7 @@ class TranscriptionWorker(QObject):
 
                     # Transcribe (acquire lock because WhisperModel is NOT thread-safe)
                     # Multiple workers sharing the same transcriber would crash in C++ code
+                    logger.info("[WORKER] About to transcribe with WhisperModel (may load model on first use)...")
                     if self._transcriber_lock is not None:
                         with self._transcriber_lock:
                             transcripts = self._transcriber.transcribe(
