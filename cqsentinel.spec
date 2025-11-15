@@ -212,9 +212,9 @@ a = Analysis(
         # Torch modules we explicitly don't need
         'torch.distributed',
         'torch.testing',
-        'torch.cuda',  # We're CPU-only
-        'torch.backends.cudnn',
-        'torch.backends.cuda',
+        # NOTE: torch.cuda must be included even for CPU-only builds
+        # PyTorch's initialization checks for CUDA availability by importing torch.cuda
+        # Excluding it causes "No module named 'torch.cuda'" errors at runtime
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
