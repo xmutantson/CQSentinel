@@ -170,20 +170,36 @@ class AudioPipeline:
         Returns:
             Dict with has_speech, speech_ratio
         """
+        # Calculate duration for context
+        duration = len(audio) / self.sample_rate
+
         if check_voice_only:
             # Skip denoising for speed
-            has_speech = self.vad.has_speech(audio)
-            speech_ratio = self.vad.get_speech_ratio(audio) if has_speech else 0.0
+            # ALWAYS calculate speech_ratio (don't skip based on has_speech check)
+            # This is critical for short audio chunks (~64ms) in streaming mode
+            speech_ratio = self.vad.get_speech_ratio(audio)
+
+            # For short chunks, consider any detected speech as "has_speech"
+            # Use a much lower threshold than has_speech() default (0.5s)
+            if duration < 0.2:  # Chunks shorter than 200ms
+                has_speech = speech_ratio > 0.0
+            else:
+                has_speech = self.vad.has_speech(audio, min_duration=0.1)
         else:
             # Full processing without transcription
             clean = self.denoiser.denoise(audio)
-            has_speech = self.vad.has_speech(clean)
             speech_ratio = self.vad.get_speech_ratio(clean)
+
+            # Same short-chunk handling for denoised audio
+            if duration < 0.2:
+                has_speech = speech_ratio > 0.0
+            else:
+                has_speech = self.vad.has_speech(clean, min_duration=0.1)
 
         return {
             'has_speech': has_speech,
             'speech_ratio': speech_ratio,
-            'duration': len(audio) / self.sample_rate
+            'duration': duration
         }
 
     def get_transcript_text(self, audio: np.ndarray) -> str:
