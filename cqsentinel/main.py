@@ -84,23 +84,34 @@ def main():
         if sys.stdout is None:
             sys.stdout = io.StringIO()
 
+    # Print to console for debugging (before logging is set up)
+    print("CQSentinel starting...")
+    print(f"Python version: {sys.version}")
+    print(f"Frozen: {getattr(sys, 'frozen', False)}")
+    print(f"Executable: {sys.executable}")
+    print("")
+
     try:
         # Import PyQt5 first (this is fast)
+        print("Importing PyQt5...")
         from PyQt5.QtWidgets import QApplication
         from PyQt5.QtCore import Qt
 
         # Create Qt application FIRST (very fast)
+        print("Creating Qt application...")
         app = QApplication(sys.argv)
         app.setApplicationName("CQSentinel")
         app.setOrganizationName("CQSentinel")
 
         # Show splash screen IMMEDIATELY (before any other imports)
+        print("Loading splash screen...")
         from cqsentinel.gui.splash_screen import SplashScreen
         splash = SplashScreen()
         splash.update_message("Starting CQSentinel...")
         app.processEvents()  # Force UI update
 
         # Now load configuration (after splash is visible)
+        print("Loading configuration...")
         splash.update_message("Loading configuration...")
         app.processEvents()
         from cqsentinel.config import get_config_manager, get_config
@@ -166,15 +177,18 @@ def main():
             logger.info("AI models already available")
 
         # Import MainWindow after splash is shown (this is a slow import)
+        print("Importing main window module...")
         splash.update_message("Loading modules...")
         app.processEvents()
         from cqsentinel.gui.main_window import MainWindow
 
         # Create main window (this loads heavy modules)
+        print("Creating main window...")
         splash.update_message("Initializing user interface...")
         app.processEvents()
         window = MainWindow()
         _main_window = window  # Store globally for cleanup
+        print("Main window created successfully!")
 
         # Finish splash and show main window
         splash.finish_loading(window)
@@ -231,4 +245,22 @@ def check_dependencies():
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    try:
+        exit_code = main()
+        sys.exit(exit_code)
+    except Exception as e:
+        # Catch ANY exception during startup
+        print("=" * 70)
+        print("FATAL ERROR - Application crashed during startup!")
+        print("=" * 70)
+        print(f"\nError: {e}")
+        print("\nFull traceback:")
+        traceback.print_exc()
+        print("=" * 70)
+        print("\nPress any key to exit...")
+        try:
+            import msvcrt
+            msvcrt.getch()  # Windows
+        except ImportError:
+            input()  # Linux/Mac
+        sys.exit(1)
