@@ -132,9 +132,15 @@ torch_modules = [
     'torch.nn.modules.normalization',
     'torch.nn.modules.pooling',
     'torch.nn.modules.rnn',  # For Resemblyzer's LSTM
+    'torch.nn.parameter',  # For model Parameters
     'torch.autograd',
     'torch.jit',
+    'torch.jit._state',  # JIT internal state
     'torch.serialization',
+    'torch.storage',  # For loading model weights
+    'torch.cpu',  # CPU backend operations
+    'torch.backends',  # Backend detection (even CPU-only needs this)
+    'torch.backends.cpu',
     'torch.utils',
     'torch.utils.data',
     'torch._utils',
@@ -221,7 +227,11 @@ a = Analysis(
     cipher=block_cipher,
     noarchive=False,
     module_collection_mode={
-        'torch': 'pyz',  # Don't unpack torch, keep it zipped for faster collection
+        # Use 'pyz+py' for torch instead of 'pyz' because:
+        # - PyTorch uses JIT compilation which requires source .py files
+        # - Dynamic imports may fail with bytecode-only 'pyz' mode
+        # - 'pyz+py' includes both .pyc (in archive) and .py (as data files)
+        'torch': 'pyz+py',
     },
 )
 
