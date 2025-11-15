@@ -501,19 +501,32 @@ class MainWindow(QMainWindow):
                                                     # Concatenate all buffered audio
                                                     full_audio = np.concatenate(self._transcription_buffer)
 
+                                                    # Extract all needed references BEFORE creating background thread
+                                                    # to avoid accessing 'self' (QMainWindow) from another thread
+                                                    sample_rate = self.audio.sample_rate
+                                                    transcriber = self.audio_pipeline.transcriber
+                                                    voice_embedder = self.voice_embedder
+                                                    voice_db = self.voice_db
+                                                    transcription_signal = self.transcription_signal
+                                                    transcription_lock = self._transcription_lock
+                                                    max_concurrent = self._max_concurrent_transcriptions
+
                                                     # Transcribe in background thread
-                                                    def transcribe_async_timeout(audio_to_transcribe):
+                                                    def transcribe_async_timeout(audio_to_transcribe, sample_rate, transcriber,
+                                                                                voice_embedder, voice_db, transcription_signal,
+                                                                                transcription_lock, active_transcriptions_ref,
+                                                                                max_concurrent):
                                                         try:
-                                                            logger.info(f"Transcribing {len(audio_to_transcribe)/self.audio.sample_rate:.1f}s of speech (timeout)...")
+                                                            logger.info(f"Transcribing {len(audio_to_transcribe)/sample_rate:.1f}s of speech (timeout)...")
 
                                                             # Identify speaker(s) using sliding window voice embeddings
                                                             speaker_labels = []
-                                                            if self.voice_embedder and self.voice_db:
+                                                            if voice_embedder and voice_db:
                                                                 try:
                                                                     # Detect speaker changes using sliding window analysis
-                                                                    speaker_segments = self.voice_embedder.detect_speaker_changes(
+                                                                    speaker_segments = voice_embedder.detect_speaker_changes(
                                                                         audio_to_transcribe,
-                                                                        sample_rate=self.audio.sample_rate,
+                                                                        sample_rate=sample_rate,
                                                                         window_duration=2.5,
                                                                         stride=1.0,
                                                                         similarity_threshold=0.75
@@ -523,10 +536,10 @@ class MainWindow(QMainWindow):
                                                                     for seg in speaker_segments:
                                                                         if seg['embedding'] is not None:
                                                                             # Try to match against voice database
-                                                                            match = self.voice_db.find_matching_voice(seg['embedding'])
+                                                                            match = voice_db.find_matching_voice(seg['embedding'])
                                                                             if match:
                                                                                 voice_id, similarity = match
-                                                                                operator = self.voice_db.get_operator(voice_id)
+                                                                                operator = voice_db.get_operator(voice_id)
                                                                                 label = operator.callsign or f"Speaker {voice_id[:8]}"
                                                                                 logger.debug(
                                                                                     f"Matched voice at {seg['start']:.1f}-{seg['end']:.1f}s: "
@@ -534,7 +547,7 @@ class MainWindow(QMainWindow):
                                                                                 )
                                                                             else:
                                                                                 # New speaker - add to database
-                                                                                voice_id = self.voice_db.add_operator(
+                                                                                voice_id = voice_db.add_operator(
                                                                                     seg['embedding'],
                                                                                     metadata={'first_heard': time.time()}
                                                                                 )
@@ -559,9 +572,9 @@ class MainWindow(QMainWindow):
                                                                 except Exception as e:
                                                                     logger.debug(f"Speaker detection failed: {e}")
 
-                                                            transcripts = self.audio_pipeline.transcriber.transcribe(
+                                                            transcripts = transcriber.transcribe(
                                                                 audio_to_transcribe,
-                                                                sample_rate=self.audio.sample_rate,
+                                                                sample_rate=sample_rate,
                                                                 vad_filter=False  # We already did VAD
                                                             )
 
@@ -580,7 +593,7 @@ class MainWindow(QMainWindow):
                                                                             # Multiple speakers - show all
                                                                             text = f"[{'/'.join(unique_labels)}] {text}"
 
-                                                                    self.transcription_signal.emit(
+                                                                    transcription_signal.emit(
                                                                         0.0,  # freq_mhz (not scanning, just monitoring)
                                                                         text,
                                                                         None  # callsign (extract later if needed)
@@ -591,15 +604,19 @@ class MainWindow(QMainWindow):
                                                             logger.error(f"Transcription failed: {e}", exc_info=True)
                                                         finally:
                                                             # Decrement active count
-                                                            with self._transcription_lock:
-                                                                self._active_transcriptions -= 1
-                                                                logger.debug(f"Transcription complete ({self._active_transcriptions}/{self._max_concurrent_transcriptions} active)")
+                                                            with transcription_lock:
+                                                                active_transcriptions_ref[0] -= 1
+                                                                logger.debug(f"Transcription complete ({active_transcriptions_ref[0]}/{max_concurrent} active)")
 
                                                     # Run in background
                                                     import threading
+                                                    # Pass mutable reference for active count
+                                                    active_ref = [self._active_transcriptions]
                                                     threading.Thread(
                                                         target=transcribe_async_timeout,
-                                                        args=(full_audio.copy(),),  # Copy to avoid race condition
+                                                        args=(full_audio.copy(), sample_rate, transcriber,
+                                                              voice_embedder, voice_db, transcription_signal,
+                                                              transcription_lock, active_ref, max_concurrent),
                                                         daemon=True
                                                     ).start()
 
@@ -640,19 +657,32 @@ class MainWindow(QMainWindow):
                                                     # Concatenate all buffered audio
                                                     full_audio = np.concatenate(self._transcription_buffer)
 
+                                                    # Extract all needed references BEFORE creating background thread
+                                                    # to avoid accessing 'self' (QMainWindow) from another thread
+                                                    sample_rate = self.audio.sample_rate
+                                                    transcriber = self.audio_pipeline.transcriber
+                                                    voice_embedder = self.voice_embedder
+                                                    voice_db = self.voice_db
+                                                    transcription_signal = self.transcription_signal
+                                                    transcription_lock = self._transcription_lock
+                                                    max_concurrent = self._max_concurrent_transcriptions
+
                                                     # Transcribe in background thread
-                                                    def transcribe_async(audio_to_transcribe):
+                                                    def transcribe_async(audio_to_transcribe, sample_rate, transcriber,
+                                                                        voice_embedder, voice_db, transcription_signal,
+                                                                        transcription_lock, active_transcriptions_ref,
+                                                                        max_concurrent):
                                                         try:
-                                                            logger.info(f"Transcribing {len(audio_to_transcribe)/self.audio.sample_rate:.1f}s of speech...")
+                                                            logger.info(f"Transcribing {len(audio_to_transcribe)/sample_rate:.1f}s of speech...")
 
                                                             # Identify speaker(s) using sliding window voice embeddings
                                                             speaker_labels = []
-                                                            if self.voice_embedder and self.voice_db:
+                                                            if voice_embedder and voice_db:
                                                                 try:
                                                                     # Detect speaker changes using sliding window analysis
-                                                                    speaker_segments = self.voice_embedder.detect_speaker_changes(
+                                                                    speaker_segments = voice_embedder.detect_speaker_changes(
                                                                         audio_to_transcribe,
-                                                                        sample_rate=self.audio.sample_rate,
+                                                                        sample_rate=sample_rate,
                                                                         window_duration=2.5,
                                                                         stride=1.0,
                                                                         similarity_threshold=0.75
@@ -662,10 +692,10 @@ class MainWindow(QMainWindow):
                                                                     for seg in speaker_segments:
                                                                         if seg['embedding'] is not None:
                                                                             # Try to match against voice database
-                                                                            match = self.voice_db.find_matching_voice(seg['embedding'])
+                                                                            match = voice_db.find_matching_voice(seg['embedding'])
                                                                             if match:
                                                                                 voice_id, similarity = match
-                                                                                operator = self.voice_db.get_operator(voice_id)
+                                                                                operator = voice_db.get_operator(voice_id)
                                                                                 label = operator.callsign or f"Speaker {voice_id[:8]}"
                                                                                 logger.debug(
                                                                                     f"Matched voice at {seg['start']:.1f}-{seg['end']:.1f}s: "
@@ -673,7 +703,7 @@ class MainWindow(QMainWindow):
                                                                                 )
                                                                             else:
                                                                                 # New speaker - add to database
-                                                                                voice_id = self.voice_db.add_operator(
+                                                                                voice_id = voice_db.add_operator(
                                                                                     seg['embedding'],
                                                                                     metadata={'first_heard': time.time()}
                                                                                 )
@@ -698,9 +728,9 @@ class MainWindow(QMainWindow):
                                                                 except Exception as e:
                                                                     logger.debug(f"Speaker detection failed: {e}")
 
-                                                            transcripts = self.audio_pipeline.transcriber.transcribe(
+                                                            transcripts = transcriber.transcribe(
                                                                 audio_to_transcribe,
-                                                                sample_rate=self.audio.sample_rate,
+                                                                sample_rate=sample_rate,
                                                                 vad_filter=False  # We already did VAD
                                                             )
 
@@ -719,7 +749,7 @@ class MainWindow(QMainWindow):
                                                                             # Multiple speakers - show all
                                                                             text = f"[{'/'.join(unique_labels)}] {text}"
 
-                                                                    self.transcription_signal.emit(
+                                                                    transcription_signal.emit(
                                                                         0.0,  # freq_mhz (not scanning, just monitoring)
                                                                         text,
                                                                         None  # callsign (extract later if needed)
@@ -730,15 +760,19 @@ class MainWindow(QMainWindow):
                                                             logger.error(f"Transcription failed: {e}", exc_info=True)
                                                         finally:
                                                             # Decrement active count
-                                                            with self._transcription_lock:
-                                                                self._active_transcriptions -= 1
-                                                                logger.debug(f"Transcription complete ({self._active_transcriptions}/{self._max_concurrent_transcriptions} active)")
+                                                            with transcription_lock:
+                                                                active_transcriptions_ref[0] -= 1
+                                                                logger.debug(f"Transcription complete ({active_transcriptions_ref[0]}/{max_concurrent} active)")
 
                                                     # Run in background
                                                     import threading
+                                                    # Pass mutable reference for active count
+                                                    active_ref = [self._active_transcriptions]
                                                     threading.Thread(
                                                         target=transcribe_async,
-                                                        args=(full_audio.copy(),),  # Copy to avoid race condition
+                                                        args=(full_audio.copy(), sample_rate, transcriber,
+                                                              voice_embedder, voice_db, transcription_signal,
+                                                              transcription_lock, active_ref, max_concurrent),
                                                         daemon=True
                                                     ).start()
 
