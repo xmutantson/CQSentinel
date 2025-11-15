@@ -199,9 +199,14 @@ class MainWindow(QMainWindow):
 
         # Initialize audio capture for level meter (basic monitoring, always available)
         try:
-            self.audio = AudioCapture()
+            # Get configured audio device index
+            audio_device_index = self._get_audio_device_index()
+            self.audio = AudioCapture(device=audio_device_index, sample_rate=self.config.audio.sample_rate)
             self.start_audio_monitoring()
-            logger.info("Basic audio monitoring initialized")
+            if audio_device_index is not None:
+                logger.info(f"Basic audio monitoring initialized with device index {audio_device_index}")
+            else:
+                logger.info("Basic audio monitoring initialized with default device")
         except Exception as e:
             logger.warning(f"Could not initialize audio capture: {e}")
             # Not critical - app can still function
@@ -238,7 +243,8 @@ class MainWindow(QMainWindow):
             # Audio capture (already initialized for level meter, reuse it)
             if not self.audio:
                 self.log("  Initializing audio capture...")
-                self.audio = AudioCapture()
+                audio_device_index = self._get_audio_device_index()
+                self.audio = AudioCapture(device=audio_device_index, sample_rate=self.config.audio.sample_rate)
                 self.start_audio_monitoring()
             else:
                 self.log("  Audio capture already active (for level meter)")
@@ -300,6 +306,35 @@ class MainWindow(QMainWindow):
             logger.error(f"Failed to initialize advanced features: {e}", exc_info=True)
             self.log("[WARNING] Using basic scanner mode (advanced features unavailable)")
             self.use_full_scanner = False
+
+    def _get_audio_device_index(self) -> Optional[int]:
+        """
+        Get the audio device index from the configured device name.
+
+        Returns:
+            Device index (int) if found, None for default device
+        """
+        device_name = self.config.radio.audio_device_name
+
+        # If no device configured or empty string, use default
+        if not device_name:
+            logger.info("Using default audio input device")
+            return None
+
+        # Try to find device by name
+        try:
+            devices = list_audio_devices()
+            for device in devices:
+                if device.name == device_name:
+                    logger.info(f"Found audio device '{device_name}' at index {device.index}")
+                    return device.index
+
+            # Device not found - warn and use default
+            logger.warning(f"Configured audio device '{device_name}' not found, using default")
+            return None
+        except Exception as e:
+            logger.error(f"Error finding audio device: {e}")
+            return None
 
     def start_audio_monitoring(self):
         """Start audio stream with broadcaster pattern for multiple consumers"""
