@@ -188,6 +188,8 @@ class TranscriptionWorker(QObject):
         try:
             import time
             import logging
+            import sys
+            import io
             from logging.handlers import QueueHandler
 
             # Configure thread-safe logging using QueueHandler
@@ -205,16 +207,31 @@ class TranscriptionWorker(QObject):
                 speech_logger = logging.getLogger('cqsentinel.speech.transcription')
                 voice_embed_logger = logging.getLogger('cqsentinel.voice.embeddings')
                 voice_db_logger = logging.getLogger('cqsentinel.voice.database')
+                # Root logger (catches everything not caught by specific loggers)
+                root_logger = logging.getLogger()
+
+                # Redirect Python warnings to logging (they might be escaping)
+                import warnings
+                logging.captureWarnings(True)
+                warnings_logger = logging.getLogger('py.warnings')
 
                 # Save original handlers and propagate settings
                 saved_state = []
-                for log in [worker_logger, fw_logger, httpx_logger, speech_logger, voice_embed_logger, voice_db_logger]:
+                for log in [worker_logger, fw_logger, httpx_logger, speech_logger, voice_embed_logger, voice_db_logger, root_logger, warnings_logger]:
                     saved_state.append((log, log.handlers[:], log.propagate))
                     log.handlers.clear()
                     log.addHandler(queue_handler)
                     # CRITICAL: Disable propagation to prevent records from reaching parent loggers
                     # Parent loggers may have Qt-unsafe handlers that cause threading violations
                     log.propagate = False
+
+                # CRITICAL: Redirect stdout/stderr to prevent direct writes from touching Qt
+                # Libraries like tqdm, print() statements, or C++ code might write directly
+                # In frozen builds, sys.stdout/stderr are Qt-wrapped and cause threading violations
+                saved_stdout = sys.stdout
+                saved_stderr = sys.stderr
+                sys.stdout = io.StringIO()  # Capture stdout
+                sys.stderr = io.StringIO()  # Capture stderr
 
                 try:
                     logger.info(f"Transcribing {len(self._audio)/self._sample_rate:.1f}s of speech...")
@@ -283,6 +300,10 @@ class TranscriptionWorker(QObject):
 
                     self.transcription_complete.emit()
                 finally:
+                    # Restore stdout/stderr
+                    sys.stdout = saved_stdout
+                    sys.stderr = saved_stderr
+
                     # Restore original handlers and propagate settings
                     for log, handlers, propagate in saved_state:
                         log.handlers.clear()
