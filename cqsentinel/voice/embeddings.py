@@ -304,6 +304,140 @@ class VoiceEmbedder:
             # Fallback: assign unique ID to each segment
             return list(range(len(segments)))
 
+    def detect_speaker_changes(
+        self,
+        audio: np.ndarray,
+        sample_rate: int = 16000,
+        window_duration: float = 2.5,
+        stride: float = 1.0,
+        similarity_threshold: float = 0.75
+    ) -> List[dict]:
+        """
+        Detect speaker changes in audio using sliding window analysis.
+
+        Uses overlapping windows to extract voice embeddings and detects
+        speaker changes when similarity drops below threshold.
+
+        Args:
+            audio: Audio data as numpy array (float32, mono)
+            sample_rate: Sample rate of the audio (default: 16000 Hz)
+            window_duration: Duration of each window in seconds (default: 2.5s)
+            stride: Time step between windows in seconds (default: 1.0s)
+            similarity_threshold: Threshold for speaker change detection (default: 0.75)
+                                 < 0.75 indicates likely different speaker
+
+        Returns:
+            List of speaker segments with format:
+            [{'start': 0.0, 'end': 3.5, 'speaker': 0, 'embedding': ndarray},
+             {'start': 3.5, 'end': 7.0, 'speaker': 1, 'embedding': ndarray}, ...]
+
+        Example:
+            >>> audio = np.random.randn(16000 * 10)  # 10 seconds
+            >>> embedder = VoiceEmbedder()
+            >>> segments = embedder.detect_speaker_changes(audio)
+            >>> print(f"Found {len(set(s['speaker'] for s in segments))} speakers")
+        """
+        self._ensure_model_loaded()
+
+        duration = len(audio) / sample_rate
+
+        # Can't detect speakers in very short audio
+        if duration < window_duration:
+            logger.warning(f"Audio too short ({duration:.1f}s) for speaker detection (need {window_duration}s)")
+            return [{
+                'start': 0.0,
+                'end': duration,
+                'speaker': 0,
+                'embedding': None
+            }]
+
+        # Extract embeddings for overlapping windows
+        windows = []
+        current_time = 0.0
+
+        while current_time + window_duration <= duration:
+            start_sample = int(current_time * sample_rate)
+            end_sample = int((current_time + window_duration) * sample_rate)
+            window_audio = audio[start_sample:end_sample]
+
+            try:
+                # Resample if needed
+                if sample_rate != self._sample_rate:
+                    window_audio = self._resample(window_audio, sample_rate, self._sample_rate)
+
+                # Extract embedding
+                from resemblyzer import preprocess_wav
+                processed = preprocess_wav(window_audio, source_sr=self._sample_rate)
+                embedding = self.encoder.embed_utterance(processed)
+
+                windows.append({
+                    'start': current_time,
+                    'end': current_time + window_duration,
+                    'embedding': embedding
+                })
+
+            except Exception as e:
+                logger.debug(f"Failed to extract embedding for window {current_time:.1f}s: {e}")
+
+            current_time += stride
+
+        if not windows:
+            logger.warning("No embeddings extracted from audio")
+            return [{
+                'start': 0.0,
+                'end': duration,
+                'speaker': 0,
+                'embedding': None
+            }]
+
+        # Detect speaker changes based on embedding similarity
+        speaker_segments = []
+        current_speaker = 0
+        segment_start = 0.0
+        current_embedding = windows[0]['embedding']
+
+        for i in range(1, len(windows)):
+            prev_embedding = windows[i-1]['embedding']
+            curr_embedding = windows[i]['embedding']
+
+            # Compute similarity between consecutive windows
+            similarity = self.compute_similarity(prev_embedding, curr_embedding)
+
+            # Speaker change detected
+            if similarity < similarity_threshold:
+                # Close current segment
+                speaker_segments.append({
+                    'start': segment_start,
+                    'end': windows[i-1]['end'],
+                    'speaker': current_speaker,
+                    'embedding': current_embedding
+                })
+
+                # Start new segment
+                current_speaker += 1
+                segment_start = windows[i]['start']
+                current_embedding = curr_embedding
+
+                logger.debug(
+                    f"Speaker change detected at {windows[i]['start']:.1f}s "
+                    f"(similarity: {similarity:.2f} < {similarity_threshold})"
+                )
+
+        # Add final segment
+        speaker_segments.append({
+            'start': segment_start,
+            'end': duration,
+            'speaker': current_speaker,
+            'embedding': current_embedding
+        })
+
+        logger.info(
+            f"Detected {current_speaker + 1} speaker(s) in {duration:.1f}s audio "
+            f"({len(speaker_segments)} segments)"
+        )
+
+        return speaker_segments
+
     @property
     def sample_rate(self) -> int:
         """Expected sample rate for audio input."""

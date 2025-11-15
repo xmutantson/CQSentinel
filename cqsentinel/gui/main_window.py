@@ -193,6 +193,24 @@ class MainWindow(QMainWindow):
         self.audio_monitor = AudioMonitor()  # For diagnostic playback
         self.audio_buffer = AudioBuffer(buffer_duration=1.0, sample_rate=self.config.audio.sample_rate)  # Buffer for VAD
 
+        # Speech ratio smoothing (exponential moving average)
+        self._speech_ratio_smoothed = 0.0
+        self._speech_ratio_alpha = 0.3  # Smoothing factor (0.3 = 30% new, 70% old)
+
+        # Transcription buffering (accumulate audio during speech, transcribe on pauses)
+        self._transcription_buffer = []  # List of denoised audio chunks
+        self._is_speaking = False  # Track if currently speaking
+        self._silence_buffers = 0  # Count consecutive silent buffers
+        self._min_transcription_duration = 2.0  # Minimum 2 seconds before transcribing
+        self._max_silence_buffers = 2  # Transcribe after 2 consecutive silent buffers (2 seconds of silence)
+        self._max_transcription_duration = 15.0  # Maximum 15 seconds before forcing transcription
+        self._transcription_start_time = None  # When we started accumulating audio
+
+        # Transcription queue management (prevent backup during long contests)
+        self._active_transcriptions = 0  # Counter for in-flight transcriptions
+        self._max_concurrent_transcriptions = 3  # Maximum parallel transcriptions
+        self._transcription_lock = threading.Lock()  # Protect counter
+
         # Band map visualization (always available)
         self.band_map_widgets = {}  # Dictionary of BandMapWidget instances per band
         self.band_maps = {}  # Dictionary of BandMapState instances per band
@@ -400,10 +418,17 @@ class MainWindow(QMainWindow):
                                 has_speech = result.get('has_speech', False)
                                 speech_ratio = result.get('speech_ratio', 0.0)
 
-                                # Emit signal for voice detection (thread-safe)
-                                self.voice_detection_signal.emit(has_speech, speech_ratio)
+                                # Apply smoothing to speech ratio (exponential moving average)
+                                self._speech_ratio_smoothed = (
+                                    self._speech_ratio_alpha * speech_ratio +
+                                    (1 - self._speech_ratio_alpha) * self._speech_ratio_smoothed
+                                )
 
-                                # === STEP 3: Create denoised audio and transcribe if speech detected ===
+                                # Emit signal for voice detection (thread-safe) with smoothed ratio
+                                self.voice_detection_signal.emit(has_speech, self._speech_ratio_smoothed)
+
+                                # === STEP 3: Create denoised audio ===
+                                # Always denoise when we have speech, regardless of transcription
                                 if has_speech:
                                     speech_detected_count[0] += 1
 
@@ -411,7 +436,7 @@ class MainWindow(QMainWindow):
                                         # Denoise the buffered audio
                                         denoised = self.audio_pipeline.denoiser.denoise(buffered_audio)
 
-                                        # Broadcast denoised audio
+                                        # Broadcast denoised audio for real-time monitoring
                                         denoised_chunk = AudioChunk(
                                             stage=AudioStage.DENOISED,
                                             data=denoised,
@@ -433,36 +458,289 @@ class MainWindow(QMainWindow):
                                                 f"(speech_ratio: {speech_ratio:.2%}, buffer: {result.get('duration', 1.0):.2f}s)"
                                             )
 
-                                        # === STEP 4: Transcribe the denoised audio ===
-                                        # Run transcription in background thread (Whisper is slow)
-                                        def transcribe_async():
-                                            try:
-                                                # Use transcriber directly with VAD filtering
-                                                transcripts = self.audio_pipeline.transcriber.transcribe(
-                                                    denoised,
-                                                    sample_rate=self.audio.sample_rate,
-                                                    vad_filter=True
-                                                )
+                                        # === STEP 4: Accumulate audio for transcription ===
+                                        # Track when we started speaking
+                                        if not self._is_speaking:
+                                            self._transcription_start_time = time.time()
 
-                                                # Emit transcriptions for display
-                                                for transcript in transcripts:
-                                                    if transcript.text.strip():  # Skip empty transcripts
-                                                        self.transcription_signal.emit(
-                                                            0.0,  # freq_mhz (not scanning, just monitoring)
-                                                            transcript.text,
-                                                            None  # callsign (extract later if needed)
+                                        # Add denoised audio to transcription buffer
+                                        self._transcription_buffer.append(denoised)
+                                        self._is_speaking = True
+                                        self._silence_buffers = 0
+
+                                        # Check if we've been accumulating for too long (15s max)
+                                        if self._transcription_start_time is not None:
+                                            elapsed = time.time() - self._transcription_start_time
+                                            total_duration = len(self._transcription_buffer)  # seconds (1 buffer = 1 second)
+
+                                            if elapsed >= self._max_transcription_duration and total_duration >= self._min_transcription_duration:
+                                                # Force transcription due to timeout
+                                                logger.info(f"Forcing transcription after {elapsed:.1f}s (max {self._max_transcription_duration}s)")
+
+                                                # Check if we're falling behind
+                                                can_transcribe = False
+                                                with self._transcription_lock:
+                                                    if self._active_transcriptions >= self._max_concurrent_transcriptions:
+                                                        logger.warning(
+                                                            f"Skipping transcription (timeout) - already {self._active_transcriptions} in progress. "
+                                                            f"Falling behind! Consider faster Whisper model."
                                                         )
-                                                        logger.info(f"Transcribed: {transcript.text}")
+                                                        # Don't clear buffer - keep accumulating
+                                                    else:
+                                                        self._active_transcriptions += 1
+                                                        can_transcribe = True
+                                                        logger.debug(f"Starting transcription ({self._active_transcriptions}/{self._max_concurrent_transcriptions} active)")
 
-                                            except Exception as e:
-                                                logger.error(f"Transcription failed: {e}", exc_info=True)
+                                                if can_transcribe:
+                                                    # Concatenate all buffered audio
+                                                    full_audio = np.concatenate(self._transcription_buffer)
 
-                                        # Run in background to avoid blocking audio callback
-                                        import threading
-                                        threading.Thread(target=transcribe_async, daemon=True).start()
+                                                    # Transcribe in background thread
+                                                    def transcribe_async_timeout(audio_to_transcribe):
+                                                        try:
+                                                            logger.info(f"Transcribing {len(audio_to_transcribe)/self.audio.sample_rate:.1f}s of speech (timeout)...")
+
+                                                            # Identify speaker(s) using sliding window voice embeddings
+                                                            speaker_labels = []
+                                                            if self.voice_embedder and self.voice_db:
+                                                                try:
+                                                                    # Detect speaker changes using sliding window analysis
+                                                                    speaker_segments = self.voice_embedder.detect_speaker_changes(
+                                                                        audio_to_transcribe,
+                                                                        sample_rate=self.audio.sample_rate,
+                                                                        window_duration=2.5,
+                                                                        stride=1.0,
+                                                                        similarity_threshold=0.75
+                                                                    )
+
+                                                                    # Map each speaker segment to voice ID
+                                                                    for seg in speaker_segments:
+                                                                        if seg['embedding'] is not None:
+                                                                            # Try to match against voice database
+                                                                            match = self.voice_db.find_matching_voice(seg['embedding'])
+                                                                            if match:
+                                                                                voice_id, similarity = match
+                                                                                operator = self.voice_db.get_operator(voice_id)
+                                                                                label = operator.callsign or f"Speaker {voice_id[:8]}"
+                                                                                logger.debug(
+                                                                                    f"Matched voice at {seg['start']:.1f}-{seg['end']:.1f}s: "
+                                                                                    f"{label} (similarity: {similarity:.2f})"
+                                                                                )
+                                                                            else:
+                                                                                # New speaker - add to database
+                                                                                voice_id = self.voice_db.add_operator(
+                                                                                    seg['embedding'],
+                                                                                    metadata={'first_heard': time.time()}
+                                                                                )
+                                                                                label = f"Speaker {voice_id[:8]}"
+                                                                                logger.debug(f"New speaker at {seg['start']:.1f}-{seg['end']:.1f}s: {label}")
+
+                                                                            speaker_labels.append({
+                                                                                'start': seg['start'],
+                                                                                'end': seg['end'],
+                                                                                'label': label,
+                                                                                'voice_id': voice_id
+                                                                            })
+
+                                                                    # Log speaker changes if multiple speakers detected
+                                                                    unique_speakers = len(set(s['voice_id'] for s in speaker_labels))
+                                                                    if unique_speakers > 1:
+                                                                        logger.info(
+                                                                            f"Detected {unique_speakers} different speakers in segment "
+                                                                            f"({', '.join(set(s['label'] for s in speaker_labels))})"
+                                                                        )
+
+                                                                except Exception as e:
+                                                                    logger.debug(f"Speaker detection failed: {e}")
+
+                                                            transcripts = self.audio_pipeline.transcriber.transcribe(
+                                                                audio_to_transcribe,
+                                                                sample_rate=self.audio.sample_rate,
+                                                                vad_filter=False  # We already did VAD
+                                                            )
+
+                                                            # Emit transcriptions for display with speaker label(s)
+                                                            for transcript in transcripts:
+                                                                if transcript.text.strip():
+                                                                    # Prefix with speaker label if available
+                                                                    text = transcript.text
+                                                                    if speaker_labels:
+                                                                        # Get unique speaker labels
+                                                                        unique_labels = list(set(s['label'] for s in speaker_labels))
+                                                                        if len(unique_labels) == 1:
+                                                                            # Single speaker
+                                                                            text = f"[{unique_labels[0]}] {text}"
+                                                                        else:
+                                                                            # Multiple speakers - show all
+                                                                            text = f"[{'/'.join(unique_labels)}] {text}"
+
+                                                                    self.transcription_signal.emit(
+                                                                        0.0,  # freq_mhz (not scanning, just monitoring)
+                                                                        text,
+                                                                        None  # callsign (extract later if needed)
+                                                                    )
+                                                                    logger.info(f"Transcribed: {text}")
+
+                                                        except Exception as e:
+                                                            logger.error(f"Transcription failed: {e}", exc_info=True)
+                                                        finally:
+                                                            # Decrement active count
+                                                            with self._transcription_lock:
+                                                                self._active_transcriptions -= 1
+                                                                logger.debug(f"Transcription complete ({self._active_transcriptions}/{self._max_concurrent_transcriptions} active)")
+
+                                                    # Run in background
+                                                    import threading
+                                                    threading.Thread(
+                                                        target=transcribe_async_timeout,
+                                                        args=(full_audio.copy(),),  # Copy to avoid race condition
+                                                        daemon=True
+                                                    ).start()
+
+                                                    # Clear buffer and reset state (but keep speaking=True since we might still be talking)
+                                                    self._transcription_buffer.clear()
+                                                    self._transcription_start_time = time.time()  # Restart timer for next chunk
+                                                    self._silence_buffers = 0
 
                                     except Exception as e:
                                         logger.error(f"Denoising failed: {e}", exc_info=True)
+
+                                else:
+                                    # No speech detected
+                                    if self._is_speaking:
+                                        # We were speaking, now silence - count it
+                                        self._silence_buffers += 1
+
+                                        # If we've had enough silence, transcribe accumulated audio
+                                        if self._silence_buffers >= self._max_silence_buffers:
+                                            # Check if we have enough audio to transcribe
+                                            total_duration = len(self._transcription_buffer)  # seconds (1 buffer = 1 second)
+
+                                            if total_duration >= self._min_transcription_duration:
+                                                # Check if we're falling behind
+                                                can_transcribe = False
+                                                with self._transcription_lock:
+                                                    if self._active_transcriptions >= self._max_concurrent_transcriptions:
+                                                        logger.warning(
+                                                            f"Skipping transcription (pause) - already {self._active_transcriptions} in progress. "
+                                                            f"Falling behind! Consider faster Whisper model."
+                                                        )
+                                                    else:
+                                                        self._active_transcriptions += 1
+                                                        can_transcribe = True
+                                                        logger.debug(f"Starting transcription ({self._active_transcriptions}/{self._max_concurrent_transcriptions} active)")
+
+                                                if can_transcribe:
+                                                    # Concatenate all buffered audio
+                                                    full_audio = np.concatenate(self._transcription_buffer)
+
+                                                    # Transcribe in background thread
+                                                    def transcribe_async(audio_to_transcribe):
+                                                        try:
+                                                            logger.info(f"Transcribing {len(audio_to_transcribe)/self.audio.sample_rate:.1f}s of speech...")
+
+                                                            # Identify speaker(s) using sliding window voice embeddings
+                                                            speaker_labels = []
+                                                            if self.voice_embedder and self.voice_db:
+                                                                try:
+                                                                    # Detect speaker changes using sliding window analysis
+                                                                    speaker_segments = self.voice_embedder.detect_speaker_changes(
+                                                                        audio_to_transcribe,
+                                                                        sample_rate=self.audio.sample_rate,
+                                                                        window_duration=2.5,
+                                                                        stride=1.0,
+                                                                        similarity_threshold=0.75
+                                                                    )
+
+                                                                    # Map each speaker segment to voice ID
+                                                                    for seg in speaker_segments:
+                                                                        if seg['embedding'] is not None:
+                                                                            # Try to match against voice database
+                                                                            match = self.voice_db.find_matching_voice(seg['embedding'])
+                                                                            if match:
+                                                                                voice_id, similarity = match
+                                                                                operator = self.voice_db.get_operator(voice_id)
+                                                                                label = operator.callsign or f"Speaker {voice_id[:8]}"
+                                                                                logger.debug(
+                                                                                    f"Matched voice at {seg['start']:.1f}-{seg['end']:.1f}s: "
+                                                                                    f"{label} (similarity: {similarity:.2f})"
+                                                                                )
+                                                                            else:
+                                                                                # New speaker - add to database
+                                                                                voice_id = self.voice_db.add_operator(
+                                                                                    seg['embedding'],
+                                                                                    metadata={'first_heard': time.time()}
+                                                                                )
+                                                                                label = f"Speaker {voice_id[:8]}"
+                                                                                logger.debug(f"New speaker at {seg['start']:.1f}-{seg['end']:.1f}s: {label}")
+
+                                                                            speaker_labels.append({
+                                                                                'start': seg['start'],
+                                                                                'end': seg['end'],
+                                                                                'label': label,
+                                                                                'voice_id': voice_id
+                                                                            })
+
+                                                                    # Log speaker changes if multiple speakers detected
+                                                                    unique_speakers = len(set(s['voice_id'] for s in speaker_labels))
+                                                                    if unique_speakers > 1:
+                                                                        logger.info(
+                                                                            f"Detected {unique_speakers} different speakers in segment "
+                                                                            f"({', '.join(set(s['label'] for s in speaker_labels))})"
+                                                                        )
+
+                                                                except Exception as e:
+                                                                    logger.debug(f"Speaker detection failed: {e}")
+
+                                                            transcripts = self.audio_pipeline.transcriber.transcribe(
+                                                                audio_to_transcribe,
+                                                                sample_rate=self.audio.sample_rate,
+                                                                vad_filter=False  # We already did VAD
+                                                            )
+
+                                                            # Emit transcriptions for display with speaker label(s)
+                                                            for transcript in transcripts:
+                                                                if transcript.text.strip():
+                                                                    # Prefix with speaker label if available
+                                                                    text = transcript.text
+                                                                    if speaker_labels:
+                                                                        # Get unique speaker labels
+                                                                        unique_labels = list(set(s['label'] for s in speaker_labels))
+                                                                        if len(unique_labels) == 1:
+                                                                            # Single speaker
+                                                                            text = f"[{unique_labels[0]}] {text}"
+                                                                        else:
+                                                                            # Multiple speakers - show all
+                                                                            text = f"[{'/'.join(unique_labels)}] {text}"
+
+                                                                    self.transcription_signal.emit(
+                                                                        0.0,  # freq_mhz (not scanning, just monitoring)
+                                                                        text,
+                                                                        None  # callsign (extract later if needed)
+                                                                    )
+                                                                    logger.info(f"Transcribed: {text}")
+
+                                                        except Exception as e:
+                                                            logger.error(f"Transcription failed: {e}", exc_info=True)
+                                                        finally:
+                                                            # Decrement active count
+                                                            with self._transcription_lock:
+                                                                self._active_transcriptions -= 1
+                                                                logger.debug(f"Transcription complete ({self._active_transcriptions}/{self._max_concurrent_transcriptions} active)")
+
+                                                    # Run in background
+                                                    import threading
+                                                    threading.Thread(
+                                                        target=transcribe_async,
+                                                        args=(full_audio.copy(),),  # Copy to avoid race condition
+                                                        daemon=True
+                                                    ).start()
+
+                                                    # Clear buffer and reset state
+                                                    self._transcription_buffer.clear()
+                                                    self._is_speaking = False
+                                                    self._silence_buffers = 0
+                                                    self._transcription_start_time = None
 
                                 # Periodic diagnostics every 10 buffers
                                 if buffers_processed[0] % 10 == 0:
