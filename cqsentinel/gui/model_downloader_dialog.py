@@ -567,13 +567,39 @@ class ModelDownloadThread(QThread):
                             logger.error(f"Files in resemblyzer dir: {files}")
                         return False
 
-                    logger.info(f"Resemblyzer: Model file found, initializing encoder...")
+                    # Verify file is readable
                     try:
-                        encoder = VoiceEncoder(weights_fpath=str(model_path), verbose=False)
-                        logger.info("Resemblyzer: Encoder initialized successfully")
+                        file_size = model_path.stat().st_size
+                        logger.info(f"Resemblyzer: Model file found ({file_size} bytes), checking readability...")
+                        with open(model_path, 'rb') as f:
+                            header = f.read(100)  # Try to read first 100 bytes
+                        logger.info(f"Resemblyzer: File is readable, header: {header[:20]}...")
+                    except Exception as e:
+                        logger.error(f"Resemblyzer: Cannot read model file: {e}", exc_info=True)
+                        self.progress_signal.emit(f"  ✗ Cannot read model file: {e}")
+                        return False
+
+                    logger.info(f"Resemblyzer: Initializing encoder with weights from {model_path}")
+
+                    # Set environment variable to help torch.load() in frozen builds
+                    import os
+                    old_pytorch_jit = os.environ.get('PYTORCH_JIT', None)
+                    os.environ['PYTORCH_JIT'] = '0'  # Disable JIT which can cause issues
+
+                    try:
+                        logger.info("Resemblyzer: About to call VoiceEncoder()...")
+                        encoder = VoiceEncoder(weights_fpath=str(model_path), verbose=False, device="cpu")
+                        logger.info("Resemblyzer: Encoder initialized successfully!")
                     except Exception as e:
                         logger.error(f"Resemblyzer: Failed to initialize encoder: {e}", exc_info=True)
+                        self.progress_signal.emit(f"  ✗ Encoder init failed: {type(e).__name__}: {e}")
                         raise
+                    finally:
+                        # Restore original PYTORCH_JIT setting
+                        if old_pytorch_jit is None:
+                            os.environ.pop('PYTORCH_JIT', None)
+                        else:
+                            os.environ['PYTORCH_JIT'] = old_pytorch_jit
                 else:
                     # Source build - use default path
                     logger.info("Resemblyzer: Initializing with default path")
