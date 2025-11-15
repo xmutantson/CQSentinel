@@ -186,6 +186,8 @@ except:
     pass
 
 # Analysis - what files to include
+# NOTE: We've carefully curated hiddenimports above, so we can use module_collection_mode
+# to speed up analysis by not recursively scanning everything
 a = Analysis(
     ['cqsentinel/main.py'],
     pathex=[],
@@ -207,11 +209,20 @@ a = Analysis(
         'pytest',      # Testing framework not needed in exe
         'sphinx',      # Documentation not needed
         '_pytest',
+        # Torch modules we explicitly don't need
+        'torch.distributed',
+        'torch.testing',
+        'torch.cuda',  # We're CPU-only
+        'torch.backends.cudnn',
+        'torch.backends.cuda',
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
     noarchive=False,
+    module_collection_mode={
+        'torch': 'pyz',  # Don't unpack torch, keep it zipped for faster collection
+    },
 )
 
 # Remove duplicate entries
