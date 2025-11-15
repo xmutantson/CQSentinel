@@ -85,10 +85,8 @@ class AudioBuffer:
                 # Extract full buffer
                 full_buffer = self._buffer[:self.buffer_size_samples]
 
-                # Keep overflow for next buffer (overlap)
-                # Use 50% overlap for better speech boundary detection
-                overlap_size = self.buffer_size_samples // 2
-                self._buffer = self._buffer[overlap_size:]
+                # Discard processed samples (no overlap for better sync)
+                self._buffer = self._buffer[self.buffer_size_samples:]
 
                 self._buffers_released += 1
 
@@ -202,6 +200,7 @@ class AudioMonitor:
         self._playback_stream: Optional[sd.OutputStream] = None
         self._monitoring_stage: Optional[AudioStage] = None
         self._volume = 1.0
+        self._lock = threading.Lock()  # Protect stream access from race conditions
 
         # Diagnostics counters
         self._chunks_received = 0
@@ -218,46 +217,54 @@ class AudioMonitor:
             stage: Which processing stage to monitor
             volume: Playback volume (0.0-1.0)
         """
-        if self._playback_stream is not None:
-            self.stop_monitoring()
+        with self._lock:
+            if self._playback_stream is not None:
+                # Stop existing stream first
+                try:
+                    self._playback_stream.stop()
+                    self._playback_stream.close()
+                except:
+                    pass
+                self._playback_stream = None
 
-        self._monitoring_stage = stage
-        self._volume = max(0.0, min(1.0, volume))
+            self._monitoring_stage = stage
+            self._volume = max(0.0, min(1.0, volume))
 
-        # Reset diagnostics
-        self._chunks_received = 0
-        self._chunks_played = 0
-        self._last_chunk_time = None
+            # Reset diagnostics
+            self._chunks_received = 0
+            self._chunks_played = 0
+            self._last_chunk_time = None
 
-        try:
-            # Create output stream for playback
-            self._playback_stream = sd.OutputStream(
-                samplerate=self.sample_rate,
-                channels=1,
-                dtype='float32',
-                device=self.output_device
-            )
-            self._playback_stream.start()
+            try:
+                # Create output stream for playback
+                self._playback_stream = sd.OutputStream(
+                    samplerate=self.sample_rate,
+                    channels=1,
+                    dtype='float32',
+                    device=self.output_device
+                )
+                self._playback_stream.start()
 
-            device_info = f" on device {self.output_device}" if self.output_device is not None else " on default device"
-            logger.info(f"Started monitoring audio at stage: {stage.value}, volume: {self._volume:.1f}{device_info}")
+                device_info = f" on device {self.output_device}" if self.output_device is not None else " on default device"
+                logger.info(f"Started monitoring audio at stage: {stage.value}, volume: {self._volume:.1f}{device_info}")
 
-        except Exception as e:
-            logger.error(f"Failed to start audio monitoring: {e}")
-            self._playback_stream = None
+            except Exception as e:
+                logger.error(f"Failed to start audio monitoring: {e}")
+                self._playback_stream = None
 
     def stop_monitoring(self):
         """Stop monitoring/playback"""
-        if self._playback_stream is not None:
-            try:
-                self._playback_stream.stop()
-                self._playback_stream.close()
-            except:
-                pass
-            self._playback_stream = None
+        with self._lock:
+            if self._playback_stream is not None:
+                try:
+                    self._playback_stream.stop()
+                    self._playback_stream.close()
+                except Exception as e:
+                    logger.debug(f"Error closing playback stream: {e}")
+                self._playback_stream = None
 
-        self._monitoring_stage = None
-        logger.info("Stopped audio monitoring")
+            self._monitoring_stage = None
+            logger.info("Stopped audio monitoring")
 
     def process_chunk(self, chunk: AudioChunk):
         """
@@ -268,7 +275,7 @@ class AudioMonitor:
         """
         import time
 
-        # Track all chunks received (for diagnostics)
+        # Track all chunks received (for diagnostics) - outside lock for performance
         if self._monitoring_stage is not None:
             self._chunks_received += 1
             self._last_chunk_time = time.time()
@@ -281,34 +288,37 @@ class AudioMonitor:
                     f"chunk stage: {chunk.stage.value}"
                 )
 
-        # Only play back if monitoring this stage
-        if (self._playback_stream is not None and
-            self._monitoring_stage == chunk.stage):
+        # Only play back if monitoring this stage (use lock to prevent race with stop_monitoring)
+        with self._lock:
+            if (self._playback_stream is not None and
+                self._monitoring_stage == chunk.stage):
 
-            try:
-                # Apply volume and write to output stream
-                audio_data = chunk.data * self._volume
-                self._playback_stream.write(audio_data.astype('float32'))
-                self._chunks_played += 1
+                try:
+                    # Apply volume and write to output stream
+                    audio_data = chunk.data * self._volume
+                    self._playback_stream.write(audio_data.astype('float32'))
+                    self._chunks_played += 1
 
-                # Log first few chunks to confirm playback started
-                if self._chunks_played <= 3:
-                    logger.info(
-                        f"AudioMonitor: playing chunk #{self._chunks_played} "
-                        f"({len(audio_data)} samples, stage: {chunk.stage.value})"
-                    )
-            except Exception as e:
-                logger.error(f"Playback error: {e}", exc_info=True)
+                    # Log first few chunks to confirm playback started
+                    if self._chunks_played <= 3:
+                        logger.info(
+                            f"AudioMonitor: playing chunk #{self._chunks_played} "
+                            f"({len(audio_data)} samples, stage: {chunk.stage.value})"
+                        )
+                except Exception as e:
+                    logger.error(f"Playback error: {e}", exc_info=True)
 
     @property
     def is_monitoring(self) -> bool:
         """Check if currently monitoring"""
-        return self._playback_stream is not None
+        with self._lock:
+            return self._playback_stream is not None
 
     @property
     def monitoring_stage(self) -> Optional[AudioStage]:
         """Get current monitoring stage"""
-        return self._monitoring_stage
+        with self._lock:
+            return self._monitoring_stage
 
     def get_diagnostics(self) -> dict:
         """
