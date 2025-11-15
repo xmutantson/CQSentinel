@@ -13,7 +13,7 @@ Output:
 """
 
 import sys
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules, collect_binaries
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules, collect_dynamic_libs
 import os
 
 block_cipher = None
@@ -62,8 +62,8 @@ except:
 
 try:
     datas += collect_data_files('ctranslate2')
-    binaries += collect_binaries('ctranslate2')
-    print("✓ Including ctranslate2 data files and binaries")
+    binaries += collect_dynamic_libs('ctranslate2')
+    print("✓ Including ctranslate2 data files and dynamic libraries")
 except:
     print("⚠ ctranslate2 not found")
 
