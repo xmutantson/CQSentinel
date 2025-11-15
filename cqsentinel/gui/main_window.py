@@ -21,7 +21,7 @@ from PyQt5.QtWidgets import (
     QGroupBox, QTextEdit, QProgressBar, QStatusBar,
     QMenuBar, QMenu, QMessageBox, QAction, QScrollArea
 )
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread, QObject
 from PyQt5.QtGui import QFont
 
 from cqsentinel.config import get_config, get_config_manager
@@ -149,6 +149,111 @@ class ScanThread(QThread):
     def stop(self):
         """Stop scanning"""
         self.running = False
+
+
+class TranscriptionWorker(QObject):
+    """
+    Worker object for background transcription using proper Qt threading pattern.
+
+    This avoids Qt threading violations that occur when using Python's threading.Thread
+    with PyQt5 signals in PyInstaller frozen apps.
+    """
+    # Signals (thread-safe)
+    transcription_ready = pyqtSignal(float, str, object)  # freq_mhz, text, callsign
+    transcription_complete = pyqtSignal()
+    error_occurred = pyqtSignal(str)
+
+    def __init__(self):
+        super().__init__()
+        self._audio = None
+        self._sample_rate = None
+        self._transcriber = None
+        self._voice_embedder = None
+        self._voice_db = None
+
+    def set_parameters(self, audio, sample_rate, transcriber, voice_embedder, voice_db):
+        """Set transcription parameters (call from main thread before starting)"""
+        self._audio = audio
+        self._sample_rate = sample_rate
+        self._transcriber = transcriber
+        self._voice_embedder = voice_embedder
+        self._voice_db = voice_db
+
+    def transcribe(self):
+        """Perform transcription (runs in worker thread)"""
+        try:
+            import time
+            logger.info(f"Transcribing {len(self._audio)/self._sample_rate:.1f}s of speech...")
+
+            # Identify speaker(s) using sliding window voice embeddings
+            speaker_labels = []
+            if self._voice_embedder and self._voice_db:
+                try:
+                    # Detect speaker changes
+                    speaker_segments = self._voice_embedder.detect_speaker_changes(
+                        self._audio,
+                        sample_rate=self._sample_rate,
+                        window_duration=2.5,
+                        stride=1.0,
+                        similarity_threshold=0.75
+                    )
+
+                    # Map each speaker segment to voice ID
+                    for seg in speaker_segments:
+                        if seg['embedding'] is not None:
+                            match = self._voice_db.find_matching_voice(seg['embedding'])
+                            if match:
+                                voice_id, similarity = match
+                                operator = self._voice_db.get_operator(voice_id)
+                                label = operator.callsign or f"Speaker {voice_id[:8]}"
+                                logger.debug(f"Matched voice at {seg['start']:.1f}-{seg['end']:.1f}s: {label} (similarity: {similarity:.2f})")
+                            else:
+                                voice_id = self._voice_db.add_operator(seg['embedding'], metadata={'first_heard': time.time()})
+                                label = f"Speaker {voice_id[:8]}"
+                                logger.debug(f"New speaker at {seg['start']:.1f}-{seg['end']:.1f}s: {label}")
+
+                            speaker_labels.append({
+                                'start': seg['start'],
+                                'end': seg['end'],
+                                'label': label,
+                                'voice_id': voice_id
+                            })
+
+                    unique_speakers = len(set(s['voice_id'] for s in speaker_labels))
+                    if unique_speakers > 1:
+                        logger.info(f"Detected {unique_speakers} different speakers in segment ({', '.join(set(s['label'] for s in speaker_labels))})")
+
+                except Exception as e:
+                    logger.debug(f"Speaker detection failed: {e}")
+
+            # Transcribe
+            transcripts = self._transcriber.transcribe(
+                self._audio,
+                sample_rate=self._sample_rate,
+                vad_filter=False
+            )
+
+            # Emit results
+            for transcript in transcripts:
+                if transcript.text.strip():
+                    text = transcript.text
+                    if speaker_labels:
+                        unique_labels = list(set(s['label'] for s in speaker_labels))
+                        if len(unique_labels) == 1:
+                            text = f"[{unique_labels[0]}] {text}"
+                        else:
+                            text = f"[{'/'.join(unique_labels)}] {text}"
+
+                    self.transcription_ready.emit(0.0, text, None)
+                    logger.info(f"Transcribed: {text}")
+
+            self.transcription_complete.emit()
+
+        except Exception as e:
+            logger.error(f"Transcription failed: {e}", exc_info=True)
+            self.error_occurred.emit(str(e))
+        finally:
+            self.transcription_complete.emit()
 
 
 class MainWindow(QMainWindow):
@@ -501,124 +606,9 @@ class MainWindow(QMainWindow):
                                                     # Concatenate all buffered audio
                                                     full_audio = np.concatenate(self._transcription_buffer)
 
-                                                    # Extract all needed references BEFORE creating background thread
-                                                    # to avoid accessing 'self' (QMainWindow) from another thread
-                                                    sample_rate = self.audio.sample_rate
-                                                    transcriber = self.audio_pipeline.transcriber
-                                                    voice_embedder = self.voice_embedder
-                                                    voice_db = self.voice_db
-                                                    transcription_signal = self.transcription_signal
-                                                    transcription_lock = self._transcription_lock
-                                                    max_concurrent = self._max_concurrent_transcriptions
-
-                                                    # Transcribe in background thread
-                                                    def transcribe_async_timeout(audio_to_transcribe, sample_rate, transcriber,
-                                                                                voice_embedder, voice_db, transcription_signal,
-                                                                                transcription_lock, active_transcriptions_ref,
-                                                                                max_concurrent):
-                                                        try:
-                                                            logger.info(f"Transcribing {len(audio_to_transcribe)/sample_rate:.1f}s of speech (timeout)...")
-
-                                                            # Identify speaker(s) using sliding window voice embeddings
-                                                            speaker_labels = []
-                                                            if voice_embedder and voice_db:
-                                                                try:
-                                                                    # Detect speaker changes using sliding window analysis
-                                                                    speaker_segments = voice_embedder.detect_speaker_changes(
-                                                                        audio_to_transcribe,
-                                                                        sample_rate=sample_rate,
-                                                                        window_duration=2.5,
-                                                                        stride=1.0,
-                                                                        similarity_threshold=0.75
-                                                                    )
-
-                                                                    # Map each speaker segment to voice ID
-                                                                    for seg in speaker_segments:
-                                                                        if seg['embedding'] is not None:
-                                                                            # Try to match against voice database
-                                                                            match = voice_db.find_matching_voice(seg['embedding'])
-                                                                            if match:
-                                                                                voice_id, similarity = match
-                                                                                operator = voice_db.get_operator(voice_id)
-                                                                                label = operator.callsign or f"Speaker {voice_id[:8]}"
-                                                                                logger.debug(
-                                                                                    f"Matched voice at {seg['start']:.1f}-{seg['end']:.1f}s: "
-                                                                                    f"{label} (similarity: {similarity:.2f})"
-                                                                                )
-                                                                            else:
-                                                                                # New speaker - add to database
-                                                                                voice_id = voice_db.add_operator(
-                                                                                    seg['embedding'],
-                                                                                    metadata={'first_heard': time.time()}
-                                                                                )
-                                                                                label = f"Speaker {voice_id[:8]}"
-                                                                                logger.debug(f"New speaker at {seg['start']:.1f}-{seg['end']:.1f}s: {label}")
-
-                                                                            speaker_labels.append({
-                                                                                'start': seg['start'],
-                                                                                'end': seg['end'],
-                                                                                'label': label,
-                                                                                'voice_id': voice_id
-                                                                            })
-
-                                                                    # Log speaker changes if multiple speakers detected
-                                                                    unique_speakers = len(set(s['voice_id'] for s in speaker_labels))
-                                                                    if unique_speakers > 1:
-                                                                        logger.info(
-                                                                            f"Detected {unique_speakers} different speakers in segment "
-                                                                            f"({', '.join(set(s['label'] for s in speaker_labels))})"
-                                                                        )
-
-                                                                except Exception as e:
-                                                                    logger.debug(f"Speaker detection failed: {e}")
-
-                                                            transcripts = transcriber.transcribe(
-                                                                audio_to_transcribe,
-                                                                sample_rate=sample_rate,
-                                                                vad_filter=False  # We already did VAD
-                                                            )
-
-                                                            # Emit transcriptions for display with speaker label(s)
-                                                            for transcript in transcripts:
-                                                                if transcript.text.strip():
-                                                                    # Prefix with speaker label if available
-                                                                    text = transcript.text
-                                                                    if speaker_labels:
-                                                                        # Get unique speaker labels
-                                                                        unique_labels = list(set(s['label'] for s in speaker_labels))
-                                                                        if len(unique_labels) == 1:
-                                                                            # Single speaker
-                                                                            text = f"[{unique_labels[0]}] {text}"
-                                                                        else:
-                                                                            # Multiple speakers - show all
-                                                                            text = f"[{'/'.join(unique_labels)}] {text}"
-
-                                                                    transcription_signal.emit(
-                                                                        0.0,  # freq_mhz (not scanning, just monitoring)
-                                                                        text,
-                                                                        None  # callsign (extract later if needed)
-                                                                    )
-                                                                    logger.info(f"Transcribed: {text}")
-
-                                                        except Exception as e:
-                                                            logger.error(f"Transcription failed: {e}", exc_info=True)
-                                                        finally:
-                                                            # Decrement active count
-                                                            with transcription_lock:
-                                                                active_transcriptions_ref[0] -= 1
-                                                                logger.debug(f"Transcription complete ({active_transcriptions_ref[0]}/{max_concurrent} active)")
-
-                                                    # Run in background
-                                                    import threading
-                                                    # Pass mutable reference for active count
-                                                    active_ref = [self._active_transcriptions]
-                                                    threading.Thread(
-                                                        target=transcribe_async_timeout,
-                                                        args=(full_audio.copy(), sample_rate, transcriber,
-                                                              voice_embedder, voice_db, transcription_signal,
-                                                              transcription_lock, active_ref, max_concurrent),
-                                                        daemon=True
-                                                    ).start()
+                                                    # Start transcription using proper QThread pattern
+                                                    # (avoids Qt threading violations in PyInstaller frozen builds)
+                                                    self._start_transcription_worker(full_audio)
 
                                                     # Clear buffer and reset state (but keep speaking=True since we might still be talking)
                                                     self._transcription_buffer.clear()
@@ -657,124 +647,9 @@ class MainWindow(QMainWindow):
                                                     # Concatenate all buffered audio
                                                     full_audio = np.concatenate(self._transcription_buffer)
 
-                                                    # Extract all needed references BEFORE creating background thread
-                                                    # to avoid accessing 'self' (QMainWindow) from another thread
-                                                    sample_rate = self.audio.sample_rate
-                                                    transcriber = self.audio_pipeline.transcriber
-                                                    voice_embedder = self.voice_embedder
-                                                    voice_db = self.voice_db
-                                                    transcription_signal = self.transcription_signal
-                                                    transcription_lock = self._transcription_lock
-                                                    max_concurrent = self._max_concurrent_transcriptions
-
-                                                    # Transcribe in background thread
-                                                    def transcribe_async(audio_to_transcribe, sample_rate, transcriber,
-                                                                        voice_embedder, voice_db, transcription_signal,
-                                                                        transcription_lock, active_transcriptions_ref,
-                                                                        max_concurrent):
-                                                        try:
-                                                            logger.info(f"Transcribing {len(audio_to_transcribe)/sample_rate:.1f}s of speech...")
-
-                                                            # Identify speaker(s) using sliding window voice embeddings
-                                                            speaker_labels = []
-                                                            if voice_embedder and voice_db:
-                                                                try:
-                                                                    # Detect speaker changes using sliding window analysis
-                                                                    speaker_segments = voice_embedder.detect_speaker_changes(
-                                                                        audio_to_transcribe,
-                                                                        sample_rate=sample_rate,
-                                                                        window_duration=2.5,
-                                                                        stride=1.0,
-                                                                        similarity_threshold=0.75
-                                                                    )
-
-                                                                    # Map each speaker segment to voice ID
-                                                                    for seg in speaker_segments:
-                                                                        if seg['embedding'] is not None:
-                                                                            # Try to match against voice database
-                                                                            match = voice_db.find_matching_voice(seg['embedding'])
-                                                                            if match:
-                                                                                voice_id, similarity = match
-                                                                                operator = voice_db.get_operator(voice_id)
-                                                                                label = operator.callsign or f"Speaker {voice_id[:8]}"
-                                                                                logger.debug(
-                                                                                    f"Matched voice at {seg['start']:.1f}-{seg['end']:.1f}s: "
-                                                                                    f"{label} (similarity: {similarity:.2f})"
-                                                                                )
-                                                                            else:
-                                                                                # New speaker - add to database
-                                                                                voice_id = voice_db.add_operator(
-                                                                                    seg['embedding'],
-                                                                                    metadata={'first_heard': time.time()}
-                                                                                )
-                                                                                label = f"Speaker {voice_id[:8]}"
-                                                                                logger.debug(f"New speaker at {seg['start']:.1f}-{seg['end']:.1f}s: {label}")
-
-                                                                            speaker_labels.append({
-                                                                                'start': seg['start'],
-                                                                                'end': seg['end'],
-                                                                                'label': label,
-                                                                                'voice_id': voice_id
-                                                                            })
-
-                                                                    # Log speaker changes if multiple speakers detected
-                                                                    unique_speakers = len(set(s['voice_id'] for s in speaker_labels))
-                                                                    if unique_speakers > 1:
-                                                                        logger.info(
-                                                                            f"Detected {unique_speakers} different speakers in segment "
-                                                                            f"({', '.join(set(s['label'] for s in speaker_labels))})"
-                                                                        )
-
-                                                                except Exception as e:
-                                                                    logger.debug(f"Speaker detection failed: {e}")
-
-                                                            transcripts = transcriber.transcribe(
-                                                                audio_to_transcribe,
-                                                                sample_rate=sample_rate,
-                                                                vad_filter=False  # We already did VAD
-                                                            )
-
-                                                            # Emit transcriptions for display with speaker label(s)
-                                                            for transcript in transcripts:
-                                                                if transcript.text.strip():
-                                                                    # Prefix with speaker label if available
-                                                                    text = transcript.text
-                                                                    if speaker_labels:
-                                                                        # Get unique speaker labels
-                                                                        unique_labels = list(set(s['label'] for s in speaker_labels))
-                                                                        if len(unique_labels) == 1:
-                                                                            # Single speaker
-                                                                            text = f"[{unique_labels[0]}] {text}"
-                                                                        else:
-                                                                            # Multiple speakers - show all
-                                                                            text = f"[{'/'.join(unique_labels)}] {text}"
-
-                                                                    transcription_signal.emit(
-                                                                        0.0,  # freq_mhz (not scanning, just monitoring)
-                                                                        text,
-                                                                        None  # callsign (extract later if needed)
-                                                                    )
-                                                                    logger.info(f"Transcribed: {text}")
-
-                                                        except Exception as e:
-                                                            logger.error(f"Transcription failed: {e}", exc_info=True)
-                                                        finally:
-                                                            # Decrement active count
-                                                            with transcription_lock:
-                                                                active_transcriptions_ref[0] -= 1
-                                                                logger.debug(f"Transcription complete ({active_transcriptions_ref[0]}/{max_concurrent} active)")
-
-                                                    # Run in background
-                                                    import threading
-                                                    # Pass mutable reference for active count
-                                                    active_ref = [self._active_transcriptions]
-                                                    threading.Thread(
-                                                        target=transcribe_async,
-                                                        args=(full_audio.copy(), sample_rate, transcriber,
-                                                              voice_embedder, voice_db, transcription_signal,
-                                                              transcription_lock, active_ref, max_concurrent),
-                                                        daemon=True
-                                                    ).start()
+                                                    # Start transcription using proper QThread pattern
+                                                    # (avoids Qt threading violations in PyInstaller frozen builds)
+                                                    self._start_transcription_worker(full_audio)
 
                                                     # Clear buffer and reset state
                                                     self._transcription_buffer.clear()
@@ -802,6 +677,64 @@ class MainWindow(QMainWindow):
             logger.info("Audio monitoring started with buffering (1.0s buffers for VAD)")
         except Exception as e:
             logger.warning(f"Failed to start audio monitoring: {e}")
+
+    def _start_transcription_worker(self, audio_data):
+        """
+        Start transcription in a QThread worker (proper Qt pattern).
+
+        This avoids Qt threading violations that occur with Python's threading.Thread
+        in PyInstaller frozen builds.
+        """
+        # Create worker and thread
+        worker = TranscriptionWorker()
+        thread = QThread()
+
+        # Move worker to thread
+        worker.moveToThread(thread)
+
+        # Connect signals
+        worker.transcription_ready.connect(self._handle_transcription)
+        worker.transcription_complete.connect(thread.quit)
+        worker.transcription_complete.connect(lambda: self._on_transcription_finished(thread, worker))
+        worker.error_occurred.connect(lambda err: logger.error(f"Transcription worker error: {err}"))
+
+        # Set worker parameters
+        worker.set_parameters(
+            audio=audio_data.copy(),
+            sample_rate=self.audio.sample_rate,
+            transcriber=self.audio_pipeline.transcriber,
+            voice_embedder=self.voice_embedder,
+            voice_db=self.voice_db
+        )
+
+        # Start worker when thread starts
+        thread.started.connect(worker.transcribe)
+
+        # Keep reference to prevent garbage collection
+        if not hasattr(self, '_transcription_threads'):
+            self._transcription_threads = []
+        self._transcription_threads.append((thread, worker))
+
+        # Start thread
+        thread.start()
+
+        logger.debug(f"Started transcription worker in QThread")
+
+    def _on_transcription_finished(self, thread, worker):
+        """Clean up after transcription completes"""
+        # Decrement active count
+        with self._transcription_lock:
+            self._active_transcriptions -= 1
+            logger.debug(f"Transcription complete ({self._active_transcriptions}/{self._max_concurrent_transcriptions} active)")
+
+        # Clean up thread and worker
+        thread.quit()
+        thread.wait()
+
+        # Remove from active list
+        if hasattr(self, '_transcription_threads'):
+            self._transcription_threads = [(t, w) for t, w in self._transcription_threads
+                                          if t != thread]
 
     def init_ui(self):
         """Initialize user interface"""
