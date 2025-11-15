@@ -135,8 +135,18 @@ def ensure_pip_available(progress_callback=None):
     Returns:
         bool: True if pip is available, False if failed to bootstrap
     """
+    # CRITICAL: For packaged/frozen builds, we cannot use subprocess with sys.executable
+    # because sys.executable points to the .exe, not Python. This would cause infinite
+    # spawning of application windows!
+    if getattr(sys, 'frozen', False):
+        if progress_callback:
+            progress_callback("⚠ Packaged build detected")
+            progress_callback("  Cannot install dependencies via pip in packaged builds")
+        logger.warning("Frozen build - cannot use subprocess pip installation")
+        return False
+
     try:
-        # Check if pip is available
+        # Check if pip is available (SOURCE BUILDS ONLY)
         result = subprocess.run(
             [sys.executable, '-m', 'pip', '--version'],
             capture_output=True,
@@ -346,24 +356,27 @@ class ModelDownloadThread(QThread):
                 if missing_deps:
                     self.progress_signal.emit(f"Missing dependencies: {', '.join(missing_deps)}")
                     self.progress_signal.emit("")
-                    self.progress_signal.emit("Installing AI dependencies on demand...")
-                    self.progress_signal.emit("(This will download ~800 MB, please be patient)")
+                    self.progress_signal.emit("⚠ PACKAGED BUILD LIMITATION:")
                     self.progress_signal.emit("")
-
-                    # Install dependencies
-                    if not install_dependencies(packages_dir, progress_callback=self.progress_signal.emit):
-                        self.progress_signal.emit("")
-                        self.progress_signal.emit("✗ Dependency installation failed")
-                        self.progress_signal.emit("")
-                        self.progress_signal.emit("You can:")
-                        self.progress_signal.emit("1. Click 'Retry' to try again")
-                        self.progress_signal.emit("2. Click 'Skip' to continue in basic mode")
-                        self.finished_signal.emit(False)
-                        return
-
+                    self.progress_signal.emit("AI dependencies cannot be installed in packaged .exe builds.")
+                    self.progress_signal.emit("The .exe uses an embedded Python interpreter that cannot")
+                    self.progress_signal.emit("run pip to install additional packages.")
                     self.progress_signal.emit("")
-                    self.progress_signal.emit("✓ All dependencies installed successfully!")
+                    self.progress_signal.emit("OPTIONS:")
                     self.progress_signal.emit("")
+                    self.progress_signal.emit("1. Continue in BASIC MODE (click 'Skip'):")
+                    self.progress_signal.emit("   - Radio control and frequency scanning")
+                    self.progress_signal.emit("   - Band map visualization")
+                    self.progress_signal.emit("   - Manual station logging")
+                    self.progress_signal.emit("")
+                    self.progress_signal.emit("2. Install from SOURCE for full AI features:")
+                    self.progress_signal.emit("   git clone https://github.com/xmutantson/CQSentinel")
+                    self.progress_signal.emit("   cd CQSentinel")
+                    self.progress_signal.emit("   pip install -r requirements.txt")
+                    self.progress_signal.emit("   python -m cqsentinel")
+                    self.progress_signal.emit("")
+                    self.finished_signal.emit(False)
+                    return
                 else:
                     self.progress_signal.emit("✓ All dependencies already installed")
                     self.progress_signal.emit("")
