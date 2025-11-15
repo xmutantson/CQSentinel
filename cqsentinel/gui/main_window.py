@@ -238,19 +238,72 @@ class TranscriptionWorker(QObject):
 
                 # CRITICAL: Also redirect at OS level for C++ libraries (ctranslate2, PyTorch)
                 # C++ code writes directly to file descriptors 1/2, bypassing Python's sys.stdout/stderr
+                # Instead of discarding, capture to a pipe and forward to logging
                 saved_stdout_fd = None
                 saved_stderr_fd = None
-                devnull_fd = None
+                pipe_read_fd = None
+                pipe_write_fd = None
+                pipe_reader_thread = None
+
+                def read_from_pipe(read_fd, log_func):
+                    """Background thread to read C++ output from pipe and forward to logging"""
+                    try:
+                        # Read in blocking mode with line buffering
+                        # Thread is daemon so it will be killed when main thread exits
+                        buffer = b''
+                        while True:
+                            try:
+                                # Read one byte at a time to handle line buffering
+                                chunk = os.read(read_fd, 1024)
+                                if not chunk:
+                                    break  # EOF - pipe closed
+
+                                buffer += chunk
+                                # Process complete lines
+                                while b'\n' in buffer:
+                                    line, buffer = buffer.split(b'\n', 1)
+                                    text = line.decode('utf-8', errors='replace').strip()
+                                    if text:
+                                        log_func(f"[C++] {text}")
+                            except (OSError, ValueError):
+                                break  # Pipe closed or error
+
+                        # Process any remaining buffer
+                        if buffer:
+                            text = buffer.decode('utf-8', errors='replace').strip()
+                            if text:
+                                log_func(f"[C++] {text}")
+                    except Exception:
+                        # Silently fail - pipe reading is best-effort
+                        pass
+
                 try:
                     # Duplicate original file descriptors
                     saved_stdout_fd = os.dup(1)  # Duplicate stdout fd
                     saved_stderr_fd = os.dup(2)  # Duplicate stderr fd
-                    # Redirect to devnull at OS level
+
+                    # Create a pipe for capturing C++ stderr output
+                    pipe_read_fd, pipe_write_fd = os.pipe()
+
+                    # Redirect stderr to pipe (stdout to devnull since we don't expect stdout output)
+                    os.dup2(pipe_write_fd, 2)  # Redirect stderr fd to pipe
+                    # For stdout, just redirect to devnull to avoid Qt issues
                     devnull_fd = os.open(os.devnull, os.O_WRONLY)
-                    os.dup2(devnull_fd, 1)  # Redirect stdout fd to devnull
-                    os.dup2(devnull_fd, 2)  # Redirect stderr fd to devnull
-                except (OSError, AttributeError):
+                    os.dup2(devnull_fd, 1)
+                    os.close(devnull_fd)
+
+                    # Start background thread to read from pipe and forward to logging
+                    import threading
+                    pipe_reader_thread = threading.Thread(
+                        target=read_from_pipe,
+                        args=(pipe_read_fd, logger.debug),
+                        daemon=True
+                    )
+                    pipe_reader_thread.start()
+
+                except (OSError, AttributeError) as e:
                     # OS-level redirection failed (shouldn't happen, but fallback gracefully)
+                    logger.debug(f"Failed to set up pipe redirection: {e}")
                     pass
 
                 try:
@@ -330,22 +383,38 @@ class TranscriptionWorker(QObject):
 
                     self.transcription_complete.emit()
                 finally:
-                    # Restore OS-level file descriptors
-                    if saved_stdout_fd is not None:
-                        try:
-                            os.dup2(saved_stdout_fd, 1)  # Restore stdout fd
-                            os.close(saved_stdout_fd)
-                        except (OSError, AttributeError):
-                            pass
+                    # Restore OS-level file descriptors first (stops C++ output to pipe)
                     if saved_stderr_fd is not None:
                         try:
                             os.dup2(saved_stderr_fd, 2)  # Restore stderr fd
                             os.close(saved_stderr_fd)
                         except (OSError, AttributeError):
                             pass
-                    if devnull_fd is not None:
+                    if saved_stdout_fd is not None:
                         try:
-                            os.close(devnull_fd)
+                            os.dup2(saved_stdout_fd, 1)  # Restore stdout fd
+                            os.close(saved_stdout_fd)
+                        except (OSError, AttributeError):
+                            pass
+
+                    # Close pipe write end (signals EOF to reader thread)
+                    if pipe_write_fd is not None:
+                        try:
+                            os.close(pipe_write_fd)
+                        except (OSError, AttributeError):
+                            pass
+
+                    # Wait briefly for reader thread to finish
+                    if pipe_reader_thread is not None and pipe_reader_thread.is_alive():
+                        try:
+                            pipe_reader_thread.join(timeout=0.5)
+                        except:
+                            pass
+
+                    # Close pipe read end
+                    if pipe_read_fd is not None:
+                        try:
+                            os.close(pipe_read_fd)
                         except (OSError, AttributeError):
                             pass
 
