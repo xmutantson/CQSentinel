@@ -8,6 +8,7 @@ import sys
 import logging
 import traceback
 import atexit
+import faulthandler
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -83,6 +84,14 @@ def main():
             sys.stderr = io.StringIO()
         if sys.stdout is None:
             sys.stdout = io.StringIO()
+
+    # Enable faulthandler for C-level crash diagnostics (before anything else)
+    # This will print a traceback on segfaults, aborts, etc.
+    try:
+        faulthandler.enable()
+        print("Faulthandler enabled for crash diagnostics")
+    except Exception as e:
+        print(f"Warning: Could not enable faulthandler: {e}")
 
     # Print to console for debugging (before logging is set up)
     print("CQSentinel starting...")
