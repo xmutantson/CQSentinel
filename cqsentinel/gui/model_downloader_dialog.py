@@ -539,9 +539,15 @@ class ModelDownloadThread(QThread):
 
             try:
                 self.progress_signal.emit("  Loading Resemblyzer model...")
+                logger.info("Resemblyzer: Starting model load")
 
                 # Import VoiceEncoder
-                from resemblyzer import VoiceEncoder
+                try:
+                    from resemblyzer import VoiceEncoder
+                    logger.info("Resemblyzer: VoiceEncoder imported successfully")
+                except Exception as e:
+                    logger.error(f"Resemblyzer: Failed to import VoiceEncoder: {e}", exc_info=True)
+                    raise
 
                 # In frozen builds, we need to find the bundled pretrained.pt
                 # In source builds, VoiceEncoder finds it automatically
@@ -550,18 +556,36 @@ class ModelDownloadThread(QThread):
                     base_path = Path(sys._MEIPASS)
                     model_path = base_path / "resemblyzer" / "pretrained.pt"
 
+                    logger.info(f"Resemblyzer: Looking for model at {model_path}")
                     if not model_path.exists():
                         self.progress_signal.emit(f"  ✗ Model file not found at: {model_path}")
                         logger.error(f"Resemblyzer pretrained.pt not found at {model_path}")
+                        # List what's actually in the resemblyzer directory
+                        resemblyzer_dir = base_path / "resemblyzer"
+                        if resemblyzer_dir.exists():
+                            files = list(resemblyzer_dir.iterdir())
+                            logger.error(f"Files in resemblyzer dir: {files}")
                         return False
 
-                    logger.info(f"Loading Resemblyzer model from: {model_path}")
-                    encoder = VoiceEncoder(weights_fpath=str(model_path))
+                    logger.info(f"Resemblyzer: Model file found, initializing encoder...")
+                    try:
+                        encoder = VoiceEncoder(weights_fpath=str(model_path), verbose=False)
+                        logger.info("Resemblyzer: Encoder initialized successfully")
+                    except Exception as e:
+                        logger.error(f"Resemblyzer: Failed to initialize encoder: {e}", exc_info=True)
+                        raise
                 else:
                     # Source build - use default path
-                    encoder = VoiceEncoder()
+                    logger.info("Resemblyzer: Initializing with default path")
+                    try:
+                        encoder = VoiceEncoder(verbose=False)
+                        logger.info("Resemblyzer: Encoder initialized successfully")
+                    except Exception as e:
+                        logger.error(f"Resemblyzer: Failed to initialize encoder: {e}", exc_info=True)
+                        raise
 
                 self.progress_signal.emit("  ✓ Resemblyzer loaded")
+                logger.info("Resemblyzer: Load complete")
                 return True
             finally:
                 # Restore original stderr and stdout
