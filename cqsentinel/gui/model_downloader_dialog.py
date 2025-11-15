@@ -418,6 +418,16 @@ class ModelDownloadThread(QThread):
     def _download_whisper(self):
         """Download Whisper model"""
         try:
+            # Check ctranslate2 first (required by faster-whisper)
+            try:
+                import ctranslate2
+                logger.info(f"ctranslate2 version: {ctranslate2.__version__}")
+                self.progress_signal.emit(f"  Using ctranslate2 {ctranslate2.__version__}")
+            except ImportError:
+                self.progress_signal.emit("  ✗ ctranslate2 not installed")
+                logger.error("ctranslate2 not installed")
+                return False
+
             from faster_whisper import WhisperModel
 
             self.progress_signal.emit(f"  Downloading Whisper {self.model_size} (~460 MB)...")
@@ -433,13 +443,19 @@ class ModelDownloadThread(QThread):
             self.progress_signal.emit(f"  ✓ Whisper {self.model_size} downloaded")
             return True
 
-        except ImportError:
-            self.progress_signal.emit("  ✗ faster-whisper not installed")
-            logger.error("faster-whisper not installed")
+        except ImportError as e:
+            self.progress_signal.emit(f"  ✗ faster-whisper import failed: {e}")
+            logger.error(f"faster-whisper import failed: {e}")
+            return False
+        except AttributeError as e:
+            # Version mismatch between faster-whisper and ctranslate2
+            self.progress_signal.emit(f"  ✗ faster-whisper/ctranslate2 version mismatch")
+            self.progress_signal.emit(f"    Error: {e}")
+            logger.error(f"Version compatibility issue: {e}", exc_info=True)
             return False
         except Exception as e:
             self.progress_signal.emit(f"  ✗ Whisper download failed: {e}")
-            logger.error(f"Whisper download failed: {e}")
+            logger.error(f"Whisper download failed: {e}", exc_info=True)
             return False
 
     def _download_silero_vad(self):
@@ -447,30 +463,42 @@ class ModelDownloadThread(QThread):
         try:
             import torch
 
-            self.progress_signal.emit("  Downloading Silero VAD (~1.5 MB)...")
+            # CRITICAL: PyInstaller sets sys.stderr to None, which breaks torch.hub
+            # Temporarily restore stderr for the download
+            import sys
+            original_stderr = sys.stderr
+            if sys.stderr is None:
+                sys.stderr = sys.stdout  # Redirect to stdout temporarily
+                logger.info("Restored sys.stderr for torch.hub (was None in frozen build)")
 
-            # Set torch hub directory based on frozen/source
-            if getattr(sys, 'frozen', False):
-                # Packaged - use models dir next to exe
-                torch_hub_dir = Path(sys.executable).parent / "models" / "torch" / "hub"
-            else:
-                # Source - use cache
-                torch_hub_dir = Path.home() / ".cache" / "torch" / "hub"
+            try:
+                self.progress_signal.emit("  Downloading Silero VAD (~1.5 MB)...")
 
-            torch_hub_dir.mkdir(parents=True, exist_ok=True)
-            torch.hub.set_dir(str(torch_hub_dir))
+                # Set torch hub directory based on frozen/source
+                if getattr(sys, 'frozen', False):
+                    # Packaged - use models dir next to exe
+                    torch_hub_dir = Path(sys.executable).parent / "models" / "torch" / "hub"
+                else:
+                    # Source - use cache
+                    torch_hub_dir = Path.home() / ".cache" / "torch" / "hub"
 
-            # Load model (will download if needed)
-            model, utils = torch.hub.load(
-                repo_or_dir='snakers4/silero-vad',
-                model='silero_vad',
-                force_reload=False,
-                onnx=False,
-                trust_repo=True  # Trust the repository
-            )
+                torch_hub_dir.mkdir(parents=True, exist_ok=True)
+                torch.hub.set_dir(str(torch_hub_dir))
 
-            self.progress_signal.emit("  ✓ Silero VAD downloaded")
-            return True
+                # Load model (will download if needed)
+                model, utils = torch.hub.load(
+                    repo_or_dir='snakers4/silero-vad',
+                    model='silero_vad',
+                    force_reload=False,
+                    onnx=False,
+                    trust_repo=True  # Trust the repository
+                )
+
+                self.progress_signal.emit("  ✓ Silero VAD downloaded")
+                return True
+            finally:
+                # Restore original stderr
+                sys.stderr = original_stderr
 
         except ImportError as e:
             self.progress_signal.emit(f"  ✗ torch not installed: {e}")
