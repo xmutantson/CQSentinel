@@ -79,7 +79,7 @@ class VoiceActivityDetector:
             self.model = model
             self.utils = utils
 
-            logger.info("✓ Silero VAD model loaded")
+            logger.info("[OK] Silero VAD model loaded")
 
         except Exception as e:
             logger.error(f"Failed to load VAD model: {e}")

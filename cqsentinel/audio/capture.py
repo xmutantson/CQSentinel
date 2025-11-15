@@ -58,6 +58,38 @@ def list_audio_devices() -> List[AudioDevice]:
     return devices
 
 
+def list_audio_output_devices() -> List[AudioDevice]:
+    """
+    List all available audio output devices
+
+    Returns:
+        List of AudioDevice objects
+    """
+    devices = []
+
+    try:
+        device_list = sd.query_devices()
+        default_output = sd.default.device[1]  # Output device index
+
+        for idx, dev in enumerate(device_list):
+            if dev['max_output_channels'] > 0:
+                devices.append(AudioDevice(
+                    index=idx,
+                    name=dev['name'],
+                    channels=dev['max_output_channels'],
+                    sample_rate=dev['default_samplerate'],
+                    is_input=False,
+                    is_default=(idx == default_output)
+                ))
+
+        logger.info(f"Found {len(devices)} audio output devices")
+
+    except Exception as e:
+        logger.error(f"Failed to list output devices: {e}")
+
+    return devices
+
+
 class AudioCapture:
     """
     Audio capture from sound device
@@ -173,6 +205,7 @@ class AudioCapture:
 
             # Start worker thread to process audio
             def worker():
+                consecutive_errors = 0
                 while self._recording:
                     try:
                         audio_chunk = audio_queue.get(timeout=0.1)
@@ -185,10 +218,21 @@ class AudioCapture:
                         if self._callback_func:
                             self._callback_func(audio_chunk.flatten())
 
+                        # Reset error counter on success
+                        consecutive_errors = 0
+
                     except queue.Empty:
                         continue
                     except Exception as e:
-                        logger.error(f"Audio processing error: {e}")
+                        # CRITICAL: Log with full traceback to see what's failing!
+                        logger.error(f"Audio processing error: {e}", exc_info=True)
+                        consecutive_errors += 1
+
+                        # Stop if too many consecutive errors (callback is broken)
+                        if consecutive_errors >= 10:
+                            logger.critical(f"Audio worker stopping after {consecutive_errors} consecutive errors!")
+                            self._recording = False
+                            break
 
             self._worker_thread = threading.Thread(target=worker, daemon=True)
             self._worker_thread.start()

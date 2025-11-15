@@ -171,7 +171,7 @@ class VoiceWidget(QWidget):
             self.table.setItem(row, 0, callsign_item)
 
             # Worked status
-            worked_item = QTableWidgetItem("✓" if operator.worked else "")
+            worked_item = QTableWidgetItem("Y" if operator.worked else "")
             worked_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             if operator.worked:
                 worked_item.setBackground(QColor(144, 238, 144))  # Light green

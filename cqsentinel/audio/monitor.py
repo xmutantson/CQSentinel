@@ -106,19 +106,21 @@ class AudioMonitor:
     noise reduction, check if VAD is working correctly, etc.
     """
 
-    def __init__(self, sample_rate: int = 16000):
+    def __init__(self, sample_rate: int = 16000, output_device: Optional[int] = None):
         """
         Initialize audio monitor.
 
         Args:
             sample_rate: Audio sample rate
+            output_device: Output device index (None for default)
         """
         self.sample_rate = sample_rate
+        self.output_device = output_device
         self._playback_stream: Optional[sd.OutputStream] = None
         self._monitoring_stage: Optional[AudioStage] = None
         self._volume = 1.0
 
-        logger.info(f"AudioMonitor initialized: sample_rate={sample_rate}")
+        logger.info(f"AudioMonitor initialized: sample_rate={sample_rate}, output_device={output_device}")
 
     def start_monitoring(self, stage: AudioStage, volume: float = 1.0):
         """
@@ -139,11 +141,13 @@ class AudioMonitor:
             self._playback_stream = sd.OutputStream(
                 samplerate=self.sample_rate,
                 channels=1,
-                dtype='float32'
+                dtype='float32',
+                device=self.output_device
             )
             self._playback_stream.start()
 
-            logger.info(f"Started monitoring audio at stage: {stage.value}, volume: {self._volume:.1f}")
+            device_info = f" on device {self.output_device}" if self.output_device is not None else " on default device"
+            logger.info(f"Started monitoring audio at stage: {stage.value}, volume: {self._volume:.1f}{device_info}")
 
         except Exception as e:
             logger.error(f"Failed to start audio monitoring: {e}")
@@ -224,9 +228,11 @@ class AudioLevelMeter:
         peak = np.max(np.abs(audio_data))
 
         # Update levels (thread-safe)
+        # For float32 audio, RMS is typically 0.0-0.3 for normal speech
+        # Scale by 3.0 to get better visual representation (0.3 -> 0.9)
         with self._lock:
-            self.rms_level = min(1.0, rms * 10)  # Scale and clamp
-            self.peak_level = min(1.0, peak)
+            self.rms_level = min(1.0, rms * 3.0)  # Scale and clamp
+            self.peak_level = min(1.0, peak * 1.5)  # Slight boost for peak
 
     def get_levels(self) -> tuple:
         """

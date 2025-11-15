@@ -25,7 +25,7 @@ from PyQt5.QtGui import QFont
 from cqsentinel.config import get_config, get_config_manager
 from cqsentinel.radio import HamlibController, RadioConnectionError, RigctldManager, find_serial_port, SSBAutoTuner
 from cqsentinel.audio import (
-    AudioCapture, list_audio_devices,
+    AudioCapture, list_audio_devices, list_audio_output_devices,
     AudioBroadcaster, AudioMonitor, AudioLevelMeter,
     AudioStage, AudioChunk
 )
@@ -290,14 +290,14 @@ class MainWindow(QMainWindow):
             self.log("  Band maps initialized for all bands")
 
             self.use_full_scanner = True
-            self.log("✓ Advanced features initialized successfully!")
+            self.log("[OK] Advanced features initialized successfully!")
             self.log("  Full scanner with audio processing, AI transcription, and voice ID enabled.")
             logger.info("Advanced features initialized: audio pipeline, transcription, voice ID, contest logic")
 
         except Exception as e:
             self.log(f"ERROR initializing advanced features: {e}")
             logger.error(f"Failed to initialize advanced features: {e}", exc_info=True)
-            self.log("⚠ Using basic scanner mode (advanced features unavailable)")
+            self.log("[WARNING] Using basic scanner mode (advanced features unavailable)")
             self.use_full_scanner = False
 
     def start_audio_monitoring(self):
@@ -489,6 +489,14 @@ class MainWindow(QMainWindow):
         enable_advanced_action.triggered.connect(self.init_advanced_features)
         scanner_menu.addAction(enable_advanced_action)
 
+        # Tools menu
+        tools_menu = menubar.addMenu("&Tools")
+
+        audio_diag_action = QAction("&Audio Diagnostics", self)
+        audio_diag_action.setToolTip("Run audio subsystem self-test")
+        audio_diag_action.triggered.connect(self.run_audio_diagnostics)
+        tools_menu.addAction(audio_diag_action)
+
         # Help menu
         help_menu = menubar.addMenu("&Help")
 
@@ -657,6 +665,27 @@ class MainWindow(QMainWindow):
         monitor_group = QGroupBox("Audio Diagnostic Monitor")
         monitor_layout = QVBoxLayout()
 
+        # Output device selector
+        output_device_layout = QHBoxLayout()
+        output_device_layout.addWidget(QLabel("Output Device:"))
+        self.output_device_combo = QComboBox()
+        self.output_device_combo.setToolTip("Select audio output device for monitoring")
+
+        # Populate output devices
+        try:
+            output_devices = list_audio_output_devices()
+            self.output_device_combo.addItem("Default", None)
+            for device in output_devices:
+                device_name = f"{device.name} {'(Default)' if device.is_default else ''}"
+                self.output_device_combo.addItem(device_name, device.index)
+        except Exception as e:
+            logger.warning(f"Could not list output devices: {e}")
+            self.output_device_combo.addItem("Default", None)
+
+        self.output_device_combo.currentIndexChanged.connect(self._on_output_device_changed)
+        output_device_layout.addWidget(self.output_device_combo)
+        monitor_layout.addLayout(output_device_layout)
+
         monitor_btn_layout = QHBoxLayout()
         monitor_btn_layout.addWidget(QLabel("Listen to:"))
 
@@ -725,6 +754,22 @@ class MainWindow(QMainWindow):
             self.log(f"Audio monitor: listening to {stage.value} audio")
         else:
             self.log("Audio monitor: off")
+
+    def _on_output_device_changed(self, index: int):
+        """Handle output device selection change"""
+        device_index = self.output_device_combo.itemData(index)
+        device_name = self.output_device_combo.currentText()
+
+        # Update audio monitor output device
+        self.audio_monitor.output_device = device_index
+        logger.info(f"Audio output device changed to: {device_name} (index={device_index})")
+        self.log(f"Audio output: {device_name}")
+
+        # If currently monitoring, restart with new device
+        if self.audio_monitor.is_monitoring:
+            current_stage = self.audio_monitor.monitoring_stage
+            self.audio_monitor.stop_monitoring()
+            self.audio_monitor.start_monitoring(current_stage, volume=0.7)
 
     def setup_timers(self):
         """Setup periodic update timers"""
@@ -874,11 +919,11 @@ class MainWindow(QMainWindow):
             if self.use_full_scanner and self.audio_pipeline:
                 # Use full-featured BandScanner with all Phase 2-8 features
                 self.log("Using FULL SCANNER with AI features:")
-                self.log("  ✓ Audio processing (noise reduction + voice detection)")
-                self.log("  ✓ Speech transcription (Whisper AI)")
-                self.log("  ✓ Voice fingerprinting (speaker identification)")
-                self.log("  ✓ SSB auto-centering")
-                self.log("  ✓ Contest logic (callsign extraction)")
+                self.log("  [OK] Audio processing (noise reduction + voice detection)")
+                self.log("  [OK] Speech transcription (Whisper AI)")
+                self.log("  [OK] Voice fingerprinting (speaker identification)")
+                self.log("  [OK] SSB auto-centering")
+                self.log("  [OK] Contest logic (callsign extraction)")
 
                 # Initialize BandScanner with transcription callback
                 def on_station_detected_callback(station):
@@ -1242,7 +1287,7 @@ class MainWindow(QMainWindow):
             warn_threshold = self.config.voice_db.warn_age_days
 
             if age_days > warn_threshold:
-                self.log(f"⚠ Voice database is {age_days:.1f} days old (>{warn_threshold} days)")
+                self.log(f"[WARNING] Voice database is {age_days:.1f} days old (>{warn_threshold} days)")
 
                 result = QMessageBox.question(
                     self,
@@ -1257,7 +1302,7 @@ class MainWindow(QMainWindow):
 
                 if result == QMessageBox.StandardButton.Yes:
                     self.voice_db.reset()
-                    self.log("✓ Voice database reset")
+                    self.log("[OK] Voice database reset")
                     QMessageBox.information(self, "Database Reset", "Voice database has been reset.")
                 else:
                     self.log("Voice database kept (user chose not to reset)")
@@ -1280,14 +1325,14 @@ class MainWindow(QMainWindow):
             )
 
             if self.n3fjp_client.connect():
-                self.log("✓ Connected to N3FJP successfully")
+                self.log("[OK] Connected to N3FJP successfully")
                 self.n3fjp_status_label.setStyleSheet("color: green;")
                 self.n3fjp_status_label.setToolTip("N3FJP: Connected")
             else:
                 raise Exception("Connection failed")
 
         except Exception as e:
-            self.log(f"✗ Failed to connect to N3FJP: {e}")
+            self.log(f"[FAIL] Failed to connect to N3FJP: {e}")
             self.log("  Make sure N3FJP is running with network server enabled")
             self.n3fjp_status_label.setStyleSheet("color: red;")
             self.n3fjp_status_label.setToolTip(f"N3FJP: Failed - {e}")
@@ -1342,6 +1387,7 @@ class MainWindow(QMainWindow):
 
         # Monitor scan completion in background
         import threading
+        import time
         def monitor_scan():
             while self.band_scanner and self.band_scanner.is_scanning():
                 time.sleep(1)
@@ -1364,6 +1410,46 @@ class MainWindow(QMainWindow):
             self.config = get_config()
             self.log("Settings updated")
             logger.info("Settings updated by user")
+
+    def run_audio_diagnostics(self):
+        """Run audio subsystem diagnostic tests"""
+        from cqsentinel.audio.diagnostics import AudioDiagnostics
+
+        # Show message
+        QMessageBox.information(
+            self,
+            "Audio Diagnostics",
+            "The audio diagnostic tests will now run in the console window.\n\n"
+            "Check the console for detailed results.\n\n"
+            "Make sure to make noise during input tests!"
+        )
+
+        # Run diagnostics (output goes to console)
+        try:
+            input_dev = self.audio.device if self.audio else None
+            output_dev = self.audio_monitor.output_device if self.audio_monitor else None
+
+            self.log("Running audio diagnostics... (check console)")
+            logger.info("Starting audio diagnostics")
+
+            # Run in background thread so UI doesn't freeze
+            import threading
+            def run_diag():
+                try:
+                    result = AudioDiagnostics.run_full_diagnostic(input_dev, output_dev)
+                    if result:
+                        self.log("[OK] Audio diagnostics passed - check console for details")
+                    else:
+                        self.log("[WARNING] Audio diagnostics found issues - check console")
+                except Exception as e:
+                    logger.error(f"Diagnostic error: {e}", exc_info=True)
+                    self.log(f"[ERROR] Diagnostic failed: {e}")
+
+            threading.Thread(target=run_diag, daemon=True).start()
+
+        except Exception as e:
+            logger.error(f"Failed to run diagnostics: {e}", exc_info=True)
+            QMessageBox.critical(self, "Error", f"Failed to run diagnostics:\n{e}")
 
     def show_about(self):
         """Show about dialog"""
