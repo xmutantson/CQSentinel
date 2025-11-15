@@ -249,15 +249,20 @@ class BandMapWidget(QWidget):
         font = QFont("Monospace", 9)
         painter.setFont(font)
 
+        # Get visible frequency range based on zoom
+        freq_min_visible, freq_max_visible = self.get_visible_freq_range()
+        freq_range = freq_max_visible - freq_min_visible
+
         # Calculate frequency step (e.g., every 50 kHz)
-        freq_range = self.freq_max - self.freq_min
         step = 50e3  # 50 kHz
         if freq_range > 1e6:
             step = 100e3  # 100 kHz for wider ranges
+        elif freq_range < 100e3 and self.zoom_level > 3:
+            step = 10e3  # 10 kHz for high zoom
 
-        # Draw vertical grid lines
-        freq = self.freq_min
-        while freq <= self.freq_max:
+        # Draw vertical grid lines for visible range
+        freq = freq_min_visible - (freq_min_visible % step)  # Start at step boundary
+        while freq <= freq_max_visible:
             x = self._freq_to_x(freq, width)
 
             # Draw grid line
@@ -387,9 +392,37 @@ class BandMapWidget(QWidget):
 
             painter.fillRect(bar_x, bar_y, bar_width, bar_height, color)
 
+    def get_visible_freq_range(self):
+        """
+        Get the visible frequency range based on zoom level.
+
+        Returns:
+            Tuple of (freq_min_visible, freq_max_visible) in Hz
+        """
+        if self.zoom_level <= 1.0:
+            # No zoom - show entire band
+            return (self.freq_min, self.freq_max)
+
+        # Calculate visible range based on zoom
+        total_range = self.freq_max - self.freq_min
+        visible_range = total_range / self.zoom_level
+
+        # Center on zoom_center_freq (or middle of band if not set)
+        center = self.zoom_center_freq if self.zoom_center_freq else (self.freq_min + self.freq_max) / 2
+
+        # Calculate visible min/max
+        freq_min_visible = center - visible_range / 2
+        freq_max_visible = center + visible_range / 2
+
+        # Clamp to actual band limits
+        freq_min_visible = max(self.freq_min, freq_min_visible)
+        freq_max_visible = min(self.freq_max, freq_max_visible)
+
+        return (freq_min_visible, freq_max_visible)
+
     def _freq_to_x(self, frequency: float, width: int) -> int:
         """
-        Convert frequency to x-coordinate.
+        Convert frequency to x-coordinate (accounting for zoom).
 
         Args:
             frequency: Frequency in Hz
@@ -399,13 +432,14 @@ class BandMapWidget(QWidget):
             X-coordinate in pixels
         """
         margin = 50
-        freq_range = self.freq_max - self.freq_min
-        ratio = (frequency - self.freq_min) / freq_range
+        freq_min_visible, freq_max_visible = self.get_visible_freq_range()
+        freq_range = freq_max_visible - freq_min_visible
+        ratio = (frequency - freq_min_visible) / freq_range
         return int(margin + ratio * (width - 2 * margin))
 
     def _x_to_freq(self, x: int, width: int) -> float:
         """
-        Convert x-coordinate to frequency.
+        Convert x-coordinate to frequency (accounting for zoom).
 
         Args:
             x: X-coordinate in pixels
@@ -416,7 +450,8 @@ class BandMapWidget(QWidget):
         """
         margin = 50
         ratio = (x - margin) / (width - 2 * margin)
-        return self.freq_min + ratio * (self.freq_max - self.freq_min)
+        freq_min_visible, freq_max_visible = self.get_visible_freq_range()
+        return freq_min_visible + ratio * (freq_max_visible - freq_min_visible)
 
     def mousePressEvent(self, event):
         """
