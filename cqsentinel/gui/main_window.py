@@ -193,6 +193,10 @@ class MainWindow(QMainWindow):
         self.audio_monitor = AudioMonitor()  # For diagnostic playback
         self.audio_buffer = AudioBuffer(buffer_duration=1.0, sample_rate=self.config.audio.sample_rate)  # Buffer for VAD
 
+        # Speech ratio smoothing (exponential moving average)
+        self._speech_ratio_smoothed = 0.0
+        self._speech_ratio_alpha = 0.3  # Smoothing factor (0.3 = 30% new, 70% old)
+
         # Band map visualization (always available)
         self.band_map_widgets = {}  # Dictionary of BandMapWidget instances per band
         self.band_maps = {}  # Dictionary of BandMapState instances per band
@@ -400,8 +404,14 @@ class MainWindow(QMainWindow):
                                 has_speech = result.get('has_speech', False)
                                 speech_ratio = result.get('speech_ratio', 0.0)
 
-                                # Emit signal for voice detection (thread-safe)
-                                self.voice_detection_signal.emit(has_speech, speech_ratio)
+                                # Apply smoothing to speech ratio (exponential moving average)
+                                self._speech_ratio_smoothed = (
+                                    self._speech_ratio_alpha * speech_ratio +
+                                    (1 - self._speech_ratio_alpha) * self._speech_ratio_smoothed
+                                )
+
+                                # Emit signal for voice detection (thread-safe) with smoothed ratio
+                                self.voice_detection_signal.emit(has_speech, self._speech_ratio_smoothed)
 
                                 # === STEP 3: Create denoised audio and transcribe if speech detected ===
                                 if has_speech:
@@ -437,11 +447,13 @@ class MainWindow(QMainWindow):
                                         # Run transcription in background thread (Whisper is slow)
                                         def transcribe_async():
                                             try:
-                                                # Use transcriber directly with VAD filtering
+                                                # Transcribe denoised audio
+                                                # No need for vad_filter=True - we already did VAD above!
+                                                # (vad_filter requires onnxruntime which may not be installed)
                                                 transcripts = self.audio_pipeline.transcriber.transcribe(
                                                     denoised,
                                                     sample_rate=self.audio.sample_rate,
-                                                    vad_filter=True
+                                                    vad_filter=False
                                                 )
 
                                                 # Emit transcriptions for display
