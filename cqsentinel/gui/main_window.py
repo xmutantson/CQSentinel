@@ -185,6 +185,7 @@ class MainWindow(QMainWindow):
         self.use_full_scanner = False  # Enable when Phase 2+ components ready
         self.scan_queue = []  # Queue of bands to scan
         self.current_scan_band = None  # Current band being scanned
+        self.enabled_bands_for_scan = []  # Bands that were enabled when scan started (for continuous loop)
 
         # Audio monitoring (new broadcaster pattern)
         self.audio_broadcaster = AudioBroadcaster()
@@ -198,9 +199,14 @@ class MainWindow(QMainWindow):
 
         # Initialize audio capture for level meter (basic monitoring, always available)
         try:
-            self.audio = AudioCapture()
+            # Get configured audio device index
+            audio_device_index = self._get_audio_device_index()
+            self.audio = AudioCapture(device=audio_device_index, sample_rate=self.config.audio.sample_rate)
             self.start_audio_monitoring()
-            logger.info("Basic audio monitoring initialized")
+            if audio_device_index is not None:
+                logger.info(f"Basic audio monitoring initialized with device index {audio_device_index}")
+            else:
+                logger.info("Basic audio monitoring initialized with default device")
         except Exception as e:
             logger.warning(f"Could not initialize audio capture: {e}")
             # Not critical - app can still function
@@ -237,7 +243,8 @@ class MainWindow(QMainWindow):
             # Audio capture (already initialized for level meter, reuse it)
             if not self.audio:
                 self.log("  Initializing audio capture...")
-                self.audio = AudioCapture()
+                audio_device_index = self._get_audio_device_index()
+                self.audio = AudioCapture(device=audio_device_index, sample_rate=self.config.audio.sample_rate)
                 self.start_audio_monitoring()
             else:
                 self.log("  Audio capture already active (for level meter)")
@@ -299,6 +306,35 @@ class MainWindow(QMainWindow):
             logger.error(f"Failed to initialize advanced features: {e}", exc_info=True)
             self.log("[WARNING] Using basic scanner mode (advanced features unavailable)")
             self.use_full_scanner = False
+
+    def _get_audio_device_index(self) -> Optional[int]:
+        """
+        Get the audio device index from the configured device name.
+
+        Returns:
+            Device index (int) if found, None for default device
+        """
+        device_name = self.config.radio.audio_device_name
+
+        # If no device configured or empty string, use default
+        if not device_name:
+            logger.info("Using default audio input device")
+            return None
+
+        # Try to find device by name
+        try:
+            devices = list_audio_devices()
+            for device in devices:
+                if device.name == device_name:
+                    logger.info(f"Found audio device '{device_name}' at index {device.index}")
+                    return device.index
+
+            # Device not found - warn and use default
+            logger.warning(f"Configured audio device '{device_name}' not found, using default")
+            return None
+        except Exception as e:
+            logger.error(f"Error finding audio device: {e}")
+            return None
 
     def start_audio_monitoring(self):
         """Start audio stream with broadcaster pattern for multiple consumers"""
@@ -399,8 +435,8 @@ class MainWindow(QMainWindow):
         bandmaps_layout = QVBoxLayout(bandmaps_container)
         bandmaps_layout.setContentsMargins(0, 0, 0, 0)
 
-        # Create band map widgets for all bands
-        for band_name in ["160m", "80m", "40m", "20m", "15m", "10m"]:
+        # Create band map widgets for all bands (ordered from highest to lowest frequency)
+        for band_name in ["10m", "15m", "20m", "40m", "80m", "160m"]:
             if band_name in BAND_PROFILES:
                 profile = BAND_PROFILES[band_name]
 
@@ -509,11 +545,11 @@ class MainWindow(QMainWindow):
         group = QGroupBox("Control Panel")
         layout = QHBoxLayout()
 
-        # Band selection
+        # Band selection (ordered from highest to lowest frequency)
         layout.addWidget(QLabel("Bands:"))
 
         self.band_checkboxes = {}
-        for band in ["160m", "80m", "40m", "20m", "15m", "10m"]:
+        for band in ["10m", "15m", "20m", "40m", "80m", "160m"]:
             cb = QCheckBox(band)
             cb.setChecked(band in self.config.scan.enabled_bands)
             cb.stateChanged.connect(self.on_band_selection_changed)
@@ -947,9 +983,14 @@ class MainWindow(QMainWindow):
                     on_progress_update=on_progress_update_callback
                 )
 
-                # Queue up all bands to scan
+                # Save enabled bands for continuous loop
+                self.enabled_bands_for_scan = enabled_bands.copy()
+
+                # Queue up all bands to scan (from lowest freq to highest)
                 self.scan_queue = []
-                for band_name in enabled_bands:
+                # Reverse the enabled_bands list to scan from lowest to highest freq
+                # (since band names go from high freq to low freq: 10m has higher freq than 160m)
+                for band_name in reversed(enabled_bands):
                     if band_name in BAND_PROFILES:
                         profile = BAND_PROFILES[band_name]
                         self.log(f"  Queued: {profile.name}: {profile.freq_start/1e6:.3f}-{profile.freq_end/1e6:.3f} MHz")
@@ -958,7 +999,7 @@ class MainWindow(QMainWindow):
                             'profile': profile
                         })
 
-                # Start scanning first band
+                # Start scanning first band (lowest frequency)
                 if self.scan_queue:
                     self._start_next_band_scan()
             else:
@@ -985,6 +1026,12 @@ class MainWindow(QMainWindow):
             # Stop scanner
             self.log("Stopping scan...")
             self.update_scan_status("Stopping...", "yellow")
+
+            # Clear scan state
+            self.scan_queue = []
+            self.enabled_bands_for_scan = []
+            self.current_scan_band = None
+
             if self.band_scanner:
                 self.band_scanner.stop_scan()
                 self.band_scanner = None
@@ -1339,11 +1386,25 @@ class MainWindow(QMainWindow):
             self.n3fjp_client = None
 
     def _start_next_band_scan(self):
-        """Start scanning the next band in the queue"""
+        """Start scanning the next band in the queue (with continuous loop)"""
         if not self.scan_queue:
-            self.log("All bands scanned!")
-            self.on_scan_finished()
-            return
+            # Queue is empty - rebuild it for continuous loop
+            self.log("All bands scanned - restarting from lowest band...")
+
+            # Rebuild scan queue from enabled bands (reverse order: lowest freq first)
+            for band_name in reversed(self.enabled_bands_for_scan):
+                if band_name in BAND_PROFILES:
+                    profile = BAND_PROFILES[band_name]
+                    self.scan_queue.append({
+                        'band_name': band_name,
+                        'profile': profile
+                    })
+
+            # If still empty (user stopped scan), exit
+            if not self.scan_queue:
+                self.log("Scan stopped")
+                self.on_scan_finished()
+                return
 
         # Get next band from queue
         band_info = self.scan_queue.pop(0)
@@ -1392,12 +1453,9 @@ class MainWindow(QMainWindow):
             while self.band_scanner and self.band_scanner.is_scanning():
                 time.sleep(1)
 
-            # Scan finished, start next band
-            if self.scan_queue:
-                self.log(f"Band {self.current_scan_band} complete")
-                self._start_next_band_scan()
-            else:
-                self.log("All bands scanned!")
+            # Scan finished, start next band (continuous loop will rebuild queue if empty)
+            self.log(f"Band {self.current_scan_band} complete")
+            self._start_next_band_scan()
 
         monitor_thread = threading.Thread(target=monitor_scan, daemon=True)
         monitor_thread.start()
