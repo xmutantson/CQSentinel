@@ -16,8 +16,10 @@ noisereduce>=3.0.0
 
 # Voice Activity Detection
 # Note: silero-vad requires torch
-torch>=2.0.0
-torchaudio>=2.0.0
+# Pin torch to <2.6.0 - PyTorch 2.6 changed torch.load() default to weights_only=True
+# which breaks Resemblyzer's pretrained.pt loading (Jan 2025 breaking change)
+torch>=2.0.0,<2.6.0
+torchaudio>=2.0.0,<2.6.0
 silero-vad>=4.0.0
 
 # Speech Recognition (Offline)
