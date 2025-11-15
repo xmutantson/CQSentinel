@@ -12,6 +12,7 @@ Provides the primary user interface with:
 import sys
 import logging
 import numpy as np
+from typing import Optional
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QComboBox, QCheckBox,
