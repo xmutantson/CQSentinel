@@ -13,13 +13,14 @@ Output:
 """
 
 import sys
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules, collect_binaries
 import os
 
 block_cipher = None
 
 # Collect all data files from packages
 datas = []
+binaries = []
 
 # Add models directory (if exists)
 if os.path.exists('models'):
@@ -61,7 +62,8 @@ except:
 
 try:
     datas += collect_data_files('ctranslate2')
-    print("✓ Including ctranslate2 data files")
+    binaries += collect_binaries('ctranslate2')
+    print("✓ Including ctranslate2 data files and binaries")
 except:
     print("⚠ ctranslate2 not found")
 
@@ -139,7 +141,7 @@ except:
 a = Analysis(
     ['cqsentinel/main.py'],
     pathex=[],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
