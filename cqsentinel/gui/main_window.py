@@ -480,21 +480,65 @@ class MainWindow(QMainWindow):
                                                     try:
                                                         logger.info(f"Transcribing {len(audio_to_transcribe)/self.audio.sample_rate:.1f}s of speech (timeout)...")
 
+                                                        # Identify speaker(s) using voice embeddings
+                                                        speaker_label = None
+                                                        if self.voice_embedder and self.voice_db:
+                                                            try:
+                                                                # Get speech timestamps for embedding extraction
+                                                                speech_timestamps = self.audio_pipeline.vad.detect_speech(
+                                                                    audio_to_transcribe,
+                                                                    return_seconds=False  # Need samples for extraction
+                                                                )
+
+                                                                if speech_timestamps:
+                                                                    # Extract voice embeddings
+                                                                    voice_segments = self.voice_embedder.extract_embeddings(
+                                                                        audio_to_transcribe,
+                                                                        speech_timestamps,
+                                                                        sample_rate=self.audio.sample_rate
+                                                                    )
+
+                                                                    # Try to match first voice segment
+                                                                    if voice_segments:
+                                                                        match = self.voice_db.find_matching_voice(voice_segments[0].embedding)
+                                                                        if match:
+                                                                            voice_id, similarity = match
+                                                                            operator = self.voice_db.get_operator(voice_id)
+                                                                            speaker_label = operator.callsign or f"Speaker {voice_id[:8]}"
+                                                                            logger.debug(f"Matched voice: {speaker_label} (similarity: {similarity:.2f})")
+                                                                        else:
+                                                                            # New speaker - add to database
+                                                                            voice_id = self.voice_db.add_operator(
+                                                                                voice_segments[0].embedding,
+                                                                                metadata={'first_heard': time.time()}
+                                                                            )
+                                                                            # Use short ID for display
+                                                                            speaker_label = f"Speaker {voice_id[:8]}"
+                                                                            logger.debug(f"New speaker detected: {speaker_label}")
+
+                                                            except Exception as e:
+                                                                logger.debug(f"Voice ID failed: {e}")
+
                                                         transcripts = self.audio_pipeline.transcriber.transcribe(
                                                             audio_to_transcribe,
                                                             sample_rate=self.audio.sample_rate,
                                                             vad_filter=False  # We already did VAD
                                                         )
 
-                                                        # Emit transcriptions for display
+                                                        # Emit transcriptions for display with speaker label
                                                         for transcript in transcripts:
                                                             if transcript.text.strip():
+                                                                # Prefix with speaker label if available
+                                                                text = transcript.text
+                                                                if speaker_label:
+                                                                    text = f"[{speaker_label}] {text}"
+
                                                                 self.transcription_signal.emit(
                                                                     0.0,  # freq_mhz (not scanning, just monitoring)
-                                                                    transcript.text,
+                                                                    text,
                                                                     None  # callsign (extract later if needed)
                                                                 )
-                                                                logger.info(f"Transcribed: {transcript.text}")
+                                                                logger.info(f"Transcribed: {text}")
 
                                                     except Exception as e:
                                                         logger.error(f"Transcription failed: {e}", exc_info=True)
@@ -535,21 +579,65 @@ class MainWindow(QMainWindow):
                                                     try:
                                                         logger.info(f"Transcribing {len(audio_to_transcribe)/self.audio.sample_rate:.1f}s of speech...")
 
+                                                        # Identify speaker(s) using voice embeddings
+                                                        speaker_label = None
+                                                        if self.voice_embedder and self.voice_db:
+                                                            try:
+                                                                # Get speech timestamps for embedding extraction
+                                                                speech_timestamps = self.audio_pipeline.vad.detect_speech(
+                                                                    audio_to_transcribe,
+                                                                    return_seconds=False  # Need samples for extraction
+                                                                )
+
+                                                                if speech_timestamps:
+                                                                    # Extract voice embeddings
+                                                                    voice_segments = self.voice_embedder.extract_embeddings(
+                                                                        audio_to_transcribe,
+                                                                        speech_timestamps,
+                                                                        sample_rate=self.audio.sample_rate
+                                                                    )
+
+                                                                    # Try to match first voice segment
+                                                                    if voice_segments:
+                                                                        match = self.voice_db.find_matching_voice(voice_segments[0].embedding)
+                                                                        if match:
+                                                                            voice_id, similarity = match
+                                                                            operator = self.voice_db.get_operator(voice_id)
+                                                                            speaker_label = operator.callsign or f"Speaker {voice_id[:8]}"
+                                                                            logger.debug(f"Matched voice: {speaker_label} (similarity: {similarity:.2f})")
+                                                                        else:
+                                                                            # New speaker - add to database
+                                                                            voice_id = self.voice_db.add_operator(
+                                                                                voice_segments[0].embedding,
+                                                                                metadata={'first_heard': time.time()}
+                                                                            )
+                                                                            # Use short ID for display
+                                                                            speaker_label = f"Speaker {voice_id[:8]}"
+                                                                            logger.debug(f"New speaker detected: {speaker_label}")
+
+                                                            except Exception as e:
+                                                                logger.debug(f"Voice ID failed: {e}")
+
                                                         transcripts = self.audio_pipeline.transcriber.transcribe(
                                                             audio_to_transcribe,
                                                             sample_rate=self.audio.sample_rate,
                                                             vad_filter=False  # We already did VAD
                                                         )
 
-                                                        # Emit transcriptions for display
+                                                        # Emit transcriptions for display with speaker label
                                                         for transcript in transcripts:
                                                             if transcript.text.strip():
+                                                                # Prefix with speaker label if available
+                                                                text = transcript.text
+                                                                if speaker_label:
+                                                                    text = f"[{speaker_label}] {text}"
+
                                                                 self.transcription_signal.emit(
                                                                     0.0,  # freq_mhz (not scanning, just monitoring)
-                                                                    transcript.text,
+                                                                    text,
                                                                     None  # callsign (extract later if needed)
                                                                 )
-                                                                logger.info(f"Transcribed: {transcript.text}")
+                                                                logger.info(f"Transcribed: {text}")
 
                                                     except Exception as e:
                                                         logger.error(f"Transcription failed: {e}", exc_info=True)
