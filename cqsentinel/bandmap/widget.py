@@ -69,6 +69,12 @@ class BandMapWidget(QWidget):
         self.show_callsigns = True
         self.show_signal_strength = True
 
+        # Zoom settings
+        self.zoom_level = 1.0  # 1.0 = show entire band, higher = zoomed in
+        self.zoom_center_freq = None  # Center frequency when zoomed (None = center of band)
+        self.min_zoom = 1.0
+        self.max_zoom = 10.0
+
         self._init_ui()
 
         logger.info("BandMapWidget initialized")
@@ -80,8 +86,10 @@ class BandMapWidget(QWidget):
         # Header
         header_layout = QHBoxLayout()
 
+        # Band label hidden - frequency marks provide sufficient context
         self.band_label = QLabel(f"Band: {self.band_map.band or 'Unknown'}")
         self.band_label.setStyleSheet("font-weight: bold;")
+        self.band_label.setVisible(False)  # Hide - frequency marks are enough
         header_layout.addWidget(self.band_label)
 
         header_layout.addStretch()
@@ -89,13 +97,46 @@ class BandMapWidget(QWidget):
         self.stats_label = QLabel("Stations: 0 | New: 0 | Worked: 0")
         header_layout.addWidget(self.stats_label)
 
+        # Zoom controls
+        from PyQt5.QtWidgets import QSlider
+        from PyQt5.QtCore import Qt
+        header_layout.addWidget(QLabel("Zoom:"))
+        self.zoom_slider = QSlider(Qt.Orientation.Horizontal)
+        self.zoom_slider.setMinimum(int(self.min_zoom * 10))
+        self.zoom_slider.setMaximum(int(self.max_zoom * 10))
+        self.zoom_slider.setValue(int(self.zoom_level * 10))
+        self.zoom_slider.setMaximumWidth(100)
+        self.zoom_slider.setToolTip("Zoom level: 1x = entire band, 10x = maximum zoom")
+        self.zoom_slider.valueChanged.connect(self.on_zoom_changed)
+        header_layout.addWidget(self.zoom_slider)
+
+        self.zoom_label = QLabel("1.0x")
+        header_layout.addWidget(self.zoom_label)
+
         layout.addLayout(header_layout)
 
-        # Canvas for drawing
-        self.setMinimumHeight(400)
+        # Canvas for drawing (wrapped in scroll area for horizontal scrolling when zoomed)
+        from PyQt5.QtWidgets import QScrollArea
+        self.canvas_scroll_area = QScrollArea()
+        self.canvas_scroll_area.setWidgetResizable(False)  # Don't auto-resize - we control width
+        self.canvas_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.canvas_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        # Create canvas widget
+        self.canvas = QWidget()
+        self.canvas.setMouseTracking(True)
+        self.canvas.paintEvent = self.paintEvent  # Forward paint events to our handler
+        self.canvas.mousePressEvent = self.mousePressEvent
+        self.canvas.mouseDoubleClickEvent = self.mouseDoubleClickEvent
+
+        self.canvas_scroll_area.setWidget(self.canvas)
+        layout.addWidget(self.canvas_scroll_area)
+
+        # Reduced height to fit 6 bands on screen without scrolling (600-900px total)
+        self.setMinimumHeight(100)
+        self.setMaximumHeight(150)
         self.setMouseTracking(True)
 
-        layout.addStretch()
         self.setLayout(layout)
 
         # Update display
@@ -122,7 +163,37 @@ class BandMapWidget(QWidget):
         """
         self.freq_min = freq_min_hz
         self.freq_max = freq_max_hz
+        # Reset zoom when changing frequency range
+        self.zoom_level = 1.0
+        self.zoom_center_freq = None
+        if hasattr(self, 'zoom_slider'):
+            self.zoom_slider.setValue(int(self.zoom_level * 10))
         self.update()
+
+    def on_zoom_changed(self, value):
+        """Handle zoom slider changes"""
+        self.zoom_level = value / 10.0
+        self.zoom_label.setText(f"{self.zoom_level:.1f}x")
+
+        # If first time zooming, center on middle of band
+        if self.zoom_center_freq is None:
+            self.zoom_center_freq = (self.freq_min + self.freq_max) / 2
+
+        # Update canvas width and redraw
+        self.update_canvas_geometry()
+        self.update()
+
+    def update_canvas_geometry(self):
+        """Update canvas size based on zoom level"""
+        # Get the viewport width (available space)
+        viewport_width = self.canvas_scroll_area.viewport().width()
+
+        # Canvas width = viewport width * zoom level
+        canvas_width = int(viewport_width * self.zoom_level)
+
+        # Set canvas size
+        canvas_height = self.canvas_scroll_area.viewport().height()
+        self.canvas.setFixedSize(canvas_width, max(80, canvas_height))
 
     def update_display(self):
         """Update the display with current band map data."""
@@ -178,15 +249,20 @@ class BandMapWidget(QWidget):
         font = QFont("Monospace", 9)
         painter.setFont(font)
 
+        # Get visible frequency range based on zoom
+        freq_min_visible, freq_max_visible = self.get_visible_freq_range()
+        freq_range = freq_max_visible - freq_min_visible
+
         # Calculate frequency step (e.g., every 50 kHz)
-        freq_range = self.freq_max - self.freq_min
         step = 50e3  # 50 kHz
         if freq_range > 1e6:
             step = 100e3  # 100 kHz for wider ranges
+        elif freq_range < 100e3 and self.zoom_level > 3:
+            step = 10e3  # 10 kHz for high zoom
 
-        # Draw vertical grid lines
-        freq = self.freq_min
-        while freq <= self.freq_max:
+        # Draw vertical grid lines for visible range
+        freq = freq_min_visible - (freq_min_visible % step)  # Start at step boundary
+        while freq <= freq_max_visible:
             x = self._freq_to_x(freq, width)
 
             # Draw grid line
@@ -316,9 +392,37 @@ class BandMapWidget(QWidget):
 
             painter.fillRect(bar_x, bar_y, bar_width, bar_height, color)
 
+    def get_visible_freq_range(self):
+        """
+        Get the visible frequency range based on zoom level.
+
+        Returns:
+            Tuple of (freq_min_visible, freq_max_visible) in Hz
+        """
+        if self.zoom_level <= 1.0:
+            # No zoom - show entire band
+            return (self.freq_min, self.freq_max)
+
+        # Calculate visible range based on zoom
+        total_range = self.freq_max - self.freq_min
+        visible_range = total_range / self.zoom_level
+
+        # Center on zoom_center_freq (or middle of band if not set)
+        center = self.zoom_center_freq if self.zoom_center_freq else (self.freq_min + self.freq_max) / 2
+
+        # Calculate visible min/max
+        freq_min_visible = center - visible_range / 2
+        freq_max_visible = center + visible_range / 2
+
+        # Clamp to actual band limits
+        freq_min_visible = max(self.freq_min, freq_min_visible)
+        freq_max_visible = min(self.freq_max, freq_max_visible)
+
+        return (freq_min_visible, freq_max_visible)
+
     def _freq_to_x(self, frequency: float, width: int) -> int:
         """
-        Convert frequency to x-coordinate.
+        Convert frequency to x-coordinate (accounting for zoom).
 
         Args:
             frequency: Frequency in Hz
@@ -328,13 +432,14 @@ class BandMapWidget(QWidget):
             X-coordinate in pixels
         """
         margin = 50
-        freq_range = self.freq_max - self.freq_min
-        ratio = (frequency - self.freq_min) / freq_range
+        freq_min_visible, freq_max_visible = self.get_visible_freq_range()
+        freq_range = freq_max_visible - freq_min_visible
+        ratio = (frequency - freq_min_visible) / freq_range
         return int(margin + ratio * (width - 2 * margin))
 
     def _x_to_freq(self, x: int, width: int) -> float:
         """
-        Convert x-coordinate to frequency.
+        Convert x-coordinate to frequency (accounting for zoom).
 
         Args:
             x: X-coordinate in pixels
@@ -345,7 +450,8 @@ class BandMapWidget(QWidget):
         """
         margin = 50
         ratio = (x - margin) / (width - 2 * margin)
-        return self.freq_min + ratio * (self.freq_max - self.freq_min)
+        freq_min_visible, freq_max_visible = self.get_visible_freq_range()
+        return freq_min_visible + ratio * (freq_max_visible - freq_min_visible)
 
     def mousePressEvent(self, event):
         """
