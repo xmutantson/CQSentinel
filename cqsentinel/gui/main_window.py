@@ -403,7 +403,7 @@ class MainWindow(QMainWindow):
                                 # Emit signal for voice detection (thread-safe)
                                 self.voice_detection_signal.emit(has_speech, speech_ratio)
 
-                                # === STEP 3: Create denoised audio if speech detected ===
+                                # === STEP 3: Create denoised audio and transcribe if speech detected ===
                                 if has_speech:
                                     speech_detected_count[0] += 1
 
@@ -432,6 +432,34 @@ class MainWindow(QMainWindow):
                                                 f"DIAGNOSTIC: Created denoised chunk #{denoised_chunks_created[0]} "
                                                 f"(speech_ratio: {speech_ratio:.2%}, buffer: {result.get('duration', 1.0):.2f}s)"
                                             )
+
+                                        # === STEP 4: Transcribe the denoised audio ===
+                                        # Run transcription in background thread (Whisper is slow)
+                                        def transcribe_async():
+                                            try:
+                                                # Use transcriber directly with VAD filtering
+                                                transcripts = self.audio_pipeline.transcriber.transcribe(
+                                                    denoised,
+                                                    sample_rate=self.audio.sample_rate,
+                                                    vad_filter=True
+                                                )
+
+                                                # Emit transcriptions for display
+                                                for transcript in transcripts:
+                                                    if transcript.text.strip():  # Skip empty transcripts
+                                                        self.transcription_signal.emit(
+                                                            0.0,  # freq_mhz (not scanning, just monitoring)
+                                                            transcript.text,
+                                                            None  # callsign (extract later if needed)
+                                                        )
+                                                        logger.info(f"Transcribed: {transcript.text}")
+
+                                            except Exception as e:
+                                                logger.error(f"Transcription failed: {e}", exc_info=True)
+
+                                        # Run in background to avoid blocking audio callback
+                                        import threading
+                                        threading.Thread(target=transcribe_async, daemon=True).start()
 
                                     except Exception as e:
                                         logger.error(f"Denoising failed: {e}", exc_info=True)
