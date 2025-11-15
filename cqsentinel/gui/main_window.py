@@ -201,6 +201,9 @@ class MainWindow(QMainWindow):
         from PyQt5.QtCore import QTimer
         QTimer.singleShot(100, self.update_band_visibility)
 
+        # Initialize advanced features automatically after UI is ready
+        QTimer.singleShot(500, self.init_advanced_features)
+
     def init_advanced_features(self):
         """Initialize Phase 2-8 advanced features (audio processing, AI models, etc.)"""
         try:
@@ -264,23 +267,12 @@ class MainWindow(QMainWindow):
             self.use_full_scanner = True
             self.log("✓ Advanced features initialized successfully!")
             self.log("  Full scanner with audio processing, AI transcription, and voice ID enabled.")
-
-            QMessageBox.information(self, "Advanced Features Enabled",
-                "All advanced features initialized:\n\n"
-                "✓ Audio processing (noise reduction, voice detection)\n"
-                "✓ AI speech transcription (Whisper)\n"
-                "✓ Voice fingerprinting (speaker ID)\n"
-                "✓ SSB auto-centering\n"
-                "✓ Contest logic (callsign extraction, behavior analysis)\n"
-                "✓ Band map tracking\n\n"
-                "The scanner will now use full AI-powered features!")
+            logger.info("Advanced features initialized: audio pipeline, transcription, voice ID, contest logic")
 
         except Exception as e:
             self.log(f"ERROR initializing advanced features: {e}")
             logger.error(f"Failed to initialize advanced features: {e}", exc_info=True)
-            QMessageBox.warning(self, "Advanced Features Failed",
-                f"Could not initialize advanced features:\n{e}\n\n"
-                "Using basic scanner mode instead.")
+            self.log("⚠ Using basic scanner mode (advanced features unavailable)")
             self.use_full_scanner = False
 
     def start_audio_monitoring(self):
