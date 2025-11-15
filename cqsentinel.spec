@@ -227,7 +227,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,  # Compress with UPX (optional)
+    upx=False,  # DISABLED - UPX compression is slow, increases build time significantly
     console=True,  # Show console window for debugging
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -244,7 +244,7 @@ coll = COLLECT(
     a.zipfiles,
     a.datas,
     strip=False,
-    upx=True,
+    upx=False,  # DISABLED - UPX compression is VERY slow (adds 10-20 min for PyTorch libs)
     upx_exclude=[],
     name='CQSentinel',
 )
