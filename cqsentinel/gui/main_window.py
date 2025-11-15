@@ -161,6 +161,7 @@ class MainWindow(QMainWindow):
     audio_levels_signal = pyqtSignal(float, float)  # rms_level, peak_level
     voice_detection_signal = pyqtSignal(bool, float)  # has_speech, speech_ratio
     log_signal = pyqtSignal(str)  # Log messages (thread-safe)
+    scan_finished_signal = pyqtSignal()  # Scan finished (thread-safe)
 
     def __init__(self):
         super().__init__()
@@ -243,6 +244,7 @@ class MainWindow(QMainWindow):
         self.audio_levels_signal.connect(self._handle_audio_levels)
         self.voice_detection_signal.connect(self._handle_voice_detection)
         self.log_signal.connect(self._handle_log)  # Thread-safe logging
+        self.scan_finished_signal.connect(self.on_scan_finished)  # Thread-safe scan completion
 
         # Register audio consumers with broadcaster
         self.audio_broadcaster.register_consumer(self.audio_level_meter.process_chunk)
@@ -1772,7 +1774,7 @@ class MainWindow(QMainWindow):
             # If still empty (user stopped scan), exit
             if not self.scan_queue:
                 self.log("Scan stopped")
-                self.on_scan_finished()
+                self.scan_finished_signal.emit()  # Thread-safe signal instead of direct call
                 return
 
         # Get next band from queue
