@@ -75,6 +75,11 @@ class BandMapWidget(QWidget):
         self.min_zoom = 1.0
         self.max_zoom = 10.0
 
+        # Drag/pan settings for zoomed view
+        self.is_dragging = False
+        self.drag_start_pos = None
+        self.drag_start_center_freq = None
+
         self._init_ui()
 
         logger.info("BandMapWidget initialized")
@@ -115,22 +120,8 @@ class BandMapWidget(QWidget):
 
         layout.addLayout(header_layout)
 
-        # Canvas for drawing (wrapped in scroll area for horizontal scrolling when zoomed)
-        from PyQt5.QtWidgets import QScrollArea
-        self.canvas_scroll_area = QScrollArea()
-        self.canvas_scroll_area.setWidgetResizable(False)  # Don't auto-resize - we control width
-        self.canvas_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.canvas_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-
-        # Create canvas widget
-        self.canvas = QWidget()
-        self.canvas.setMouseTracking(True)
-        self.canvas.paintEvent = self.paintEvent  # Forward paint events to our handler
-        self.canvas.mousePressEvent = self.mousePressEvent
-        self.canvas.mouseDoubleClickEvent = self.mouseDoubleClickEvent
-
-        self.canvas_scroll_area.setWidget(self.canvas)
-        layout.addWidget(self.canvas_scroll_area)
+        # Add stretch to push header to top, rest is canvas for drawing
+        layout.addStretch()
 
         # Reduced height to fit 6 bands on screen without scrolling (600-900px total)
         self.setMinimumHeight(100)
@@ -179,21 +170,8 @@ class BandMapWidget(QWidget):
         if self.zoom_center_freq is None:
             self.zoom_center_freq = (self.freq_min + self.freq_max) / 2
 
-        # Update canvas width and redraw
-        self.update_canvas_geometry()
+        # Redraw with new zoom level
         self.update()
-
-    def update_canvas_geometry(self):
-        """Update canvas size based on zoom level"""
-        # Get the viewport width (available space)
-        viewport_width = self.canvas_scroll_area.viewport().width()
-
-        # Canvas width = viewport width * zoom level
-        canvas_width = int(viewport_width * self.zoom_level)
-
-        # Set canvas size
-        canvas_height = self.canvas_scroll_area.viewport().height()
-        self.canvas.setFixedSize(canvas_width, max(80, canvas_height))
 
     def update_display(self):
         """Update the display with current band map data."""
@@ -455,25 +433,83 @@ class BandMapWidget(QWidget):
 
     def mousePressEvent(self, event):
         """
-        Handle mouse press events for click-to-tune.
+        Handle mouse press events for click-to-tune and drag panning.
 
         Args:
             event: Mouse event
         """
         if event.button() == Qt.MouseButton.LeftButton:
-            # Find station near click position
-            station = self._find_station_at_position(event.pos())
+            # Start drag tracking for panning (when zoomed)
+            self.is_dragging = True
+            self.drag_start_pos = event.pos()
+            if self.zoom_center_freq is None:
+                self.zoom_center_freq = (self.freq_min + self.freq_max) / 2
+            self.drag_start_center_freq = self.zoom_center_freq
 
-            if station:
-                # Select station
-                self.selected_station = station
-                self.station_selected.emit(station)
-                self.update()
+    def mouseMoveEvent(self, event):
+        """
+        Handle mouse move events for drag panning.
 
-                # Emit click signal for tuning
-                self.station_clicked.emit(station.frequency)
+        Args:
+            event: Mouse event
+        """
+        if self.is_dragging and self.drag_start_pos is not None:
+            # Calculate drag delta in pixels
+            delta_x = event.pos().x() - self.drag_start_pos.x()
 
-                logger.info(f"Station clicked: {station.callsign} at {station.frequency_mhz:.3f} MHz")
+            # Convert pixel delta to frequency delta
+            # Negative because dragging right should move view left (show lower freqs)
+            width = self.width()
+            freq_min_visible, freq_max_visible = self.get_visible_freq_range()
+            visible_range = freq_max_visible - freq_min_visible
+            freq_delta = -(delta_x / width) * visible_range
+
+            # Update center frequency
+            self.zoom_center_freq = self.drag_start_center_freq + freq_delta
+
+            # Clamp to band limits
+            total_range = self.freq_max - self.freq_min
+            visible_range_half = total_range / (2 * self.zoom_level)
+            self.zoom_center_freq = max(
+                self.freq_min + visible_range_half,
+                min(self.freq_max - visible_range_half, self.zoom_center_freq)
+            )
+
+            # Redraw
+            self.update()
+
+    def mouseReleaseEvent(self, event):
+        """
+        Handle mouse release events for click-to-tune.
+
+        Args:
+            event: Mouse event
+        """
+        if event.button() == Qt.MouseButton.LeftButton:
+            # Check if this was a click (not a drag)
+            if self.drag_start_pos is not None:
+                drag_distance = (event.pos() - self.drag_start_pos).manhattanLength()
+
+                # If drag distance is small, treat as a click
+                if drag_distance < 5:
+                    # Find station near click position
+                    station = self._find_station_at_position(event.pos())
+
+                    if station:
+                        # Select station
+                        self.selected_station = station
+                        self.station_selected.emit(station)
+                        self.update()
+
+                        # Emit click signal for tuning
+                        self.station_clicked.emit(station.frequency)
+
+                        logger.info(f"Station clicked: {station.callsign} at {station.frequency_mhz:.3f} MHz")
+
+            # End drag
+            self.is_dragging = False
+            self.drag_start_pos = None
+            self.drag_start_center_freq = None
 
     def contextMenuEvent(self, event):
         """
