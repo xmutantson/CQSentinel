@@ -58,6 +58,38 @@ def list_audio_devices() -> List[AudioDevice]:
     return devices
 
 
+def list_audio_output_devices() -> List[AudioDevice]:
+    """
+    List all available audio output devices
+
+    Returns:
+        List of AudioDevice objects
+    """
+    devices = []
+
+    try:
+        device_list = sd.query_devices()
+        default_output = sd.default.device[1]  # Output device index
+
+        for idx, dev in enumerate(device_list):
+            if dev['max_output_channels'] > 0:
+                devices.append(AudioDevice(
+                    index=idx,
+                    name=dev['name'],
+                    channels=dev['max_output_channels'],
+                    sample_rate=dev['default_samplerate'],
+                    is_input=False,
+                    is_default=(idx == default_output)
+                ))
+
+        logger.info(f"Found {len(devices)} audio output devices")
+
+    except Exception as e:
+        logger.error(f"Failed to list output devices: {e}")
+
+    return devices
+
+
 class AudioCapture:
     """
     Audio capture from sound device

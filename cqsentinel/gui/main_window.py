@@ -25,7 +25,7 @@ from PyQt5.QtGui import QFont
 from cqsentinel.config import get_config, get_config_manager
 from cqsentinel.radio import HamlibController, RadioConnectionError, RigctldManager, find_serial_port, SSBAutoTuner
 from cqsentinel.audio import (
-    AudioCapture, list_audio_devices,
+    AudioCapture, list_audio_devices, list_audio_output_devices,
     AudioBroadcaster, AudioMonitor, AudioLevelMeter,
     AudioStage, AudioChunk
 )
@@ -657,6 +657,27 @@ class MainWindow(QMainWindow):
         monitor_group = QGroupBox("Audio Diagnostic Monitor")
         monitor_layout = QVBoxLayout()
 
+        # Output device selector
+        output_device_layout = QHBoxLayout()
+        output_device_layout.addWidget(QLabel("Output Device:"))
+        self.output_device_combo = QComboBox()
+        self.output_device_combo.setToolTip("Select audio output device for monitoring")
+
+        # Populate output devices
+        try:
+            output_devices = list_audio_output_devices()
+            self.output_device_combo.addItem("Default", None)
+            for device in output_devices:
+                device_name = f"{device.name} {'(Default)' if device.is_default else ''}"
+                self.output_device_combo.addItem(device_name, device.index)
+        except Exception as e:
+            logger.warning(f"Could not list output devices: {e}")
+            self.output_device_combo.addItem("Default", None)
+
+        self.output_device_combo.currentIndexChanged.connect(self._on_output_device_changed)
+        output_device_layout.addWidget(self.output_device_combo)
+        monitor_layout.addLayout(output_device_layout)
+
         monitor_btn_layout = QHBoxLayout()
         monitor_btn_layout.addWidget(QLabel("Listen to:"))
 
@@ -725,6 +746,22 @@ class MainWindow(QMainWindow):
             self.log(f"Audio monitor: listening to {stage.value} audio")
         else:
             self.log("Audio monitor: off")
+
+    def _on_output_device_changed(self, index: int):
+        """Handle output device selection change"""
+        device_index = self.output_device_combo.itemData(index)
+        device_name = self.output_device_combo.currentText()
+
+        # Update audio monitor output device
+        self.audio_monitor.output_device = device_index
+        logger.info(f"Audio output device changed to: {device_name} (index={device_index})")
+        self.log(f"Audio output: {device_name}")
+
+        # If currently monitoring, restart with new device
+        if self.audio_monitor.is_monitoring:
+            current_stage = self.audio_monitor.monitoring_stage
+            self.audio_monitor.stop_monitoring()
+            self.audio_monitor.start_monitoring(current_stage, volume=0.7)
 
     def setup_timers(self):
         """Setup periodic update timers"""
@@ -1342,6 +1379,7 @@ class MainWindow(QMainWindow):
 
         # Monitor scan completion in background
         import threading
+        import time
         def monitor_scan():
             while self.band_scanner and self.band_scanner.is_scanning():
                 time.sleep(1)
