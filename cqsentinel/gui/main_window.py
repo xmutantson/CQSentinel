@@ -196,14 +196,19 @@ class TranscriptionWorker(QObject):
                 # Create QueueHandler for this worker thread
                 queue_handler = QueueHandler(self._log_queue)
 
-                # Get all relevant loggers
-                worker_logger = logging.getLogger(__name__)
+                # Get all relevant loggers that may be used in worker thread
+                # External libraries
                 fw_logger = logging.getLogger('faster_whisper')
                 httpx_logger = logging.getLogger('httpx')
+                # CQSentinel modules used by worker
+                worker_logger = logging.getLogger(__name__)
+                speech_logger = logging.getLogger('cqsentinel.speech.transcription')
+                voice_embed_logger = logging.getLogger('cqsentinel.voice.embeddings')
+                voice_db_logger = logging.getLogger('cqsentinel.voice.database')
 
                 # Save original handlers and propagate settings
                 saved_state = []
-                for log in [worker_logger, fw_logger, httpx_logger]:
+                for log in [worker_logger, fw_logger, httpx_logger, speech_logger, voice_embed_logger, voice_db_logger]:
                     saved_state.append((log, log.handlers[:], log.propagate))
                     log.handlers.clear()
                     log.addHandler(queue_handler)
