@@ -177,39 +177,51 @@ def main():
             logger.info("AI models already available")
 
         # Import MainWindow after splash is shown (this is a slow import)
-        print("Importing main window module...")
+        # Use QTimer to defer heavy import so splash screen stays responsive
+        print("Scheduling main window load...")
         splash.update_message("Loading modules...")
         app.processEvents()
-        from cqsentinel.gui.main_window import MainWindow
 
-        # Create main window (this loads heavy modules)
-        print("Creating main window...")
-        splash.update_message("Initializing user interface...")
-        app.processEvents()
-        window = MainWindow()
-        _main_window = window  # Store globally for cleanup
-        print("Main window created successfully!")
+        def load_main_window():
+            """Load main window in event loop (keeps splash responsive)"""
+            global _main_window
 
-        # Finish splash and show main window
-        splash.finish_loading(window)
-        window.show()
+            print("Importing main window module...")
+            splash.update_message("Loading PyTorch and AI models...")
+            app.processEvents()
 
-        logger.info("Main window displayed")
+            from cqsentinel.gui.main_window import MainWindow
 
-        # Show initial instructions
-        window.log("Welcome to CQSentinel - SSB Contest Scanner!")
-        window.log("=" * 40)
-        window.log("Quick Start:")
-        window.log("1. Click 'File > Settings' to configure your radio")
-        window.log("2. Click 'Connect Radio' - rigctld will start automatically")
-        window.log("3. Select bands and contest profile")
-        window.log("4. Click 'Start Scan' to begin")
-        window.log("=" * 40)
-        window.log("")
-        window.log("Tip: The app will auto-detect your radio's serial port")
-        window.log("and start rigctld automatically when you connect.")
+            # Create main window (this loads heavy modules)
+            print("Creating main window...")
+            splash.update_message("Initializing user interface...")
+            app.processEvents()
 
-        # Run application
+            window = MainWindow()
+            _main_window = window  # Store globally for cleanup
+            print("Main window created successfully!")
+
+            # Finish splash and show main window
+            splash.finish_loading(window)
+            window.show()
+
+            logger.info("Main window displayed")
+
+            # Show initial instructions
+            window.log("Welcome to CQSentinel - SSB Contest Scanner!")
+            window.log("=" * 40)
+            window.log("Quick Start:")
+            window.log("1. Click 'File > Settings' to configure your radio")
+            window.log("2. Click 'Connect Radio' - rigctld will start automatically")
+            window.log("3. Enable audio monitoring and transcription in Advanced Features")
+            window.log("4. Start scanning with the 'Start Scan' button")
+            window.log("")
+
+        # Schedule main window load after splash is painted
+        from PyQt5.QtCore import QTimer
+        QTimer.singleShot(100, load_main_window)  # 100ms delay lets splash render
+
+        # Run application (main window will show when loaded)
         exit_code = app.exec()
 
         logger.info("CQSentinel shutting down...")
