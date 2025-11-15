@@ -462,14 +462,21 @@ class ModelDownloadThread(QThread):
         """Download Silero VAD model"""
         try:
             import torch
-
-            # CRITICAL: PyInstaller sets sys.stderr to None, which breaks torch.hub
-            # Temporarily restore stderr for the download
             import sys
+            import io
+
+            # CRITICAL: PyInstaller sets sys.stderr and sys.stdout to None in frozen builds
+            # This breaks torch.hub which tries to write progress to stderr
+            # Solution: Redirect to StringIO instead
             original_stderr = sys.stderr
+            original_stdout = sys.stdout
+
             if sys.stderr is None:
-                sys.stderr = sys.stdout  # Redirect to stdout temporarily
+                sys.stderr = io.StringIO()
                 logger.info("Restored sys.stderr for torch.hub (was None in frozen build)")
+            if sys.stdout is None:
+                sys.stdout = io.StringIO()
+                logger.info("Restored sys.stdout for torch.hub (was None in frozen build)")
 
             try:
                 self.progress_signal.emit("  Downloading Silero VAD (~1.5 MB)...")
@@ -497,8 +504,9 @@ class ModelDownloadThread(QThread):
                 self.progress_signal.emit("  ✓ Silero VAD downloaded")
                 return True
             finally:
-                # Restore original stderr
+                # Restore original stderr and stdout
                 sys.stderr = original_stderr
+                sys.stdout = original_stdout
 
         except ImportError as e:
             self.progress_signal.emit(f"  ✗ torch not installed: {e}")
