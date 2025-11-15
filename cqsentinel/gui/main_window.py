@@ -201,12 +201,15 @@ class TranscriptionWorker(QObject):
                 fw_logger = logging.getLogger('faster_whisper')
                 httpx_logger = logging.getLogger('httpx')
 
-                # Save original handlers
-                saved_handlers = []
+                # Save original handlers and propagate settings
+                saved_state = []
                 for log in [worker_logger, fw_logger, httpx_logger]:
-                    saved_handlers.append((log, log.handlers[:]))
+                    saved_state.append((log, log.handlers[:], log.propagate))
                     log.handlers.clear()
                     log.addHandler(queue_handler)
+                    # CRITICAL: Disable propagation to prevent records from reaching parent loggers
+                    # Parent loggers may have Qt-unsafe handlers that cause threading violations
+                    log.propagate = False
 
                 try:
                     logger.info(f"Transcribing {len(self._audio)/self._sample_rate:.1f}s of speech...")
@@ -275,11 +278,12 @@ class TranscriptionWorker(QObject):
 
                     self.transcription_complete.emit()
                 finally:
-                    # Restore original handlers
-                    for log, handlers in saved_handlers:
+                    # Restore original handlers and propagate settings
+                    for log, handlers, propagate in saved_state:
                         log.handlers.clear()
                         for h in handlers:
                             log.addHandler(h)
+                        log.propagate = propagate
             else:
                 # No log queue provided, use regular logging (may cause threading issues in frozen builds)
                 logger.info(f"Transcribing {len(self._audio)/self._sample_rate:.1f}s of speech...")
