@@ -147,6 +147,11 @@ class ScanThread(QThread):
 class MainWindow(QMainWindow):
     """Main application window"""
 
+    # Signals for thread-safe GUI updates
+    station_detected_signal = pyqtSignal(object)  # Station object
+    progress_update_signal = pyqtSignal(object)  # ScanProgress object
+    transcription_signal = pyqtSignal(float, str, str)  # freq_mhz, transcription, callsign
+
     def __init__(self):
         super().__init__()
 
@@ -193,6 +198,11 @@ class MainWindow(QMainWindow):
 
         self.init_ui()
         self.setup_timers()
+
+        # Connect signals for thread-safe GUI updates from scanner callbacks
+        self.station_detected_signal.connect(self._handle_station_detected)
+        self.progress_update_signal.connect(self._handle_progress_update)
+        self.transcription_signal.connect(self._handle_transcription)
 
         logger.info("Main window initialized")
 
@@ -776,21 +786,12 @@ class MainWindow(QMainWindow):
 
                 # Initialize BandScanner with transcription callback
                 def on_station_detected_callback(station):
-                    self.log(f"STATION: {station.callsign if hasattr(station, 'callsign') else station}")
-                    # If station has transcripts, display them
-                    if hasattr(station, 'transcripts') and station.transcripts:
-                        for transcript in station.transcripts[-3:]:  # Last 3
-                            self.add_transcription(
-                                station.frequency_mhz,
-                                transcript,
-                                station.callsign if hasattr(station, 'callsign') else None
-                            )
+                    # Emit signal for thread-safe GUI update
+                    self.station_detected_signal.emit(station)
 
                 def on_progress_update_callback(prog):
-                    status_text = f"Scanning: {prog.progress_percent:.1f}% ({prog.current_frequency/1e6:.3f} MHz)"
-                    self.update_scan_status(status_text, "green")
-                    if prog.progress_percent > 0:
-                        self.log(f"Progress: {prog.progress_percent:.1f}%")
+                    # Emit signal for thread-safe GUI update
+                    self.progress_update_signal.emit(prog)
 
                 self.band_scanner = BandScanner(
                     radio_controller=self.radio,
@@ -947,40 +948,59 @@ class MainWindow(QMainWindow):
             else:
                 band_widget.set_tuning_frequency(None)
 
-    def add_transcription(self, frequency_mhz: float, transcription: str, callsign: str = None):
-        """
-        Add a transcription to the pipeline status panel.
+    def _handle_station_detected(self, station):
+        """Handle station detected signal (thread-safe GUI update)"""
+        try:
+            self.log(f"STATION on {self.current_scan_band}: {station.callsign if hasattr(station, 'callsign') else station}")
+            # If station has transcripts, display them
+            if hasattr(station, 'transcripts') and station.transcripts:
+                for transcript in station.transcripts[-3:]:  # Last 3
+                    freq_mhz = station.frequency_mhz if hasattr(station, 'frequency_mhz') else 0.0
+                    callsign = station.callsign if hasattr(station, 'callsign') else None
+                    self._handle_transcription(freq_mhz, transcript, callsign)
+        except Exception as e:
+            logger.error(f"Error handling station detected: {e}", exc_info=True)
 
-        Args:
-            frequency_mhz: Frequency in MHz
-            transcription: Transcribed text
-            callsign: Optional callsign if extracted
-        """
-        from datetime import datetime
-        timestamp = datetime.now().strftime("%H:%M:%S")
+    def _handle_progress_update(self, prog):
+        """Handle progress update signal (thread-safe GUI update)"""
+        try:
+            status_text = f"Scanning {self.current_scan_band}: {prog.progress_percent:.1f}% ({prog.current_frequency/1e6:.3f} MHz)"
+            self.update_scan_status(status_text, "green")
+            if int(prog.progress_percent) % 10 == 0 and prog.progress_percent > 0:  # Log every 10%
+                self.log(f"{self.current_scan_band}: {prog.progress_percent:.1f}%")
+        except Exception as e:
+            logger.error(f"Error handling progress update: {e}", exc_info=True)
 
-        # Format transcription entry
-        if callsign:
-            entry = f"[{timestamp}] {frequency_mhz:.3f} MHz - {callsign}: {transcription}"
-        else:
-            entry = f"[{timestamp}] {frequency_mhz:.3f} MHz: {transcription}"
+    def _handle_transcription(self, frequency_mhz: float, transcription: str, callsign: str = None):
+        """Handle transcription signal (thread-safe GUI update)"""
+        try:
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%H:%M:%S")
 
-        # Check if at bottom for auto-scroll
-        scrollbar = self.transcription_text.verticalScrollBar()
-        at_bottom = scrollbar.value() >= (scrollbar.maximum() - 10)
+            # Format transcription entry
+            if callsign:
+                entry = f"[{timestamp}] {frequency_mhz:.3f} MHz - {callsign}: {transcription}"
+            else:
+                entry = f"[{timestamp}] {frequency_mhz:.3f} MHz: {transcription}"
 
-        # Add to transcription display
-        self.transcription_text.append(entry)
+            # Check if at bottom for auto-scroll
+            scrollbar = self.transcription_text.verticalScrollBar()
+            at_bottom = scrollbar.value() >= (scrollbar.maximum() - 10)
 
-        # Auto-scroll if at bottom
-        if at_bottom:
-            scrollbar.setValue(scrollbar.maximum())
+            # Add to transcription display
+            self.transcription_text.append(entry)
 
-        # Also add to activity log
-        if callsign:
-            self.log(f"TRANSCRIPTION [{callsign}]: {transcription}")
-        else:
-            self.log(f"TRANSCRIPTION: {transcription}")
+            # Auto-scroll if at bottom
+            if at_bottom:
+                scrollbar.setValue(scrollbar.maximum())
+
+            # Also add to activity log
+            if callsign:
+                self.log(f"TRANSCRIPTION [{callsign}]: {transcription}")
+            else:
+                self.log(f"TRANSCRIPTION: {transcription}")
+        except Exception as e:
+            logger.error(f"Error handling transcription: {e}", exc_info=True)
 
     def update_scan_status(self, status: str, color: str = "gray"):
         """
@@ -1177,23 +1197,14 @@ class MainWindow(QMainWindow):
         # Get the band map for this specific band
         current_band_map = self.band_maps.get(self.current_scan_band)
 
-        # Create callbacks with transcription support
+        # Create callbacks with transcription support (using signals for thread safety)
         def on_station_detected_callback(station):
-            self.log(f"STATION on {self.current_scan_band}: {station.callsign if hasattr(station, 'callsign') else station}")
-            # If station has transcripts, display them
-            if hasattr(station, 'transcripts') and station.transcripts:
-                for transcript in station.transcripts[-3:]:  # Last 3
-                    self.add_transcription(
-                        station.frequency_mhz,
-                        transcript,
-                        station.callsign if hasattr(station, 'callsign') else None
-                    )
+            # Emit signal for thread-safe GUI update
+            self.station_detected_signal.emit(station)
 
         def on_progress_update_callback(prog):
-            status_text = f"Scanning {self.current_scan_band}: {prog.progress_percent:.1f}% ({prog.current_frequency/1e6:.3f} MHz)"
-            self.update_scan_status(status_text, "green")
-            if prog.progress_percent % 10 == 0:  # Log every 10%
-                self.log(f"{self.current_scan_band}: {prog.progress_percent:.1f}%")
+            # Emit signal for thread-safe GUI update
+            self.progress_update_signal.emit(prog)
 
         # Reinitialize BandScanner with the correct band map
         self.band_scanner = BandScanner(
