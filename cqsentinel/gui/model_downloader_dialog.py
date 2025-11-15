@@ -422,14 +422,7 @@ class ModelDownloadThread(QThread):
             try:
                 import ctranslate2
                 logger.info(f"ctranslate2 version: {ctranslate2.__version__}")
-
-                # Check for StorageView (required for faster-whisper)
-                if not hasattr(ctranslate2, 'StorageView'):
-                    self.progress_signal.emit("  ✗ ctranslate2 is outdated (missing StorageView)")
-                    self.progress_signal.emit(f"    Found version: {ctranslate2.__version__}")
-                    self.progress_signal.emit("    Requires version >= 3.0.0")
-                    logger.error(f"ctranslate2 {ctranslate2.__version__} missing StorageView")
-                    return False
+                self.progress_signal.emit(f"  Using ctranslate2 {ctranslate2.__version__}")
             except ImportError:
                 self.progress_signal.emit("  ✗ ctranslate2 not installed")
                 logger.error("ctranslate2 not installed")
@@ -453,6 +446,12 @@ class ModelDownloadThread(QThread):
         except ImportError as e:
             self.progress_signal.emit(f"  ✗ faster-whisper import failed: {e}")
             logger.error(f"faster-whisper import failed: {e}")
+            return False
+        except AttributeError as e:
+            # Version mismatch between faster-whisper and ctranslate2
+            self.progress_signal.emit(f"  ✗ faster-whisper/ctranslate2 version mismatch")
+            self.progress_signal.emit(f"    Error: {e}")
+            logger.error(f"Version compatibility issue: {e}", exc_info=True)
             return False
         except Exception as e:
             self.progress_signal.emit(f"  ✗ Whisper download failed: {e}")
