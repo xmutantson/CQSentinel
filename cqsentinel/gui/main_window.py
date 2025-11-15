@@ -349,9 +349,16 @@ class MainWindow(QMainWindow):
         try:
             import time
 
+            # Diagnostics counters
+            callback_count = [0]  # Use list to allow modification in nested function
+            speech_detected_count = [0]
+            denoised_chunks_created = [0]
+
             def audio_callback(audio_chunk):
                 """Process audio chunks - broadcast to all consumers"""
                 try:
+                    callback_count[0] += 1
+
                     # Create audio chunk for raw stage
                     raw_chunk = AudioChunk(
                         stage=AudioStage.RAW,
@@ -379,6 +386,7 @@ class MainWindow(QMainWindow):
 
                             # If denoising, create denoised chunk
                             if has_speech:
+                                speech_detected_count[0] += 1
                                 try:
                                     denoised = self.audio_pipeline.denoiser.denoise(audio_chunk)
                                     denoised_chunk = AudioChunk(
@@ -389,11 +397,28 @@ class MainWindow(QMainWindow):
                                         metadata={'has_speech': True, 'speech_ratio': speech_ratio}
                                     )
                                     self.audio_broadcaster.broadcast(denoised_chunk)
+                                    denoised_chunks_created[0] += 1
+
+                                    # Log first few denoised chunks
+                                    if denoised_chunks_created[0] <= 3:
+                                        logger.info(
+                                            f"DIAGNOSTIC: Created denoised chunk #{denoised_chunks_created[0]} "
+                                            f"(speech_ratio: {speech_ratio:.2f}, samples: {len(denoised)})"
+                                        )
                                 except Exception as e:
-                                    logger.debug(f"Denoising failed: {e}")
+                                    logger.error(f"Denoising failed: {e}", exc_info=True)
+
+                            # Periodic diagnostics every 100 callbacks
+                            if callback_count[0] % 100 == 0:
+                                logger.debug(
+                                    f"Audio callback diagnostics: "
+                                    f"callbacks={callback_count[0]}, "
+                                    f"speech_detected={speech_detected_count[0]}, "
+                                    f"denoised_created={denoised_chunks_created[0]}"
+                                )
 
                         except Exception as e:
-                            logger.debug(f"Voice detection check failed: {e}")
+                            logger.error(f"Voice detection check failed: {e}", exc_info=True)
 
                 except Exception as e:
                     logger.error(f"Audio callback error: {e}", exc_info=True)

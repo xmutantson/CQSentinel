@@ -120,6 +120,11 @@ class AudioMonitor:
         self._monitoring_stage: Optional[AudioStage] = None
         self._volume = 1.0
 
+        # Diagnostics counters
+        self._chunks_received = 0
+        self._chunks_played = 0
+        self._last_chunk_time = None
+
         logger.info(f"AudioMonitor initialized: sample_rate={sample_rate}, output_device={output_device}")
 
     def start_monitoring(self, stage: AudioStage, volume: float = 1.0):
@@ -135,6 +140,11 @@ class AudioMonitor:
 
         self._monitoring_stage = stage
         self._volume = max(0.0, min(1.0, volume))
+
+        # Reset diagnostics
+        self._chunks_received = 0
+        self._chunks_played = 0
+        self._last_chunk_time = None
 
         try:
             # Create output stream for playback
@@ -173,6 +183,21 @@ class AudioMonitor:
         Args:
             chunk: AudioChunk to process
         """
+        import time
+
+        # Track all chunks received (for diagnostics)
+        if self._monitoring_stage is not None:
+            self._chunks_received += 1
+            self._last_chunk_time = time.time()
+
+            # Log every 50 chunks for diagnostics
+            if self._chunks_received % 50 == 0:
+                logger.debug(
+                    f"AudioMonitor: received {self._chunks_received} chunks total, "
+                    f"played {self._chunks_played}, monitoring {self._monitoring_stage.value}, "
+                    f"chunk stage: {chunk.stage.value}"
+                )
+
         # Only play back if monitoring this stage
         if (self._playback_stream is not None and
             self._monitoring_stage == chunk.stage):
@@ -181,8 +206,16 @@ class AudioMonitor:
                 # Apply volume and write to output stream
                 audio_data = chunk.data * self._volume
                 self._playback_stream.write(audio_data.astype('float32'))
+                self._chunks_played += 1
+
+                # Log first few chunks to confirm playback started
+                if self._chunks_played <= 3:
+                    logger.info(
+                        f"AudioMonitor: playing chunk #{self._chunks_played} "
+                        f"({len(audio_data)} samples, stage: {chunk.stage.value})"
+                    )
             except Exception as e:
-                logger.debug(f"Playback error: {e}")
+                logger.error(f"Playback error: {e}", exc_info=True)
 
     @property
     def is_monitoring(self) -> bool:
@@ -193,6 +226,23 @@ class AudioMonitor:
     def monitoring_stage(self) -> Optional[AudioStage]:
         """Get current monitoring stage"""
         return self._monitoring_stage
+
+    def get_diagnostics(self) -> dict:
+        """
+        Get monitoring diagnostics.
+
+        Returns:
+            Dict with diagnostics info
+        """
+        import time
+        return {
+            'monitoring_stage': self._monitoring_stage.value if self._monitoring_stage else None,
+            'chunks_received': self._chunks_received,
+            'chunks_played': self._chunks_played,
+            'playback_active': self._playback_stream is not None,
+            'last_chunk_time': self._last_chunk_time,
+            'seconds_since_last_chunk': time.time() - self._last_chunk_time if self._last_chunk_time else None
+        }
 
 
 class AudioLevelMeter:
