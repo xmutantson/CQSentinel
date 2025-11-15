@@ -27,7 +27,7 @@ from cqsentinel.radio import HamlibController, RadioConnectionError, RigctldMana
 from cqsentinel.audio import (
     AudioCapture, list_audio_devices, list_audio_output_devices,
     AudioBroadcaster, AudioMonitor, AudioLevelMeter,
-    AudioStage, AudioChunk
+    AudioStage, AudioChunk, AudioBuffer
 )
 from cqsentinel.audio.pipeline import AudioPipeline
 from cqsentinel.audio.denoiser import AudioDenoiser
@@ -191,6 +191,7 @@ class MainWindow(QMainWindow):
         self.audio_broadcaster = AudioBroadcaster()
         self.audio_level_meter = AudioLevelMeter()
         self.audio_monitor = AudioMonitor()  # For diagnostic playback
+        self.audio_buffer = AudioBuffer(buffer_duration=1.0, sample_rate=self.config.audio.sample_rate)  # Buffer for VAD
 
         # Band map visualization (always available)
         self.band_map_widgets = {}  # Dictionary of BandMapWidget instances per band
@@ -351,80 +352,108 @@ class MainWindow(QMainWindow):
 
             # Diagnostics counters
             callback_count = [0]  # Use list to allow modification in nested function
+            buffers_processed = [0]
             speech_detected_count = [0]
             denoised_chunks_created = [0]
 
             def audio_callback(audio_chunk):
-                """Process audio chunks - broadcast to all consumers"""
+                """
+                Process audio chunks with proper buffering.
+
+                Small chunks (64ms) come from sounddevice. We:
+                1. Broadcast raw audio immediately (for real-time monitoring)
+                2. Buffer chunks into larger segments (1s) for VAD
+                3. Process buffered segments to detect speech
+                4. Broadcast denoised audio when speech detected
+                """
                 try:
                     callback_count[0] += 1
 
-                    # Create audio chunk for raw stage
+                    # === STEP 1: Broadcast RAW audio immediately for real-time monitoring ===
                     raw_chunk = AudioChunk(
                         stage=AudioStage.RAW,
                         data=audio_chunk,
                         sample_rate=self.audio.sample_rate,
                         timestamp=time.time()
                     )
-
-                    # Broadcast to all consumers (level meter, monitor, etc.)
                     self.audio_broadcaster.broadcast(raw_chunk)
 
-                    # Emit signal for level meter update (thread-safe)
+                    # Update level meter
                     rms, peak = self.audio_level_meter.get_levels()
                     self.audio_levels_signal.emit(rms, peak)
 
-                    # If audio pipeline is available, check for voice
+                    # === STEP 2: Buffer audio for VAD (if pipeline available) ===
                     if self.audio_pipeline:
-                        try:
-                            result = self.audio_pipeline.process_quick(audio_chunk, check_voice_only=True)
-                            has_speech = result.get('has_speech', False)
-                            speech_ratio = result.get('speech_ratio', 0.0)
+                        # Add chunk to buffer
+                        buffered_audio = self.audio_buffer.add_chunk(audio_chunk)
 
-                            # Emit signal for voice detection (thread-safe)
-                            self.voice_detection_signal.emit(has_speech, speech_ratio)
+                        # Process when buffer is full (returns None otherwise)
+                        if buffered_audio is not None:
+                            buffers_processed[0] += 1
 
-                            # If denoising, create denoised chunk
-                            if has_speech:
-                                speech_detected_count[0] += 1
-                                try:
-                                    denoised = self.audio_pipeline.denoiser.denoise(audio_chunk)
-                                    denoised_chunk = AudioChunk(
-                                        stage=AudioStage.DENOISED,
-                                        data=denoised,
-                                        sample_rate=self.audio.sample_rate,
-                                        timestamp=time.time(),
-                                        metadata={'has_speech': True, 'speech_ratio': speech_ratio}
-                                    )
-                                    self.audio_broadcaster.broadcast(denoised_chunk)
-                                    denoised_chunks_created[0] += 1
-
-                                    # Log first few denoised chunks
-                                    if denoised_chunks_created[0] <= 3:
-                                        logger.info(
-                                            f"DIAGNOSTIC: Created denoised chunk #{denoised_chunks_created[0]} "
-                                            f"(speech_ratio: {speech_ratio:.2f}, samples: {len(denoised)})"
-                                        )
-                                except Exception as e:
-                                    logger.error(f"Denoising failed: {e}", exc_info=True)
-
-                            # Periodic diagnostics every 100 callbacks
-                            if callback_count[0] % 100 == 0:
-                                logger.debug(
-                                    f"Audio callback diagnostics: "
-                                    f"callbacks={callback_count[0]}, "
-                                    f"speech_detected={speech_detected_count[0]}, "
-                                    f"denoised_created={denoised_chunks_created[0]}"
+                            try:
+                                # Process buffered audio through VAD
+                                result = self.audio_pipeline.process_quick(
+                                    buffered_audio,
+                                    check_voice_only=True
                                 )
+                                has_speech = result.get('has_speech', False)
+                                speech_ratio = result.get('speech_ratio', 0.0)
 
-                        except Exception as e:
-                            logger.error(f"Voice detection check failed: {e}", exc_info=True)
+                                # Emit signal for voice detection (thread-safe)
+                                self.voice_detection_signal.emit(has_speech, speech_ratio)
+
+                                # === STEP 3: Create denoised audio if speech detected ===
+                                if has_speech:
+                                    speech_detected_count[0] += 1
+
+                                    try:
+                                        # Denoise the buffered audio
+                                        denoised = self.audio_pipeline.denoiser.denoise(buffered_audio)
+
+                                        # Broadcast denoised audio
+                                        denoised_chunk = AudioChunk(
+                                            stage=AudioStage.DENOISED,
+                                            data=denoised,
+                                            sample_rate=self.audio.sample_rate,
+                                            timestamp=time.time(),
+                                            metadata={
+                                                'has_speech': True,
+                                                'speech_ratio': speech_ratio,
+                                                'buffer_duration': result.get('duration', 1.0)
+                                            }
+                                        )
+                                        self.audio_broadcaster.broadcast(denoised_chunk)
+                                        denoised_chunks_created[0] += 1
+
+                                        # Log first few denoised chunks
+                                        if denoised_chunks_created[0] <= 3:
+                                            logger.info(
+                                                f"DIAGNOSTIC: Created denoised chunk #{denoised_chunks_created[0]} "
+                                                f"(speech_ratio: {speech_ratio:.2%}, buffer: {result.get('duration', 1.0):.2f}s)"
+                                            )
+
+                                    except Exception as e:
+                                        logger.error(f"Denoising failed: {e}", exc_info=True)
+
+                                # Periodic diagnostics every 10 buffers
+                                if buffers_processed[0] % 10 == 0:
+                                    logger.debug(
+                                        f"Audio buffer diagnostics: "
+                                        f"callbacks={callback_count[0]}, "
+                                        f"buffers={buffers_processed[0]}, "
+                                        f"speech_detected={speech_detected_count[0]}, "
+                                        f"denoised_created={denoised_chunks_created[0]}"
+                                    )
+
+                            except Exception as e:
+                                logger.error(f"Buffered audio processing failed: {e}", exc_info=True)
 
                 except Exception as e:
                     logger.error(f"Audio callback error: {e}", exc_info=True)
 
             self.audio.start_stream(audio_callback)
-            logger.info("Audio monitoring started with broadcaster pattern")
+            logger.info("Audio monitoring started with buffering (1.0s buffers for VAD)")
         except Exception as e:
             logger.warning(f"Failed to start audio monitoring: {e}")
 

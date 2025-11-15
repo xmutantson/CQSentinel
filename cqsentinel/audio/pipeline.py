@@ -163,38 +163,27 @@ class AudioPipeline:
         """
         Quick processing for band scanning (no transcription)
 
+        NOTE: This expects properly buffered audio (0.5-1s), NOT tiny streaming chunks.
+        Audio should be buffered before calling this method.
+
         Args:
-            audio: Audio signal
+            audio: Audio signal (should be >= 0.5s for reliable VAD)
             check_voice_only: Only check for voice, don't denoise
 
         Returns:
             Dict with has_speech, speech_ratio
         """
-        # Calculate duration for context
         duration = len(audio) / self.sample_rate
 
         if check_voice_only:
             # Skip denoising for speed
-            # ALWAYS calculate speech_ratio (don't skip based on has_speech check)
-            # This is critical for short audio chunks (~64ms) in streaming mode
             speech_ratio = self.vad.get_speech_ratio(audio)
-
-            # For short chunks, consider any detected speech as "has_speech"
-            # Use a much lower threshold than has_speech() default (0.5s)
-            if duration < 0.2:  # Chunks shorter than 200ms
-                has_speech = speech_ratio > 0.0
-            else:
-                has_speech = self.vad.has_speech(audio, min_duration=0.1)
+            has_speech = self.vad.has_speech(audio)
         else:
             # Full processing without transcription
             clean = self.denoiser.denoise(audio)
             speech_ratio = self.vad.get_speech_ratio(clean)
-
-            # Same short-chunk handling for denoised audio
-            if duration < 0.2:
-                has_speech = speech_ratio > 0.0
-            else:
-                has_speech = self.vad.has_speech(clean, min_duration=0.1)
+            has_speech = self.vad.has_speech(clean)
 
         return {
             'has_speech': has_speech,
