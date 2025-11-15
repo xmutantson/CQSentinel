@@ -74,6 +74,16 @@ def main():
     """Main entry point"""
     global _main_window
 
+    # CRITICAL FIX: PyInstaller sets sys.stderr and sys.stdout to None in frozen builds
+    # This breaks logging and causes crashes throughout the application
+    # We must restore them PERMANENTLY at application startup
+    import io
+    if getattr(sys, 'frozen', False):
+        if sys.stderr is None:
+            sys.stderr = io.StringIO()
+        if sys.stdout is None:
+            sys.stdout = io.StringIO()
+
     try:
         # Import PyQt5 first (this is fast)
         from PyQt5.QtWidgets import QApplication
