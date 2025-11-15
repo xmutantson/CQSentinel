@@ -46,6 +46,25 @@ datas += collect_data_files('torchaudio')
 datas += collect_data_files('librosa')
 datas += collect_data_files('sounddevice')
 
+# AI model packages - include data files
+try:
+    datas += collect_data_files('faster_whisper')
+    print("✓ Including faster-whisper data files")
+except:
+    print("⚠ faster-whisper not found - AI features will be limited")
+
+try:
+    datas += collect_data_files('ctranslate2')
+    print("✓ Including ctranslate2 data files")
+except:
+    print("⚠ ctranslate2 not found")
+
+try:
+    datas += collect_data_files('resemblyzer')
+    print("✓ Including resemblyzer data files")
+except:
+    print("⚠ resemblyzer not found")
+
 # Hidden imports - modules that PyInstaller might miss
 hiddenimports = [
     'PyQt5.QtCore',
@@ -69,11 +88,35 @@ hiddenimports = [
     'noisereduce',
     'colorlog',
     'yaml',
+    # AI packages
+    'faster_whisper',
+    'ctranslate2',
+    'resemblyzer',
+    'webrtcvad',
 ]
 
 # Add all torch submodules
 hiddenimports += collect_submodules('torch')
 hiddenimports += collect_submodules('torchaudio')
+
+# Add AI package submodules
+try:
+    hiddenimports += collect_submodules('faster_whisper')
+    print("✓ Including faster-whisper submodules")
+except:
+    pass
+
+try:
+    hiddenimports += collect_submodules('ctranslate2')
+    print("✓ Including ctranslate2 submodules")
+except:
+    pass
+
+try:
+    hiddenimports += collect_submodules('resemblyzer')
+    print("✓ Including resemblyzer submodules")
+except:
+    pass
 
 # Analysis - what files to include
 a = Analysis(
