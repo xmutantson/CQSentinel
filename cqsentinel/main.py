@@ -85,6 +85,16 @@ def main():
     """Main entry point"""
     global _main_window
 
+    # CRITICAL: Detect if we're running in a multiprocessing worker subprocess
+    # On Windows, multiprocessing creates subprocesses by re-launching the executable,
+    # which would re-run main() and create infinite window spawning.
+    # We must exit early if we're in a worker subprocess.
+    import multiprocessing
+    if multiprocessing.current_process().name != 'MainProcess':
+        # We're in a worker subprocess - don't initialize GUI, just return
+        # The multiprocessing module will handle executing the worker function
+        return 0
+
     # CRITICAL FIX: PyInstaller sets sys.stderr and sys.stdout to None in frozen builds
     # This breaks logging and causes crashes throughout the application
     # We must restore them PERMANENTLY at application startup
@@ -283,6 +293,11 @@ def check_dependencies():
 
 
 if __name__ == '__main__':
+    # CRITICAL: Required for multiprocessing support in frozen Windows executables
+    # This must be called before any multiprocessing code runs
+    import multiprocessing
+    multiprocessing.freeze_support()
+
     try:
         exit_code = main()
         sys.exit(exit_code)
