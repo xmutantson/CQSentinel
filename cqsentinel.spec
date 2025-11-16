@@ -89,6 +89,59 @@ try:
 except:
     print("⚠ openai-whisper not found")
 
+# CUDA libraries for GPU support
+# Bundle PyTorch CUDA runtime libraries for GPU acceleration
+try:
+    import torch
+    import glob
+
+    if torch.cuda.is_available():
+        print(f"✓ CUDA available (version {torch.version.cuda}), bundling CUDA libraries...")
+
+        torch_lib_path = os.path.join(os.path.dirname(torch.__file__), 'lib')
+        if os.path.exists(torch_lib_path):
+            # Include all CUDA DLLs/SOs from PyTorch
+            cuda_libs = []
+            for ext in ['*.dll', '*.so', '*.so.*']:
+                cuda_libs.extend(glob.glob(os.path.join(torch_lib_path, ext)))
+
+            for lib in cuda_libs:
+                lib_name = os.path.basename(lib)
+                # Include CUDA-related libraries
+                if any(x in lib_name.lower() for x in ['cuda', 'cublas', 'cudnn', 'cufft', 'curand', 'cusparse', 'cusolver', 'nvrtc', 'c10_cuda']):
+                    binaries.append((lib, '.'))
+                    print(f"  ✓ Including CUDA lib: {lib_name}")
+
+            print(f"✓ Included {len([b for b in binaries if 'cuda' in b[0].lower() or 'cufft' in b[0].lower()])} CUDA libraries")
+        else:
+            print(f"⚠ PyTorch lib directory not found: {torch_lib_path}")
+
+        # Also try to find CUDA runtime from system if not bundled with PyTorch
+        # This handles cases where PyTorch uses system CUDA
+        nvidia_path = None
+        if sys.platform == 'win32':
+            nvidia_path = os.environ.get('CUDA_PATH', r'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA')
+        else:
+            nvidia_path = '/usr/local/cuda'
+
+        if nvidia_path and os.path.exists(nvidia_path):
+            cuda_bin = os.path.join(nvidia_path, 'bin' if sys.platform == 'win32' else 'lib64')
+            if os.path.exists(cuda_bin):
+                print(f"  Found system CUDA at {nvidia_path}")
+                # Include essential CUDA runtime libraries
+                for lib_pattern in ['cudart*.dll', 'cublas*.dll', 'cublasLt*.dll'] if sys.platform == 'win32' else ['libcudart.so*', 'libcublas.so*']:
+                    for lib in glob.glob(os.path.join(cuda_bin, lib_pattern)):
+                        if lib not in [b[0] for b in binaries]:
+                            binaries.append((lib, '.'))
+                            print(f"  ✓ Including system CUDA lib: {os.path.basename(lib)}")
+    else:
+        print("⚠ CUDA not available - building CPU-only version")
+        print("  To enable GPU support, install PyTorch with CUDA support")
+except ImportError:
+    print("⚠ PyTorch not installed - skipping CUDA library bundling")
+except Exception as e:
+    print(f"⚠ Error bundling CUDA libraries: {e}")
+
 try:
     datas += collect_data_files('tiktoken')
     datas += collect_data_files('tiktoken_ext')
@@ -214,6 +267,11 @@ torch_modules = [
     'torch.utils.data',
     'torch._utils',
     'torch.hub',  # For Silero VAD model loading
+    # CUDA support for GPU inference
+    'torch.cuda',
+    'torch.cuda.amp',  # Automatic mixed precision
+    'torch.backends.cuda',
+    'torch.backends.cudnn',
     # NOTE: torch.hub.load is a function, not a module - don't include it here
 ]
 hiddenimports += torch_modules
