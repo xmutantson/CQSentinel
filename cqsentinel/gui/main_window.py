@@ -1273,9 +1273,10 @@ class MainWindow(QMainWindow):
                     # Update voice DB with new speakers detected in subprocess
                     logger.info(f"voice_db check: exists={self.voice_db is not None}, type={type(self.voice_db)}")
 
-                    # Explicit checks to debug condition evaluation
-                    has_new_speakers = bool(result.new_speakers)
-                    has_voice_db = bool(self.voice_db)
+                    # Explicit checks - use "is not None" instead of truthiness because VoiceDatabase
+                    # has __len__ which makes empty database falsy!
+                    has_new_speakers = result.new_speakers is not None and len(result.new_speakers) > 0
+                    has_voice_db = self.voice_db is not None
                     logger.info(f"Condition check: has_new_speakers={has_new_speakers}, has_voice_db={has_voice_db}, combined={has_new_speakers and has_voice_db}")
 
                     if has_new_speakers and has_voice_db:
