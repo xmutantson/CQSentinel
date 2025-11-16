@@ -182,9 +182,23 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
         compute_type: Compute type (float32, float16, int8)
         models_dir: Directory where models are stored (for offline operation)
     """
+    # Helper for safe flushing (stdout/stderr can be None in subprocess on Windows)
+    def safe_flush():
+        if sys.stdout is not None:
+            try:
+                sys.stdout.flush()
+            except Exception:
+                pass
+        if sys.stderr is not None:
+            try:
+                sys.stderr.flush()
+            except Exception:
+                pass
+
     # Helper for immediate output
     def log(msg):
         print(f"[WORKER-{worker_id}] {msg}", flush=True)
+        safe_flush()
 
     # Import inside subprocess to avoid loading in main process
     try:
@@ -233,8 +247,7 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
         log(f"Failed to load models: {e}")
         import traceback
         traceback.print_exc()
-        sys.stdout.flush()
-        sys.stderr.flush()
+        safe_flush()
         output_queue.put(TranscriptionResult(
             request_id=-1,
             text="ERROR",
@@ -329,8 +342,7 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
                 # Step 2: Transcribe
                 log(f"Transcribing...")
                 log(f"About to call model.transcribe() with audio shape={request.audio.shape}")
-                sys.stdout.flush()
-                sys.stderr.flush()
+                safe_flush()
                 transcribe_start = time.time()
                 try:
                     segments, info = model.transcribe(
@@ -345,8 +357,7 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
                     log(f"model.transcribe() EXCEPTION: {te}")
                     import traceback
                     traceback.print_exc()
-                    sys.stdout.flush()
-                    sys.stderr.flush()
+                    safe_flush()
                     raise
 
                 # Collect all segments (this actually runs the transcription - it's a generator!)
@@ -385,8 +396,7 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
                 log(f"Transcription failed: {e}")
                 import traceback
                 traceback.print_exc()
-                sys.stdout.flush()
-                sys.stderr.flush()
+                safe_flush()
                 output_queue.put(TranscriptionResult(
                     request_id=request.request_id,
                     text="",
@@ -401,8 +411,7 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
             log(f"Error in worker loop: {e}")
             import traceback
             traceback.print_exc()
-            sys.stdout.flush()
-            sys.stderr.flush()
+            safe_flush()
             # Continue processing
 
     log(f"Worker shutting down")
