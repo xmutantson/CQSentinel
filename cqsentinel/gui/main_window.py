@@ -1070,7 +1070,8 @@ class MainWindow(QMainWindow):
             try:
                 request_id = self.subprocess_transcriber.transcribe_async(
                     audio=audio_data,
-                    sample_rate=self.audio.sample_rate
+                    sample_rate=self.audio.sample_rate,
+                    voice_db=self.voice_db  # Pass voice DB for speaker identification
                 )
                 logger.debug(f"Submitted transcription request {request_id} to subprocess")
 
@@ -1146,10 +1147,20 @@ class MainWindow(QMainWindow):
                 logger.debug(f"Received transcription result for request {result.request_id}")
 
                 if result.success:
+                    # Update voice DB with new speakers detected in subprocess
+                    if result.new_speakers and self.voice_db:
+                        import numpy as np
+                        for voice_id, speaker_data in result.new_speakers.items():
+                            embedding = np.array(speaker_data['embedding'])
+                            metadata = speaker_data.get('metadata', {})
+                            # Add new speaker to voice DB
+                            self.voice_db.add_operator(embedding, voice_id=voice_id, metadata=metadata)
+                            logger.info(f"Added new speaker to voice DB: {voice_id[:8]}")
+
                     # Emit transcription signal (thread-safe)
                     if result.text.strip():
                         # Emit with frequency=0.0 (no frequency info in subprocess mode)
-                        # and callsign=None (no speaker detection in subprocess mode yet)
+                        # Callsign is already embedded in the text by subprocess
                         self.transcription_signal.emit(0.0, result.text.strip(), None)
                         logger.info(f"Transcribed: {result.text.strip()}")
                 else:
