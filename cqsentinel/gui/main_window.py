@@ -658,7 +658,7 @@ class MainWindow(QMainWindow):
 
         # Transcription queue management (prevent backup during long contests)
         self._active_transcriptions = 0  # Counter for in-flight transcriptions
-        self._max_concurrent_transcriptions = 3  # Maximum parallel transcriptions
+        self._max_concurrent_transcriptions = 10  # Maximum parallel transcriptions (match num_workers)
         self._transcription_lock = threading.Lock()  # Protect counter
         self._transcriber_lock = threading.Lock()  # Protect shared transcriber (WhisperModel is NOT thread-safe)
 
@@ -765,7 +765,7 @@ class MainWindow(QMainWindow):
                 self.subprocess_transcriber = SubprocessTranscriber(
                     model_size=model_size,
                     compute_type="float32",  # Use float32 for stability on Windows
-                    num_workers=1  # Single worker to avoid ctranslate2 race conditions on Windows
+                    num_workers=10  # Multiple workers for parallel transcription (openai-whisper is safe)
                 )
 
                 # Start subprocess and wait for model loading
