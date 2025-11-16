@@ -1154,7 +1154,74 @@ class MainWindow(QMainWindow):
         This method is called periodically (every 100ms) to check if any
         transcription results are available from the subprocess.
         """
-        if not self.subprocess_transcriber or not self.subprocess_transcriber.is_alive():
+        if not self.subprocess_transcriber:
+            return
+
+        # Check worker health and respawn if needed
+        alive_count = self.subprocess_transcriber.get_alive_count()
+        if alive_count == 0:
+            # All workers dead - this is critical
+            logger.error("All transcription workers have died! Attempting respawn...")
+            respawned = self.subprocess_transcriber.respawn_dead_workers()
+            if respawned == 0:
+                logger.error("Failed to respawn any workers")
+            else:
+                logger.info(f"Respawned {respawned} workers")
+
+            # Reset active transcriptions counter since pending requests are lost
+            with self._transcription_lock:
+                if self._active_transcriptions > 0:
+                    logger.warning(f"Resetting active transcription counter from {self._active_transcriptions} to 0 (workers died)")
+                    self._active_transcriptions = 0
+
+            # Clear pending request list
+            if hasattr(self, '_pending_transcription_requests'):
+                if self._pending_transcription_requests:
+                    logger.warning(f"Clearing {len(self._pending_transcription_requests)} pending transcription requests (workers died)")
+                    self._pending_transcription_requests.clear()
+
+            # Clear input queue to prevent overload
+            self.subprocess_transcriber.clear_input_queue()
+            return
+
+        elif alive_count < self.subprocess_transcriber.num_workers:
+            # Some workers dead - try to respawn (will respect cooldown)
+            if not hasattr(self, '_last_respawn_warning_time'):
+                self._last_respawn_warning_time = 0.0
+
+            current_time = time.time()
+            # Only warn once per 10 seconds to avoid spam
+            if current_time - self._last_respawn_warning_time > 10.0:
+                logger.warning(f"Worker pool degraded: {alive_count}/{self.subprocess_transcriber.num_workers} workers alive")
+                self._last_respawn_warning_time = current_time
+
+            # Attempt respawn (respawn_dead_workers has internal cooldown)
+            respawned = self.subprocess_transcriber.respawn_dead_workers()
+            if respawned > 0:
+                logger.info(f"Successfully respawned {respawned} workers")
+
+        # Check for queue overload recovery
+        with self._transcription_lock:
+            # If we think we have max transcriptions active but workers are dying/slow
+            # and we're stuck in "falling behind" state, recover
+            if self._active_transcriptions >= self._max_concurrent_transcriptions:
+                # Check if the queue has been stale for too long
+                if not hasattr(self, '_queue_stale_time'):
+                    self._queue_stale_time = time.time()
+                else:
+                    stale_duration = time.time() - self._queue_stale_time
+                    if stale_duration > 30.0:  # 30 seconds of being "full" with no results
+                        logger.warning(f"Queue appears stale for {stale_duration:.1f}s, attempting recovery...")
+                        # Reset counter - some transcriptions may have been lost
+                        old_count = self._active_transcriptions
+                        self._active_transcriptions = max(0, alive_count)  # Can't have more active than alive workers
+                        logger.warning(f"Reset active transcription count from {old_count} to {self._active_transcriptions}")
+                        self._queue_stale_time = time.time()
+            else:
+                # Reset stale timer when not at max capacity
+                self._queue_stale_time = time.time()
+
+        if not self.subprocess_transcriber.is_alive():
             return
 
         # Poll for results (non-blocking, timeout=0)
@@ -1199,7 +1266,7 @@ class MainWindow(QMainWindow):
 
                 # Decrement active count
                 with self._transcription_lock:
-                    self._active_transcriptions -= 1
+                    self._active_transcriptions = max(0, self._active_transcriptions - 1)
                     logger.debug(f"Transcription complete ({self._active_transcriptions}/{self._max_concurrent_transcriptions} active)")
 
         except Exception as e:
@@ -2360,6 +2427,11 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         """Handle window close event"""
+        # Stop transcription polling timer FIRST to prevent warning spam during shutdown
+        if hasattr(self, 'transcription_poll_timer'):
+            logger.debug("Stopping transcription poll timer")
+            self.transcription_poll_timer.stop()
+
         # Disconnect radio
         if self.radio:
             self.disconnect_radio()

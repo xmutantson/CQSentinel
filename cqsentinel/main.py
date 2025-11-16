@@ -37,6 +37,21 @@ def cleanup_resources():
     try:
         logger.info("Cleaning up resources on exit...")
 
+        # Stop transcription poll timer FIRST to prevent warning spam
+        if hasattr(_main_window, 'transcription_poll_timer') and _main_window.transcription_poll_timer:
+            try:
+                _main_window.transcription_poll_timer.stop()
+            except Exception as e:
+                logger.error(f"Error stopping transcription poll timer: {e}")
+
+        # Stop transcription subprocess
+        if hasattr(_main_window, 'subprocess_transcriber') and _main_window.subprocess_transcriber:
+            logger.info("Stopping transcription subprocess...")
+            try:
+                _main_window.subprocess_transcriber.stop()
+            except Exception as e:
+                logger.error(f"Error stopping transcription subprocess: {e}")
+
         # Stop rigctld
         if hasattr(_main_window, 'rigctld_manager') and _main_window.rigctld_manager:
             logger.info("Stopping rigctld process...")
