@@ -1263,6 +1263,13 @@ class MainWindow(QMainWindow):
                         unique_labels = list(set(s['label'] for s in result.speaker_labels))
                         logger.info(f"Speaker detection: {len(unique_labels)} speaker(s) detected - {', '.join(unique_labels)}")
 
+                    # Debug: log what we received
+                    logger.info(f"Result new_speakers: {type(result.new_speakers)}, count: {len(result.new_speakers) if result.new_speakers else 0}")
+                    if result.new_speakers:
+                        logger.info(f"Received {len(result.new_speakers)} new speaker(s) from subprocess: {list(result.new_speakers.keys())}")
+                    else:
+                        logger.info(f"No new speakers in result (new_speakers={result.new_speakers})")
+
                     # Update voice DB with new speakers detected in subprocess
                     if result.new_speakers and self.voice_db:
                         import numpy as np
