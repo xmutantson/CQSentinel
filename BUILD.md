@@ -9,11 +9,13 @@ This guide explains how to build a self-contained Windows executable for CQSenti
 1. Install conda/radioconda
 2. Create `cqsentinel` environment
 3. Install all dependencies via `conda env update -f environment.yml`
-4. **Install PyInstaller** (build tool, not included in environment.yml):
+4. **Install build tools** (not included in environment.yml):
    ```powershell
    conda activate cqsentinel
-   pip install pyinstaller
+   pip install pyinstaller pywin32
    ```
+   - **PyInstaller**: Bundles the app into a single distributable
+   - **pywin32**: Required for Windows console event handling (GPU cleanup on exit)
 5. Verify all imports work (PyQt5, PyTorch, librosa, whisper)
 
 If you haven't done this yet, **stop here** and follow INSTALL.md first.
@@ -26,11 +28,12 @@ python -c "from PyQt5 import QtCore; print('✓ PyQt5')"
 python -c "import torch; print('✓ PyTorch')"
 python -c "import whisper; print('✓ OpenAI Whisper')"
 python -c "import PyInstaller; print('✓ PyInstaller')"
+python -c "import win32api; print('✓ pywin32')"
 ```
 
 If any fail:
 - PyQt5, PyTorch, Whisper: Go back to INSTALL.md
-- PyInstaller: Run `pip install pyinstaller`
+- PyInstaller or pywin32: Run `pip install pyinstaller pywin32`
 
 ### GPU vs CPU Builds
 
