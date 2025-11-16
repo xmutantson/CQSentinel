@@ -73,7 +73,7 @@ class AudioPipeline:
         self.transcriber = SpeechTranscriber(
             model_size=whisper_model,
             device="cpu",
-            compute_type="int8"
+            compute_type="float32"  # Windows threading fix - avoid int8 crashes
         )
 
         # Voice fingerprinting (lazy load)
