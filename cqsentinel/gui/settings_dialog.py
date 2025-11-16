@@ -328,7 +328,7 @@ class SettingsDialog(QDialog):
         ai_layout = QFormLayout()
 
         # Model info (read-only)
-        model_label = QLabel("medium.en (769 MB)")
+        model_label = QLabel("medium.en (~1.5 GB)")
         model_label.setStyleSheet("font-weight: bold;")
         ai_layout.addRow("Model:", model_label)
 

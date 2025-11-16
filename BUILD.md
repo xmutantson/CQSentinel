@@ -266,9 +266,9 @@ Expected sizes (approximate):
 | Torch dependencies (CPU-only) | ~180 MB |
 | Audio libraries (librosa, sounddevice) | ~40 MB |
 | Whisper + tiktoken | ~30 MB |
-| Whisper medium.en model (if bundled) | ~769 MB |
+| Whisper medium.en model (if bundled) | ~1.5 GB |
 | **Total (without models)** | **~360 MB** |
-| **Total (with models)** | **~1.1 GB** |
+| **Total (with models)** | **~1.9 GB** |
 
 ### GPU-Enabled Build (with CUDA)
 
@@ -280,9 +280,9 @@ Expected sizes (approximate):
 | CUDA runtime libraries | ~1.5-2 GB |
 | Audio libraries (librosa, sounddevice) | ~40 MB |
 | Whisper + tiktoken | ~30 MB |
-| Whisper medium.en model (if bundled) | ~769 MB |
+| Whisper medium.en model (if bundled) | ~1.5 GB |
 | **Total (without models)** | **~2.5-3 GB** |
-| **Total (with models)** | **~3.3-3.8 GB** |
+| **Total (with models)** | **~4-4.5 GB** |
 
 **Note**: GPU builds are significantly larger due to bundled CUDA libraries (cudart, cublas, cudnn, etc.), but provide 10-30x faster transcription for users with NVIDIA GPUs.
 

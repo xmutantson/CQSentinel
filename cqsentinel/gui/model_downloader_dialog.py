@@ -667,7 +667,7 @@ class ModelDownloaderDialog(QDialog):
         # Description
         desc_label = QLabel(
             "Downloading Whisper medium.en model for speech recognition.\n"
-            "This is a one-time download (~769 MB)."
+            "This is a one-time download (~1.5 GB)."
         )
         desc_label.setWordWrap(True)
         layout.addWidget(desc_label)
