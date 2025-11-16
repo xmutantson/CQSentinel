@@ -73,9 +73,21 @@ def _detect_speaker_changes(voice_encoder, audio: np.ndarray, sample_rate: int,
     window_samples = int(window_duration * sample_rate)
     stride_samples = int(stride * sample_rate)
 
+    # Validate audio before processing
+    if len(audio) < window_samples:
+        # Audio too short for speaker detection
+        return segments
+
+    # Check for problematic audio (silence, extreme values)
+    audio_rms = np.sqrt(np.mean(audio ** 2))
+    if audio_rms < 0.001:  # Nearly silent
+        return segments
+
     current_speaker_idx = 0
     prev_embedding = None
     current_segment_start = 0.0
+    failed_windows = 0
+    max_failed_windows = 3  # Give up if too many failures
 
     for start_sample in range(0, len(audio) - window_samples + 1, stride_samples):
         end_sample = start_sample + window_samples
@@ -89,7 +101,32 @@ def _detect_speaker_changes(voice_encoder, audio: np.ndarray, sample_rate: int,
             window = signal.resample(window, int(len(window) * 16000 / sample_rate))
 
         try:
+            # Validate window before passing to Resemblyzer
+            if not np.isfinite(window).all():
+                failed_windows += 1
+                continue
+
+            # Ensure window is contiguous float32
+            window = np.ascontiguousarray(window, dtype=np.float32)
+
+            # Check window has enough energy (avoid silent windows that crash encoder)
+            window_rms = np.sqrt(np.mean(window ** 2))
+            if window_rms < 0.0001:
+                continue  # Skip silent windows
+
             embedding = voice_encoder.embed_utterance(window)
+
+            # Validate embedding
+            if embedding is None or not np.isfinite(embedding).all():
+                failed_windows += 1
+                if failed_windows >= max_failed_windows:
+                    if sys.stdout is not None:
+                        try:
+                            print(f"[WORKER] Too many embedding failures, aborting speaker detection")
+                        except Exception:
+                            pass
+                    break
+                continue
 
             # Check if this is a different speaker
             is_new_speaker = False
@@ -115,14 +152,24 @@ def _detect_speaker_changes(voice_encoder, audio: np.ndarray, sample_rate: int,
                 current_segment_start = segment_end
 
             prev_embedding = embedding
+            failed_windows = 0  # Reset failure counter on success
 
         except Exception as e:
             # Skip this window if embedding fails
+            failed_windows += 1
             if sys.stdout is not None:
                 try:
                     print(f"[WORKER] Failed to compute embedding for window: {e}")
                 except Exception:
                     pass
+
+            if failed_windows >= max_failed_windows:
+                if sys.stdout is not None:
+                    try:
+                        print(f"[WORKER] Too many embedding failures ({failed_windows}), aborting speaker detection")
+                    except Exception:
+                        pass
+                break
             continue
 
     # Add final segment
@@ -554,9 +601,17 @@ class SubprocessTranscriber:
 
         # Worker processes
         self.workers: List[mp.Process] = []
+        self.worker_ids: List[int] = []  # Track which worker ID each process slot has
         self.workers_ready = 0
         self.is_ready = False
         self.request_counter = 0
+
+        # Shutdown and respawn control
+        self._shutting_down = False
+        self._respawn_in_progress = False
+        self._last_respawn_time = 0.0
+        self._respawn_cooldown = 5.0  # Minimum seconds between respawn attempts
+        self._worker_id_counter = 0  # For generating unique worker IDs
 
         logger.info(f"SubprocessTranscriber pool initialized: model={model_size}, compute_type={compute_type}, workers={num_workers}")
 
@@ -576,15 +631,18 @@ class SubprocessTranscriber:
 
             # Start all workers
             for i in range(self.num_workers):
+                worker_id = self._worker_id_counter
+                self._worker_id_counter += 1
                 worker = mp.Process(
                     target=transcription_worker,
-                    args=(i, self.input_queue, self.output_queue, self.model_size,
+                    args=(worker_id, self.input_queue, self.output_queue, self.model_size,
                           self.compute_type, self.models_dir),
                     daemon=False  # Not daemon so we can clean shutdown
                 )
                 worker.start()
                 self.workers.append(worker)
-                logger.info(f"Worker {i} started (PID: {worker.pid})")
+                self.worker_ids.append(worker_id)
+                logger.info(f"Worker {worker_id} started (PID: {worker.pid})")
 
             # Wait for all workers to signal READY (with timeout)
             timeout = 60.0  # Model loading can take time, especially for multiple workers
@@ -606,7 +664,7 @@ class SubprocessTranscriber:
                     # Check if any worker died
                     for i, worker in enumerate(self.workers):
                         if not worker.is_alive():
-                            logger.error(f"Worker {i} died during initialization")
+                            logger.error(f"Worker {self.worker_ids[i]} died during initialization")
 
             if workers_ready == 0:
                 logger.error("No workers initialized successfully")
@@ -718,6 +776,9 @@ class SubprocessTranscriber:
 
     def stop(self):
         """Stop all worker processes."""
+        # Set shutdown flag FIRST to suppress warning spam
+        self._shutting_down = True
+
         if not self.workers:
             return
 
@@ -733,24 +794,26 @@ class SubprocessTranscriber:
 
             # Wait for graceful shutdown
             for i, worker in enumerate(self.workers):
+                worker_id = self.worker_ids[i] if i < len(self.worker_ids) else i
                 if worker.is_alive():
                     worker.join(timeout=5.0)
 
                     # Force terminate if still alive
                     if worker.is_alive():
-                        logger.warning(f"Worker {i} didn't stop gracefully, terminating...")
+                        logger.warning(f"Worker {worker_id} didn't stop gracefully, terminating...")
                         worker.terminate()
                         worker.join(timeout=2.0)
 
                     # Force kill if still alive
                     if worker.is_alive():
-                        logger.error(f"Worker {i} still alive, killing...")
+                        logger.error(f"Worker {worker_id} still alive, killing...")
                         worker.kill()
                         worker.join(timeout=1.0)
 
             logger.info("All workers stopped")
 
             self.workers = []
+            self.worker_ids = []
             self.workers_ready = 0
             self.is_ready = False
 
@@ -759,6 +822,10 @@ class SubprocessTranscriber:
 
     def is_alive(self) -> bool:
         """Check if any workers are alive."""
+        if self._shutting_down:
+            # Don't spam warnings during shutdown
+            return False
+
         if not self.workers:
             return False
 
@@ -773,6 +840,155 @@ class SubprocessTranscriber:
             logger.warning(f"Some workers died: {alive_count}/{self.workers_ready} alive")
 
         return alive_count > 0
+
+    def get_alive_count(self) -> int:
+        """Get the number of workers currently alive."""
+        if not self.workers:
+            return 0
+        return sum(1 for w in self.workers if w.is_alive())
+
+    def respawn_dead_workers(self) -> int:
+        """
+        Respawn any dead workers.
+
+        Returns:
+            Number of workers successfully respawned
+        """
+        if self._shutting_down:
+            return 0
+
+        if self._respawn_in_progress:
+            logger.debug("Respawn already in progress, skipping")
+            return 0
+
+        # Check cooldown to avoid respawn storms
+        current_time = time.time()
+        if current_time - self._last_respawn_time < self._respawn_cooldown:
+            logger.debug(f"Respawn cooldown in effect ({self._respawn_cooldown}s)")
+            return 0
+
+        self._respawn_in_progress = True
+        self._last_respawn_time = current_time
+
+        try:
+            respawned_count = 0
+
+            # Find dead workers
+            for i in range(len(self.workers)):
+                if not self.workers[i].is_alive():
+                    old_worker_id = self.worker_ids[i]
+                    old_pid = self.workers[i].pid
+                    logger.info(f"Worker {old_worker_id} (PID {old_pid}) died, respawning...")
+
+                    # Create new worker with new ID
+                    new_worker_id = self._worker_id_counter
+                    self._worker_id_counter += 1
+
+                    new_worker = mp.Process(
+                        target=transcription_worker,
+                        args=(new_worker_id, self.input_queue, self.output_queue, self.model_size,
+                              self.compute_type, self.models_dir),
+                        daemon=False
+                    )
+                    new_worker.start()
+
+                    # Replace in lists
+                    self.workers[i] = new_worker
+                    self.worker_ids[i] = new_worker_id
+
+                    logger.info(f"Respawned worker {new_worker_id} (PID: {new_worker.pid})")
+                    respawned_count += 1
+
+            # Wait for respawned workers to become ready (with short timeout)
+            if respawned_count > 0:
+                logger.info(f"Waiting for {respawned_count} respawned workers to initialize...")
+                timeout = 30.0
+                start_time = time.time()
+                ready_count = 0
+
+                while ready_count < respawned_count and (time.time() - start_time) < timeout:
+                    try:
+                        result = self.output_queue.get(timeout=1.0)
+                        if result.request_id == -1:
+                            if result.success:
+                                ready_count += 1
+                                logger.info(f"Respawned worker {result.worker_id} ready ({ready_count}/{respawned_count})")
+                            else:
+                                logger.error(f"Respawned worker {result.worker_id} failed to initialize: {result.error}")
+                    except:
+                        # Check if any respawned worker died
+                        pass
+
+                if ready_count > 0:
+                    logger.info(f"Successfully respawned {ready_count} workers")
+                else:
+                    logger.error("Failed to respawn any workers")
+
+            return respawned_count
+
+        except Exception as e:
+            logger.error(f"Error respawning workers: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return 0
+
+        finally:
+            self._respawn_in_progress = False
+
+    def clear_input_queue(self) -> int:
+        """
+        Clear the input queue to recover from overload.
+
+        Returns:
+            Number of requests cleared
+        """
+        cleared = 0
+        try:
+            while not self.input_queue.empty():
+                try:
+                    self.input_queue.get_nowait()
+                    cleared += 1
+                except:
+                    break
+            if cleared > 0:
+                logger.warning(f"Cleared {cleared} pending transcription requests from queue (overload recovery)")
+        except Exception as e:
+            logger.error(f"Error clearing input queue: {e}")
+        return cleared
+
+    def get_health_status(self) -> dict:
+        """
+        Get detailed health status of the worker pool.
+
+        Returns:
+            Dict with health information
+        """
+        alive_workers = []
+        dead_workers = []
+
+        for i, worker in enumerate(self.workers):
+            worker_info = {
+                'worker_id': self.worker_ids[i] if i < len(self.worker_ids) else i,
+                'pid': worker.pid,
+                'exitcode': worker.exitcode
+            }
+            if worker.is_alive():
+                alive_workers.append(worker_info)
+            else:
+                dead_workers.append(worker_info)
+
+        return {
+            'alive_count': len(alive_workers),
+            'dead_count': len(dead_workers),
+            'total_workers': len(self.workers),
+            'expected_workers': self.num_workers,
+            'is_ready': self.is_ready,
+            'shutting_down': self._shutting_down,
+            'alive_workers': alive_workers,
+            'dead_workers': dead_workers,
+            'input_queue_size': self.input_queue.qsize() if hasattr(self.input_queue, 'qsize') else -1,
+            'output_queue_size': self.output_queue.qsize() if hasattr(self.output_queue, 'qsize') else -1
+        }
 
     @property
     def process(self):
