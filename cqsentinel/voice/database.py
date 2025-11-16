@@ -178,7 +178,8 @@ class VoiceDatabase:
     def add_operator(
         self,
         embedding: np.ndarray,
-        metadata: Optional[Dict] = None
+        metadata: Optional[Dict] = None,
+        voice_id: Optional[str] = None
     ) -> str:
         """
         Add a new operator to the database.
@@ -192,6 +193,7 @@ class VoiceDatabase:
                 - airtime: float (seconds)
                 - contestness_score: float
                 - is_run_station: bool
+            voice_id: Optional voice ID (if not provided, generates new UUID)
 
         Returns:
             voice_id: UUID for the new operator
@@ -205,7 +207,8 @@ class VoiceDatabase:
         """
         metadata = metadata or {}
 
-        voice_id = str(uuid.uuid4())
+        if voice_id is None:
+            voice_id = str(uuid.uuid4())
         now = datetime.now()
 
         operator = OperatorVoice(

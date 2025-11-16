@@ -155,16 +155,18 @@ def _detect_speaker_changes(voice_encoder, audio: np.ndarray, sample_rate: int,
             window_samples = int(window_duration * sample_rate)
             stride_samples = int(stride * sample_rate)
 
-        # Normalize volume (simple RMS normalization to -30 dBFS)
+        # Normalize volume (simple RMS normalization to -23 dBFS)
+        # -23 dBFS matches Resemblyzer's default and provides good speech clarity
+        # This AMPLIFIES quiet/weak signals, not reduces them
         rms = np.sqrt(np.mean(preprocessed_audio ** 2))
         if rms > 1e-10:
-            target_rms = 10 ** (-30 / 20.0)  # -30 dBFS
+            target_rms = 10 ** (-23 / 20.0)  # -23 dBFS (Resemblyzer default)
             preprocessed_audio = preprocessed_audio * (target_rms / rms)
             preprocessed_audio = np.clip(preprocessed_audio, -1.0, 1.0)
 
         if sys.stdout is not None:
             try:
-                print(f"[WORKER] Preprocessed audio (scipy): normalized to -30 dBFS")
+                print(f"[WORKER] Preprocessed audio (scipy): normalized to -23 dBFS")
             except Exception:
                 pass
 
@@ -562,6 +564,16 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
                             if request.voice_db_embeddings and len(request.voice_db_embeddings) > 0:
                                 match = _find_matching_voice(seg['embedding'], request.voice_db_embeddings)
 
+                            # Also check against new speakers discovered in this request
+                            # This handles the case where same speaker appears in multiple segments
+                            if not match and new_speakers:
+                                local_match = _find_matching_voice(seg['embedding'], new_speakers, similarity_threshold=0.75)
+                                if local_match:
+                                    voice_id, _, similarity = local_match
+                                    label = f"Speaker {voice_id[:8]}"
+                                    log(f"Matched to local speaker at {seg['start']:.1f}-{seg['end']:.1f}s: {label} (similarity: {similarity:.2f})")
+                                    match = (voice_id, None, similarity)  # Treat as match
+
                             if match:
                                 voice_id, callsign, similarity = match
                                 label = callsign or f"Speaker {voice_id[:8]}"
@@ -572,7 +584,9 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
                                 label = f"Speaker {voice_id[:8]}"
                                 new_speakers[voice_id] = {
                                     'embedding': seg['embedding'].tolist(),  # Convert to list for serialization
-                                    'first_heard': time.time()
+                                    'metadata': {
+                                        'first_heard': time.time()
+                                    }
                                 }
                                 log(f"New speaker at {seg['start']:.1f}-{seg['end']:.1f}s: {label}")
 
