@@ -580,14 +580,14 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
                                 log(f"Matched voice at {seg['start']:.1f}-{seg['end']:.1f}s: {label} (similarity: {similarity:.2f})")
                             else:
                                 # New speaker - generate ID and store fingerprint
+                                # Store in tuple format (embedding_list, callsign, metadata) to match voice_db_embeddings
                                 voice_id = str(uuid.uuid4())
                                 label = f"Speaker {voice_id[:8]}"
-                                new_speakers[voice_id] = {
-                                    'embedding': seg['embedding'].tolist(),  # Convert to list for serialization
-                                    'metadata': {
-                                        'first_heard': time.time()
-                                    }
-                                }
+                                new_speakers[voice_id] = (
+                                    seg['embedding'].tolist(),  # Convert to list for serialization
+                                    None,  # No callsign yet
+                                    {'first_heard': time.time()}
+                                )
                                 log(f"New speaker at {seg['start']:.1f}-{seg['end']:.1f}s: {label}")
 
                             speaker_labels.append({
