@@ -33,9 +33,41 @@ pip uninstall typing -y
 ✅ PyQt5 (pre-built GUI framework)
 ✅ PyTorch CPU (optimized, ~500MB download)
 ✅ Audio processing (librosa, sounddevice, soundfile)
-✅ AI models (Whisper, Silero VAD)
-✅ **Voice fingerprinting (resemblyzer + webrtcvad)** - no compiler needed!
+✅ AI models (Whisper medium.en for SSB contest transcription)
 ✅ All testing and development tools
+
+### Optional: GPU Acceleration (NVIDIA)
+
+**For 10-30x faster Whisper transcription**, install PyTorch with CUDA support:
+
+```powershell
+conda activate cqsentinel
+
+# Remove CPU-only PyTorch (installed by environment.yml)
+pip uninstall torch torchaudio -y
+
+# Install PyTorch with CUDA 11.8 (recommended for most NVIDIA GPUs)
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu118
+
+# OR for newer GPUs with CUDA 12.1:
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+# Verify CUDA support
+python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}')"
+# Should print: CUDA available: True
+```
+
+**Benefits of GPU acceleration**:
+- Whisper medium.en processes 15s audio in ~0.2-0.5s (vs 3-5s on CPU)
+- Automatic worker scaling based on VRAM (85% utilization)
+- Enables real-time continuous transcription without falling behind
+
+**Requirements**:
+- NVIDIA GPU with 4+ GB VRAM (8+ GB recommended)
+- NVIDIA drivers installed
+- Download size: ~2 GB (vs ~500 MB for CPU-only PyTorch)
+
+**Note**: GPU support is optional. CPU-only installation works fine but transcription will be slower.
 
 ### Verify Installation
 
@@ -48,11 +80,13 @@ conda activate cqsentinel
 python -c "import torch; print('✓ PyTorch')"
 python -c "from PyQt5 import QtCore; print('✓ PyQt5')"
 python -c "import librosa; print('✓ librosa')"
-python -c "import faster_whisper; print('✓ Whisper')"
-python -c "from resemblyzer import VoiceEncoder; print('✓ Resemblyzer')"
+python -c "import whisper; print('✓ OpenAI Whisper')"
+
+# Optional: Check GPU support (if installed CUDA PyTorch)
+python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}')"
 ```
 
-All should show ✓ checkmarks.
+All should show ✓ checkmarks. CUDA check will show `True` if you installed GPU support.
 
 **Common Issue**: If you see `PyQt6 build failed`, you're using MSYS2/MinGW Python. Switch to conda or native Windows Python.
 
@@ -66,13 +100,18 @@ If you need to install packages individually or troubleshoot:
 conda activate cqsentinel
 
 # Core dependencies from conda-forge
-conda install -c conda-forge pyqt=5.15 librosa numpy scipy pyyaml tqdm python-sounddevice pysoundfile webrtcvad
+conda install -c conda-forge pyqt=5.15 librosa numpy scipy pyyaml tqdm python-sounddevice pysoundfile webrtcvad psutil
 
-# PyTorch (CPU-only)
+# PyTorch - CHOOSE ONE:
+
+# Option A: CPU-only (smaller, works everywhere)
 conda install -c pytorch pytorch torchaudio cpuonly
 
+# Option B: GPU/CUDA support (faster transcription, requires NVIDIA GPU)
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu118
+
 # Python packages from PyPI
-pip install faster-whisper resemblyzer noisereduce silero-vad openai-whisper
+pip install noisereduce openai-whisper tiktoken
 ```
 
 ---
@@ -591,7 +630,12 @@ radio:
 
 audio:
   sample_rate: 16000
-  whisper_model_size: "small"
+  # Whisper model is hardcoded to medium.en for best SSB contest accuracy
+  use_gpu: true  # Try GPU first, auto-fallback to CPU
+  gpu_memory_fraction: 0.85  # Use 85% of free VRAM for workers
+  whisper_beam_size: 5  # Beam search size (1=greedy, 5=balanced)
+  whisper_temperature: 0.0  # 0.0 = deterministic decoding
+  whisper_no_speech_threshold: 0.6  # Higher = fewer false positives
 
 scan:
   step_size_hz: 1000
