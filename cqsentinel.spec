@@ -93,6 +93,44 @@ try:
     datas += collect_data_files('tiktoken_ext')
     binaries += collect_dynamic_libs('tiktoken')
     print("✓ Including tiktoken data files and dynamic libraries")
+
+    # CRITICAL: Also find and include the native extension explicitly
+    # because collect_dynamic_libs may not find it due to circular import issues
+    # Search all Python paths without importing tiktoken
+    import site
+    import os as _os
+    tiktoken_found = False
+
+    # Build list of directories to search
+    search_dirs = []
+    try:
+        search_dirs.extend(site.getsitepackages())
+    except:
+        pass
+    try:
+        search_dirs.append(site.getusersitepackages())
+    except:
+        pass
+    # Also check sys.path for conda environments
+    search_dirs.extend(sys.path)
+
+    for search_dir in search_dirs:
+        if not _os.path.isdir(search_dir):
+            continue
+        tiktoken_dir = _os.path.join(search_dir, 'tiktoken')
+        if _os.path.isdir(tiktoken_dir):
+            for fname in _os.listdir(tiktoken_dir):
+                if fname.startswith('_tiktoken') and (fname.endswith('.pyd') or fname.endswith('.so')):
+                    ext_path = _os.path.join(tiktoken_dir, fname)
+                    # Add as (source, dest_folder)
+                    binaries.append((ext_path, 'tiktoken'))
+                    print(f"✓ Found tiktoken native extension: {ext_path}")
+                    tiktoken_found = True
+                    break
+            if tiktoken_found:
+                break
+    if not tiktoken_found:
+        print("⚠ tiktoken native extension (.pyd/.so) not found in any Python path")
 except Exception as e:
     print(f"⚠ tiktoken not found: {e}")
 
