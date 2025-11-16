@@ -182,6 +182,10 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
         compute_type: Compute type (float32, float16, int8)
         models_dir: Directory where models are stored (for offline operation)
     """
+    # Helper for immediate output
+    def log(msg):
+        print(f"[WORKER-{worker_id}] {msg}", flush=True)
+
     # Import inside subprocess to avoid loading in main process
     try:
         # Set environment variables to prevent network access
@@ -196,8 +200,8 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
         import uuid
 
         # Load Whisper model - use local_files_only to prevent network access
-        print(f"[WORKER-{worker_id}] Loading Whisper {model_size} model (compute_type={compute_type})...")
-        print(f"[WORKER-{worker_id}] Models directory: {models_dir}")
+        log(f"Loading Whisper {model_size} model (compute_type={compute_type})...")
+        log(f"Models directory: {models_dir}")
 
         # Construct path to the cached model
         hf_cache = os.path.join(models_dir, 'huggingface', 'hub')
@@ -209,12 +213,12 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
             download_root=hf_cache,
             local_files_only=True  # CRITICAL: Prevent any network access
         )
-        print(f"[WORKER-{worker_id}] Whisper model loaded (offline mode)")
+        log(f"Whisper model loaded (offline mode)")
 
         # Load VoiceEmbedder model
-        print(f"[WORKER-{worker_id}] Loading Resemblyzer voice encoder...")
+        log(f"Loading Resemblyzer voice encoder...")
         voice_encoder = VoiceEncoder()
-        print(f"[WORKER-{worker_id}] Voice encoder loaded")
+        log(f"Voice encoder loaded")
 
         # Signal that we're ready
         output_queue.put(TranscriptionResult(
@@ -225,9 +229,11 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
         ))
 
     except Exception as e:
-        print(f"[WORKER-{worker_id}] Failed to load models: {e}")
+        log(f"Failed to load models: {e}")
         import traceback
         traceback.print_exc()
+        sys.stdout.flush()
+        sys.stderr.flush()
         output_queue.put(TranscriptionResult(
             request_id=-1,
             text="ERROR",
@@ -238,7 +244,7 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
         return
 
     # Process requests until shutdown signal
-    print(f"[WORKER-{worker_id}] Ready to process transcription requests")
+    log(f"Ready to process transcription requests")
     while True:
         try:
             # Wait for request (blocking)
@@ -246,10 +252,11 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
 
             # Shutdown signal
             if request is None:
-                print(f"[WORKER-{worker_id}] Received shutdown signal")
+                log(f"Received shutdown signal")
                 break
 
-            print(f"[WORKER-{worker_id}] Processing request {request.request_id}, audio duration: {len(request.audio)/request.sample_rate:.1f}s")
+            log(f"Processing request {request.request_id}, audio duration: {len(request.audio)/request.sample_rate:.1f}s")
+            processing_start = time.time()
 
             # Process transcription and voice ID
             try:
@@ -258,7 +265,8 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
                 new_speakers = {}
 
                 if request.voice_db_embeddings is not None:
-                    print(f"[WORKER-{worker_id}] Running speaker detection...")
+                    log(f"Running speaker detection...")
+                    speaker_start = time.time()
                     try:
                         # Detect speaker changes using sliding window
                         speaker_segments = _detect_speaker_changes(
@@ -269,8 +277,10 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
                             stride=1.0,
                             similarity_threshold=0.75
                         )
+                        log(f"Speaker detection took {time.time() - speaker_start:.2f}s")
 
                         # Match speakers against voice DB
+                        match_start = time.time()
                         for seg in speaker_segments:
                             if seg['embedding'] is not None:
                                 # Find matching voice
@@ -279,7 +289,7 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
                                 if match:
                                     voice_id, callsign, similarity = match
                                     label = callsign or f"Speaker {voice_id[:8]}"
-                                    print(f"[WORKER-{worker_id}] Matched voice at {seg['start']:.1f}-{seg['end']:.1f}s: {label} (similarity: {similarity:.2f})")
+                                    log(f"Matched voice at {seg['start']:.1f}-{seg['end']:.1f}s: {label} (similarity: {similarity:.2f})")
                                 else:
                                     # New speaker - generate ID and store
                                     voice_id = str(uuid.uuid4())
@@ -288,7 +298,7 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
                                         'embedding': seg['embedding'].tolist(),  # Convert to list for serialization
                                         'first_heard': time.time()
                                     }
-                                    print(f"[WORKER-{worker_id}] New speaker at {seg['start']:.1f}-{seg['end']:.1f}s: {label}")
+                                    log(f"New speaker at {seg['start']:.1f}-{seg['end']:.1f}s: {label}")
 
                                 speaker_labels.append({
                                     'start': seg['start'],
@@ -300,14 +310,16 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
                         if speaker_labels:
                             unique_speakers = len(set(s['voice_id'] for s in speaker_labels))
                             unique_labels = ', '.join(set(s['label'] for s in speaker_labels))
-                            print(f"[WORKER-{worker_id}] Detected {unique_speakers} speakers: {unique_labels}")
+                            log(f"Detected {unique_speakers} speakers: {unique_labels}")
+                            log(f"Voice matching took {time.time() - match_start:.2f}s")
 
                     except Exception as e:
-                        print(f"[WORKER-{worker_id}] Speaker detection failed: {e}")
+                        log(f"Speaker detection failed: {e}")
                         # Continue with transcription even if speaker detection fails
 
                 # Step 2: Transcribe
-                print(f"[WORKER-{worker_id}] Transcribing...")
+                log(f"Transcribing...")
+                transcribe_start = time.time()
                 segments, info = model.transcribe(
                     request.audio,
                     language="en",
@@ -315,12 +327,16 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
                     temperature=0.0,  # Disable fallback (Windows stability)
                     vad_filter=False  # VAD already applied
                 )
+                log(f"model.transcribe() returned in {time.time() - transcribe_start:.2f}s")
 
-                # Collect all segments
+                # Collect all segments (this actually runs the transcription - it's a generator!)
+                log(f"Consuming transcription segments...")
+                segment_start = time.time()
                 texts = []
                 for seg in segments:
                     if seg.text.strip():
                         texts.append(seg.text.strip())
+                log(f"Segment iteration took {time.time() - segment_start:.2f}s")
 
                 result_text = " ".join(texts)
 
@@ -332,7 +348,8 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
                     else:
                         result_text = f"[{'/'.join(unique_labels)}] {result_text}"
 
-                print(f"[WORKER-{worker_id}] Transcription complete: {result_text}")
+                total_time = time.time() - processing_start
+                log(f"Transcription complete in {total_time:.2f}s: {result_text}")
 
                 # Send result with speaker info
                 output_queue.put(TranscriptionResult(
@@ -345,9 +362,11 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
                 ))
 
             except Exception as e:
-                print(f"[WORKER-{worker_id}] Transcription failed: {e}")
+                log(f"Transcription failed: {e}")
                 import traceback
                 traceback.print_exc()
+                sys.stdout.flush()
+                sys.stderr.flush()
                 output_queue.put(TranscriptionResult(
                     request_id=request.request_id,
                     text="",
@@ -359,12 +378,14 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
                 ))
 
         except Exception as e:
-            print(f"[WORKER-{worker_id}] Error in worker loop: {e}")
+            log(f"Error in worker loop: {e}")
             import traceback
             traceback.print_exc()
+            sys.stdout.flush()
+            sys.stderr.flush()
             # Continue processing
 
-    print(f"[WORKER-{worker_id}] Worker shutting down")
+    log(f"Worker shutting down")
 
 
 class SubprocessTranscriber:
