@@ -69,6 +69,15 @@ def _detect_speaker_changes(voice_encoder, audio: np.ndarray, sample_rate: int,
     Returns:
         List of speaker segments with embeddings
     """
+    # Import Resemblyzer's preprocessing functions
+    try:
+        from resemblyzer import preprocess_wav
+        from resemblyzer.audio import normalize_volume
+    except ImportError:
+        # Fallback if preprocess_wav not available
+        preprocess_wav = None
+        normalize_volume = None
+
     segments = []
     window_samples = int(window_duration * sample_rate)
     stride_samples = int(stride * sample_rate)
@@ -83,18 +92,47 @@ def _detect_speaker_changes(voice_encoder, audio: np.ndarray, sample_rate: int,
     if audio_rms < 0.001:  # Nearly silent
         return segments
 
+    # CRITICAL: Preprocess entire audio first using Resemblyzer's functions
+    # This normalizes volume and ensures proper format for embedding
+    preprocessed_audio = audio
+    if preprocess_wav is not None:
+        try:
+            # preprocess_wav expects source_sr when passing numpy array
+            preprocessed_audio = preprocess_wav(audio, source_sr=sample_rate)
+            if sys.stdout is not None:
+                try:
+                    print(f"[WORKER] Preprocessed audio: {len(audio)} -> {len(preprocessed_audio)} samples")
+                except Exception:
+                    pass
+            # After preprocessing, audio is at 16kHz
+            sample_rate = 16000
+            # Recalculate window sizes for new sample rate
+            window_samples = int(window_duration * sample_rate)
+            stride_samples = int(stride * sample_rate)
+        except Exception as e:
+            if sys.stdout is not None:
+                try:
+                    print(f"[WORKER] preprocess_wav failed: {e}, using manual normalization")
+                except Exception:
+                    pass
+            # Fallback: manual normalization
+            if normalize_volume is not None:
+                try:
+                    preprocessed_audio = normalize_volume(audio, -30, increase_only=True)
+                except Exception:
+                    pass
+
     current_speaker_idx = 0
     prev_embedding = None
     current_segment_start = 0.0
     failed_windows = 0
     max_failed_windows = 3  # Give up if too many failures
 
-    for start_sample in range(0, len(audio) - window_samples + 1, stride_samples):
+    for start_sample in range(0, len(preprocessed_audio) - window_samples + 1, stride_samples):
         end_sample = start_sample + window_samples
-        window = audio[start_sample:end_sample]
+        window = preprocessed_audio[start_sample:end_sample]
 
-        # Compute embedding for this window
-        # Resemblyzer expects 16kHz, resample if needed
+        # After preprocess_wav, audio is already at 16kHz, but double-check
         if sample_rate != 16000:
             # Simple resampling
             from scipy import signal
@@ -176,7 +214,7 @@ def _detect_speaker_changes(voice_encoder, audio: np.ndarray, sample_rate: int,
     if prev_embedding is not None:
         segments.append({
             'start': current_segment_start,
-            'end': len(audio) / sample_rate,
+            'end': len(preprocessed_audio) / sample_rate,
             'speaker_idx': current_speaker_idx,
             'embedding': prev_embedding
         })
@@ -254,6 +292,14 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
             except Exception:
                 pass
         safe_flush()
+
+    # CRITICAL: Disable numba JIT BEFORE importing anything that uses it
+    # librosa (used by Resemblyzer) uses numba for mel spectrograms, and
+    # numba JIT compilation in subprocesses causes deadlocks/crashes on Windows
+    os.environ['NUMBA_DISABLE_JIT'] = '1'
+    # Also set threading layer to safe defaults
+    os.environ['NUMBA_THREADING_LAYER'] = 'safe'
+    os.environ['NUMBA_NUM_THREADS'] = '1'
 
     # CRITICAL: Fix None stdout/stderr in PyInstaller frozen subprocess
     # whisper internally writes to stdout/stderr (tqdm progress, warnings, etc.)
