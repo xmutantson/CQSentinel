@@ -1165,6 +1165,11 @@ class MainWindow(QMainWindow):
                 logger.debug(f"Received transcription result for request {result.request_id}")
 
                 if result.success:
+                    # Log speaker detection results
+                    if result.speaker_labels:
+                        unique_labels = list(set(s['label'] for s in result.speaker_labels))
+                        logger.info(f"Speaker detection: {len(unique_labels)} speaker(s) detected - {', '.join(unique_labels)}")
+
                     # Update voice DB with new speakers detected in subprocess
                     if result.new_speakers and self.voice_db:
                         import numpy as np
@@ -1174,6 +1179,8 @@ class MainWindow(QMainWindow):
                             # Add new speaker to voice DB
                             self.voice_db.add_operator(embedding, voice_id=voice_id, metadata=metadata)
                             logger.info(f"Added new speaker to voice DB: {voice_id[:8]}")
+                            # Also log to GUI debug console
+                            self.log(f"[VOICE] New speaker detected: {voice_id[:8]}")
 
                     # Emit transcription signal (thread-safe)
                     if result.text.strip():

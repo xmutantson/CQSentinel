@@ -694,7 +694,8 @@ class SubprocessTranscriber:
         except Exception as e:
             logger.error(f"Failed to serialize voice DB: {e}")
 
-        return serialized if serialized else None
+        # Return empty dict (not None) to enable speaker detection even with no existing voices
+        return serialized
 
     def get_result(self, timeout: float = 0.1) -> Optional[TranscriptionResult]:
         """
