@@ -1,6 +1,17 @@
 # CQSentinel Installation Guide
 
-## ⚠️ Windows Users: Read This First!
+## 🚀 Just Want to Use CQSentinel?
+
+**Download the latest release** - no installation required:
+- **Windows**: [Download CQSentinel-windows-portable.zip](https://github.com/xmutantson/CQSentinel/releases/latest)
+- Extract and run `CQSentinel.exe`
+- GPU-enabled builds include CUDA support for 10-30x faster transcription
+
+The rest of this guide is for **developers** who want to set up a development environment.
+
+---
+
+## ⚠️ Windows Developers: Read This First!
 
 CQSentinel has complex dependencies (PyQt5, PyTorch, audio libraries) that can be challenging on Windows. **We strongly recommend using Conda** for installation.
 
