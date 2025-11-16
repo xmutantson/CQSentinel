@@ -34,7 +34,7 @@ class SpeechTranscriber:
         self,
         model_size: str = "small",
         device: str = "cpu",
-        compute_type: str = "int8",
+        compute_type: str = "float32",  # Changed from int8 - Windows threading fix
         language: str = "en"
     ):
         """
@@ -44,6 +44,7 @@ class SpeechTranscriber:
             model_size: Whisper model size (tiny, base, small, medium, large)
             device: 'cpu' or 'cuda'
             compute_type: 'int8', 'int8_float16', 'float16', 'float32'
+                         Note: float32 recommended for Windows to avoid threading crashes
             language: Language code (default: 'en')
         """
         self.model_size = model_size
@@ -118,10 +119,13 @@ class SpeechTranscriber:
             audio = audio.astype(np.float32)
 
             # Transcribe
+            # temperature=0.0 prevents fallback mechanism that causes Windows crashes
+            # See: https://github.com/SYSTRAN/faster-whisper/issues/1293
             segments, info = self.model.transcribe(
                 audio,
                 language=self.language,
                 beam_size=beam_size,
+                temperature=0.0,  # Disable temperature fallback (Windows crash fix)
                 vad_filter=vad_filter,
                 vad_parameters={
                     "threshold": 0.5,
