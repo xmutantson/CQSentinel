@@ -208,6 +208,26 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
                 pass
         safe_flush()
 
+    # CRITICAL: Fix None stdout/stderr in PyInstaller frozen subprocess
+    # whisper internally writes to stdout/stderr (tqdm progress, warnings, etc.)
+    # even with verbose=False. If these are None, it causes AttributeError.
+    class NullWriter:
+        """Dummy writer that ignores all writes. Used when stdout/stderr is None."""
+        def write(self, s):
+            pass
+        def flush(self):
+            pass
+        def isatty(self):
+            return False
+
+    if sys.stdout is None:
+        sys.stdout = NullWriter()
+        log("Replaced None stdout with NullWriter")
+
+    if sys.stderr is None:
+        sys.stderr = NullWriter()
+        log("Replaced None stderr with NullWriter")
+
     # Import inside subprocess to avoid loading in main process
     try:
         # CRITICAL: Enable faulthandler for C++ crash diagnostics in worker
