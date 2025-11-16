@@ -300,6 +300,7 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
     # Also set threading layer to safe defaults
     os.environ['NUMBA_THREADING_LAYER'] = 'safe'
     os.environ['NUMBA_NUM_THREADS'] = '1'
+    log(f"Numba JIT disabled (NUMBA_DISABLE_JIT={os.environ.get('NUMBA_DISABLE_JIT')})")
 
     # CRITICAL: Fix None stdout/stderr in PyInstaller frozen subprocess
     # whisper internally writes to stdout/stderr (tqdm progress, warnings, etc.)
