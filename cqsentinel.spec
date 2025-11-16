@@ -221,20 +221,11 @@ try:
 except:
     pass
 
-try:
-    # openai-whisper submodules
-    hiddenimports += collect_submodules('whisper')
-    print("✓ Including openai-whisper submodules")
-except:
-    pass
-
-try:
-    # tiktoken submodules (required by openai-whisper)
-    hiddenimports += collect_submodules('tiktoken')
-    hiddenimports += collect_submodules('tiktoken_ext')
-    print("✓ Including tiktoken submodules")
-except:
-    pass
+# NOTE: collect_submodules('whisper') and collect_submodules('tiktoken') are NOT used here
+# because they fail with circular import errors. Instead, we use custom analysis hooks
+# in hooks/hook-whisper.py and hooks/hook-tiktoken.py that explicitly list all submodules.
+# PyInstaller will automatically use those hooks when it sees these packages.
+print("✓ Using custom hooks for openai-whisper and tiktoken (avoiding circular import)")
 
 # Analysis - what files to include
 # NOTE: We've carefully curated hiddenimports above, so we can use module_collection_mode
@@ -247,7 +238,7 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=['hooks'],  # Custom hooks directory for tiktoken, whisper, etc.
     hooksconfig={},
-    runtime_hooks=['hooks/hook-tiktoken.py'],  # Pre-import tiktoken native extension
+    runtime_hooks=['hooks/rthook-tiktoken.py'],  # Runtime hook to fix tiktoken circular import
     excludes=[
         'matplotlib',  # Exclude if not needed
         'tkinter',     # We use PyQt5
