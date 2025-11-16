@@ -210,6 +210,29 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
 
     # Import inside subprocess to avoid loading in main process
     try:
+        # CRITICAL: Enable faulthandler for C++ crash diagnostics in worker
+        # This will print stack trace on SIGSEGV, SIGABRT, etc.
+        import faulthandler
+        if sys.stderr is not None:
+            try:
+                faulthandler.enable(file=sys.stderr)
+                log(f"Faulthandler enabled in worker subprocess")
+            except Exception as fh_e:
+                log(f"Warning: Could not enable faulthandler: {fh_e}")
+        else:
+            # Try to enable to default stderr (may not work)
+            try:
+                faulthandler.enable()
+                log(f"Faulthandler enabled (default stderr)")
+            except Exception:
+                pass
+
+        # Set NumPy/MKL threading to single-threaded (prevent threading conflicts)
+        os.environ['OMP_NUM_THREADS'] = '1'
+        os.environ['MKL_NUM_THREADS'] = '1'
+        os.environ['NUMEXPR_NUM_THREADS'] = '1'
+        os.environ['OPENBLAS_NUM_THREADS'] = '1'
+
         # Set environment variables to prevent network access
         # HuggingFace will look in cache first
         os.environ['HF_HOME'] = os.path.join(models_dir, 'huggingface')
@@ -229,14 +252,17 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
         # CRITICAL: Use download_root=None to match how the model was downloaded
         # The HF_HOME environment variable will direct it to the correct cache
         # Using local_files_only=True prevents any network access
+        log(f"Creating WhisperModel with cpu_threads=1, num_workers=1...")
         model = WhisperModel(
             model_size,
             device="cpu",
             compute_type=compute_type,
             download_root=None,  # Use default (respects HF_HOME env var)
-            local_files_only=True  # CRITICAL: Prevent any network access
+            local_files_only=True,  # CRITICAL: Prevent any network access
+            cpu_threads=1,  # CRITICAL: Single-threaded for Windows stability
+            num_workers=1  # CRITICAL: Single worker for Windows stability
         )
-        log(f"Whisper model loaded (offline mode)")
+        log(f"Whisper model loaded (offline mode, single-threaded)")
 
         # DIAGNOSTIC: Test model with short silence to verify it actually works
         log(f"Testing model with 1-second silence...")
