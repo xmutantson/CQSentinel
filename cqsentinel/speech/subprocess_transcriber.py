@@ -242,6 +242,16 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
 
         # Use openai-whisper instead of faster-whisper for Windows PyInstaller stability
         # faster-whisper uses ctranslate2 which crashes on Windows frozen builds
+
+        # CRITICAL: Pre-import tiktoken's native extension to avoid circular import
+        # This fixes "cannot import name '_tiktoken' from partially initialized module"
+        # in PyInstaller frozen builds
+        try:
+            import tiktoken._tiktoken  # Import native extension first
+            log(f"Pre-imported tiktoken._tiktoken successfully")
+        except ImportError as e:
+            log(f"Warning: Could not pre-import tiktoken._tiktoken: {e}")
+
         import whisper
         from resemblyzer import VoiceEncoder
         import uuid
