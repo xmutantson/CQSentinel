@@ -658,7 +658,7 @@ class MainWindow(QMainWindow):
 
         # Transcription queue management (prevent backup during long contests)
         self._active_transcriptions = 0  # Counter for in-flight transcriptions
-        self._max_concurrent_transcriptions = 3  # Maximum parallel transcriptions
+        self._max_concurrent_transcriptions = 5  # Maximum parallel transcriptions (match num_workers)
         self._transcription_lock = threading.Lock()  # Protect counter
         self._transcriber_lock = threading.Lock()  # Protect shared transcriber (WhisperModel is NOT thread-safe)
 
@@ -765,7 +765,7 @@ class MainWindow(QMainWindow):
                 self.subprocess_transcriber = SubprocessTranscriber(
                     model_size=model_size,
                     compute_type="float32",  # Use float32 for stability on Windows
-                    num_workers=1  # Single worker to avoid ctranslate2 race conditions on Windows
+                    num_workers=5  # Multiple workers for parallel transcription (openai-whisper is safe)
                 )
 
                 # Start subprocess and wait for model loading
@@ -1165,6 +1165,11 @@ class MainWindow(QMainWindow):
                 logger.debug(f"Received transcription result for request {result.request_id}")
 
                 if result.success:
+                    # Log speaker detection results
+                    if result.speaker_labels:
+                        unique_labels = list(set(s['label'] for s in result.speaker_labels))
+                        logger.info(f"Speaker detection: {len(unique_labels)} speaker(s) detected - {', '.join(unique_labels)}")
+
                     # Update voice DB with new speakers detected in subprocess
                     if result.new_speakers and self.voice_db:
                         import numpy as np
@@ -1174,6 +1179,8 @@ class MainWindow(QMainWindow):
                             # Add new speaker to voice DB
                             self.voice_db.add_operator(embedding, voice_id=voice_id, metadata=metadata)
                             logger.info(f"Added new speaker to voice DB: {voice_id[:8]}")
+                            # Also log to GUI debug console
+                            self.log(f"[VOICE] New speaker detected: {voice_id[:8]}")
 
                     # Emit transcription signal (thread-safe)
                     if result.text.strip():
