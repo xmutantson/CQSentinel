@@ -210,6 +210,29 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
 
     # Import inside subprocess to avoid loading in main process
     try:
+        # CRITICAL: Enable faulthandler for C++ crash diagnostics in worker
+        # This will print stack trace on SIGSEGV, SIGABRT, etc.
+        import faulthandler
+        if sys.stderr is not None:
+            try:
+                faulthandler.enable(file=sys.stderr)
+                log(f"Faulthandler enabled in worker subprocess")
+            except Exception as fh_e:
+                log(f"Warning: Could not enable faulthandler: {fh_e}")
+        else:
+            # Try to enable to default stderr (may not work)
+            try:
+                faulthandler.enable()
+                log(f"Faulthandler enabled (default stderr)")
+            except Exception:
+                pass
+
+        # Set NumPy/MKL threading to single-threaded (prevent threading conflicts)
+        os.environ['OMP_NUM_THREADS'] = '1'
+        os.environ['MKL_NUM_THREADS'] = '1'
+        os.environ['NUMEXPR_NUM_THREADS'] = '1'
+        os.environ['OPENBLAS_NUM_THREADS'] = '1'
+
         # Set environment variables to prevent network access
         # HuggingFace will look in cache first
         os.environ['HF_HOME'] = os.path.join(models_dir, 'huggingface')
@@ -229,14 +252,34 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
         # CRITICAL: Use download_root=None to match how the model was downloaded
         # The HF_HOME environment variable will direct it to the correct cache
         # Using local_files_only=True prevents any network access
+        log(f"Creating WhisperModel with cpu_threads=1, num_workers=1...")
         model = WhisperModel(
             model_size,
             device="cpu",
             compute_type=compute_type,
             download_root=None,  # Use default (respects HF_HOME env var)
-            local_files_only=True  # CRITICAL: Prevent any network access
+            local_files_only=True,  # CRITICAL: Prevent any network access
+            cpu_threads=1,  # CRITICAL: Single-threaded for Windows stability
+            num_workers=1  # CRITICAL: Single worker for Windows stability
         )
-        log(f"Whisper model loaded (offline mode)")
+        log(f"Whisper model loaded (offline mode, single-threaded)")
+
+        # DIAGNOSTIC: Test model with short silence to verify it actually works
+        log(f"Testing model with 1-second silence...")
+        test_audio = np.zeros(16000, dtype=np.float32)  # 1 second of silence
+        try:
+            test_segments, test_info = model.transcribe(test_audio, language="en", beam_size=1)
+            test_result = list(test_segments)  # Force generator evaluation
+            log(f"Model test PASSED: transcribed {len(test_result)} segments from silence")
+        except Exception as test_e:
+            log(f"Model test FAILED: {test_e}")
+            import traceback
+            if sys.stderr is not None:
+                try:
+                    traceback.print_exc()
+                except Exception:
+                    pass
+            raise RuntimeError(f"Model failed basic transcription test: {test_e}")
 
         # Load VoiceEmbedder model
         log(f"Loading Resemblyzer voice encoder...")
@@ -291,6 +334,12 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
             if request.audio.dtype != np.float32:
                 log(f"Converting audio to float32 (was {request.audio.dtype})")
                 request.audio = request.audio.astype(np.float32)
+
+            # CRITICAL: Ensure audio is C-contiguous for ctranslate2
+            if not request.audio.flags['C_CONTIGUOUS']:
+                log(f"WARNING: Audio not C-contiguous, fixing...")
+                request.audio = np.ascontiguousarray(request.audio)
+                log(f"Audio now C-contiguous: {request.audio.flags['C_CONTIGUOUS']}")
 
             # Process transcription and voice ID
             try:
@@ -354,17 +403,44 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
                 # Step 2: Transcribe
                 log(f"Transcribing...")
                 log(f"About to call model.transcribe() with audio shape={request.audio.shape}")
+
+                # DIAGNOSTIC: Verify model is still valid
+                log(f"Model object type: {type(model)}")
+                log(f"Audio memory flags: C_CONTIGUOUS={request.audio.flags['C_CONTIGUOUS']}, OWNDATA={request.audio.flags['OWNDATA']}")
                 safe_flush()
+
                 transcribe_start = time.time()
                 try:
-                    segments, info = model.transcribe(
+                    # DIAGNOSTIC: Force immediate evaluation by converting to list
+                    # This avoids generator issues and gives immediate crash point
+                    log(f"Calling model.transcribe()...")
+                    safe_flush()
+
+                    segments_gen, info = model.transcribe(
                         request.audio,
                         language="en",
                         beam_size=5,
                         temperature=0.0,  # Disable fallback (Windows stability)
                         vad_filter=False  # VAD already applied
                     )
-                    log(f"model.transcribe() returned in {time.time() - transcribe_start:.2f}s")
+
+                    log(f"model.transcribe() returned generator in {time.time() - transcribe_start:.2f}s")
+                    log(f"Info: language={info.language}, language_probability={info.language_probability:.2f}")
+                    safe_flush()
+
+                    # DIAGNOSTIC: Consume generator with per-segment logging
+                    log(f"Consuming transcription segments...")
+                    segment_start = time.time()
+                    texts = []
+                    segment_count = 0
+                    for seg in segments_gen:
+                        segment_count += 1
+                        log(f"Segment {segment_count}: [{seg.start:.2f}-{seg.end:.2f}] '{seg.text.strip()}'")
+                        if seg.text.strip():
+                            texts.append(seg.text.strip())
+                        safe_flush()
+
+                    log(f"Segment iteration complete: {segment_count} segments in {time.time() - segment_start:.2f}s")
                 except Exception as te:
                     log(f"model.transcribe() EXCEPTION: {te}")
                     import traceback
@@ -375,15 +451,6 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
                             pass
                     safe_flush()
                     raise
-
-                # Collect all segments (this actually runs the transcription - it's a generator!)
-                log(f"Consuming transcription segments...")
-                segment_start = time.time()
-                texts = []
-                for seg in segments:
-                    if seg.text.strip():
-                        texts.append(seg.text.strip())
-                log(f"Segment iteration took {time.time() - segment_start:.2f}s")
 
                 result_text = " ".join(texts)
 
