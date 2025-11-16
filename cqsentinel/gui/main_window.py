@@ -1065,7 +1065,24 @@ class MainWindow(QMainWindow):
         to avoid Windows threading crashes with C++ libraries.
         """
         # Use subprocess transcriber if available, fallback to threading approach
-        if self.subprocess_transcriber and self.subprocess_transcriber.is_alive():
+        # Add diagnostic logging to track subprocess state
+        subprocess_available = False
+        if self.subprocess_transcriber:
+            is_alive = self.subprocess_transcriber.is_alive()
+            logger.info(f"Subprocess transcriber check: exists=True, is_alive={is_alive}")
+            if is_alive:
+                subprocess_available = True
+            else:
+                # Log additional diagnostics
+                proc = self.subprocess_transcriber.process
+                if proc:
+                    logger.warning(f"Subprocess not alive: pid={proc.pid}, exitcode={proc.exitcode}")
+                else:
+                    logger.warning("Subprocess process object is None")
+        else:
+            logger.info("Subprocess transcriber check: exists=False")
+
+        if subprocess_available:
             # Submit audio to subprocess for transcription (non-blocking)
             try:
                 request_id = self.subprocess_transcriber.transcribe_async(

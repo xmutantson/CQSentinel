@@ -1,14 +1,16 @@
 """
-Subprocess-based transcription worker for Windows compatibility
+Subprocess-based transcription worker pool for Windows compatibility
 
-Uses multiprocessing to run faster-whisper in a separate process,
+Uses multiprocessing to run faster-whisper in separate processes,
 avoiding threading issues that cause crashes on Windows.
 """
 
 import multiprocessing as mp
 import numpy as np
 import logging
-from typing import Optional, Tuple
+import os
+import sys
+from typing import Optional, Tuple, List
 from dataclasses import dataclass
 import time
 
@@ -21,6 +23,7 @@ class TranscriptionRequest:
     audio: np.ndarray
     sample_rate: int
     request_id: int
+    worker_id: int = -1  # Assigned by pool
     # Voice ID data (serializable)
     voice_db_embeddings: Optional[dict] = None  # {voice_id: (embedding, callsign, metadata)}
 
@@ -31,10 +34,22 @@ class TranscriptionResult:
     request_id: int
     text: str
     success: bool
+    worker_id: int = -1
     error: Optional[str] = None
     # Speaker identification results
     speaker_labels: Optional[list] = None  # List of {start, end, label, voice_id}
     new_speakers: Optional[dict] = None  # {voice_id: (embedding, metadata)} for new speakers detected
+
+
+def _get_models_directory():
+    """Get the models directory for the current environment."""
+    if getattr(sys, 'frozen', False):
+        # PyInstaller frozen executable
+        base_dir = os.path.dirname(sys.executable)
+        return os.path.join(base_dir, 'models')
+    else:
+        # Development mode
+        return os.path.join(os.path.dirname(__file__), '..', '..', 'models')
 
 
 def _detect_speaker_changes(voice_encoder, audio: np.ndarray, sample_rate: int,
@@ -103,7 +118,7 @@ def _detect_speaker_changes(voice_encoder, audio: np.ndarray, sample_rate: int,
 
         except Exception as e:
             # Skip this window if embedding fails
-            print(f"[SUBPROCESS] Failed to compute embedding for window: {e}")
+            print(f"[WORKER] Failed to compute embedding for window: {e}")
             continue
 
     # Add final segment
@@ -152,60 +167,84 @@ def _find_matching_voice(embedding: np.ndarray, voice_db_embeddings: dict,
     return best_match
 
 
-def transcription_worker(input_queue: mp.Queue, output_queue: mp.Queue, model_size: str, compute_type: str):
+def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp.Queue,
+                         model_size: str, compute_type: str, models_dir: str):
     """
     Worker process that loads Whisper model and VoiceEmbedder, processes transcription requests with voice ID.
 
     This runs in a separate process to avoid Windows threading issues with ctranslate2 and resemblyzer.
 
     Args:
+        worker_id: Unique identifier for this worker
         input_queue: Queue for receiving TranscriptionRequest objects
         output_queue: Queue for sending TranscriptionResult objects
         model_size: Whisper model size (tiny, base, small, medium, large)
         compute_type: Compute type (float32, float16, int8)
+        models_dir: Directory where models are stored (for offline operation)
     """
+    # Helper for immediate output
+    def log(msg):
+        print(f"[WORKER-{worker_id}] {msg}", flush=True)
+
     # Import inside subprocess to avoid loading in main process
     try:
+        # Set environment variables to prevent network access
+        # HuggingFace will look in cache first
+        os.environ['HF_HOME'] = os.path.join(models_dir, 'huggingface')
+        os.environ['TORCH_HOME'] = os.path.join(models_dir, 'torch')
+        os.environ['TRANSFORMERS_OFFLINE'] = '1'  # Force offline mode
+        os.environ['HF_HUB_OFFLINE'] = '1'  # Force HuggingFace Hub offline
+
         from faster_whisper import WhisperModel
         from resemblyzer import VoiceEncoder
         import uuid
 
-        # Load Whisper model
-        print(f"[SUBPROCESS] Loading Whisper {model_size} model (compute_type={compute_type})...")
+        # Load Whisper model - use local_files_only to prevent network access
+        log(f"Loading Whisper {model_size} model (compute_type={compute_type})...")
+        log(f"Models directory: {models_dir}")
+
+        # Construct path to the cached model
+        hf_cache = os.path.join(models_dir, 'huggingface', 'hub')
+
         model = WhisperModel(
             model_size,
             device="cpu",
             compute_type=compute_type,
-            download_root=None
+            download_root=hf_cache,
+            local_files_only=True  # CRITICAL: Prevent any network access
         )
-        print(f"[SUBPROCESS] Whisper model loaded")
+        log(f"Whisper model loaded (offline mode)")
 
         # Load VoiceEmbedder model
-        print(f"[SUBPROCESS] Loading Resemblyzer voice encoder...")
+        log(f"Loading Resemblyzer voice encoder...")
         voice_encoder = VoiceEncoder()
-        print(f"[SUBPROCESS] Voice encoder loaded")
+        log(f"Voice encoder loaded")
 
         # Signal that we're ready
         output_queue.put(TranscriptionResult(
             request_id=-1,
             text="READY",
-            success=True
+            success=True,
+            worker_id=worker_id
         ))
 
     except Exception as e:
-        print(f"[SUBPROCESS] Failed to load models: {e}")
+        log(f"Failed to load models: {e}")
         import traceback
         traceback.print_exc()
+        sys.stdout.flush()
+        sys.stderr.flush()
         output_queue.put(TranscriptionResult(
             request_id=-1,
             text="ERROR",
             success=False,
+            worker_id=worker_id,
             error=str(e)
         ))
         return
 
     # Process requests until shutdown signal
-    print("[SUBPROCESS] Ready to process transcription requests")
+    log(f"Ready to process transcription requests")
     while True:
         try:
             # Wait for request (blocking)
@@ -213,10 +252,11 @@ def transcription_worker(input_queue: mp.Queue, output_queue: mp.Queue, model_si
 
             # Shutdown signal
             if request is None:
-                print("[SUBPROCESS] Received shutdown signal")
+                log(f"Received shutdown signal")
                 break
 
-            print(f"[SUBPROCESS] Processing request {request.request_id}, audio duration: {len(request.audio)/request.sample_rate:.1f}s")
+            log(f"Processing request {request.request_id}, audio duration: {len(request.audio)/request.sample_rate:.1f}s")
+            processing_start = time.time()
 
             # Process transcription and voice ID
             try:
@@ -225,7 +265,8 @@ def transcription_worker(input_queue: mp.Queue, output_queue: mp.Queue, model_si
                 new_speakers = {}
 
                 if request.voice_db_embeddings is not None:
-                    print(f"[SUBPROCESS] Running speaker detection...")
+                    log(f"Running speaker detection...")
+                    speaker_start = time.time()
                     try:
                         # Detect speaker changes using sliding window
                         speaker_segments = _detect_speaker_changes(
@@ -236,8 +277,10 @@ def transcription_worker(input_queue: mp.Queue, output_queue: mp.Queue, model_si
                             stride=1.0,
                             similarity_threshold=0.75
                         )
+                        log(f"Speaker detection took {time.time() - speaker_start:.2f}s")
 
                         # Match speakers against voice DB
+                        match_start = time.time()
                         for seg in speaker_segments:
                             if seg['embedding'] is not None:
                                 # Find matching voice
@@ -246,7 +289,7 @@ def transcription_worker(input_queue: mp.Queue, output_queue: mp.Queue, model_si
                                 if match:
                                     voice_id, callsign, similarity = match
                                     label = callsign or f"Speaker {voice_id[:8]}"
-                                    print(f"[SUBPROCESS] Matched voice at {seg['start']:.1f}-{seg['end']:.1f}s: {label} (similarity: {similarity:.2f})")
+                                    log(f"Matched voice at {seg['start']:.1f}-{seg['end']:.1f}s: {label} (similarity: {similarity:.2f})")
                                 else:
                                     # New speaker - generate ID and store
                                     voice_id = str(uuid.uuid4())
@@ -255,7 +298,7 @@ def transcription_worker(input_queue: mp.Queue, output_queue: mp.Queue, model_si
                                         'embedding': seg['embedding'].tolist(),  # Convert to list for serialization
                                         'first_heard': time.time()
                                     }
-                                    print(f"[SUBPROCESS] New speaker at {seg['start']:.1f}-{seg['end']:.1f}s: {label}")
+                                    log(f"New speaker at {seg['start']:.1f}-{seg['end']:.1f}s: {label}")
 
                                 speaker_labels.append({
                                     'start': seg['start'],
@@ -267,14 +310,16 @@ def transcription_worker(input_queue: mp.Queue, output_queue: mp.Queue, model_si
                         if speaker_labels:
                             unique_speakers = len(set(s['voice_id'] for s in speaker_labels))
                             unique_labels = ', '.join(set(s['label'] for s in speaker_labels))
-                            print(f"[SUBPROCESS] Detected {unique_speakers} speakers: {unique_labels}")
+                            log(f"Detected {unique_speakers} speakers: {unique_labels}")
+                            log(f"Voice matching took {time.time() - match_start:.2f}s")
 
                     except Exception as e:
-                        print(f"[SUBPROCESS] Speaker detection failed: {e}")
+                        log(f"Speaker detection failed: {e}")
                         # Continue with transcription even if speaker detection fails
 
                 # Step 2: Transcribe
-                print(f"[SUBPROCESS] Transcribing...")
+                log(f"Transcribing...")
+                transcribe_start = time.time()
                 segments, info = model.transcribe(
                     request.audio,
                     language="en",
@@ -282,12 +327,16 @@ def transcription_worker(input_queue: mp.Queue, output_queue: mp.Queue, model_si
                     temperature=0.0,  # Disable fallback (Windows stability)
                     vad_filter=False  # VAD already applied
                 )
+                log(f"model.transcribe() returned in {time.time() - transcribe_start:.2f}s")
 
-                # Collect all segments
+                # Collect all segments (this actually runs the transcription - it's a generator!)
+                log(f"Consuming transcription segments...")
+                segment_start = time.time()
                 texts = []
                 for seg in segments:
                     if seg.text.strip():
                         texts.append(seg.text.strip())
+                log(f"Segment iteration took {time.time() - segment_start:.2f}s")
 
                 result_text = " ".join(texts)
 
@@ -299,121 +348,145 @@ def transcription_worker(input_queue: mp.Queue, output_queue: mp.Queue, model_si
                     else:
                         result_text = f"[{'/'.join(unique_labels)}] {result_text}"
 
-                print(f"[SUBPROCESS] Transcription complete: {result_text}")
+                total_time = time.time() - processing_start
+                log(f"Transcription complete in {total_time:.2f}s: {result_text}")
 
                 # Send result with speaker info
                 output_queue.put(TranscriptionResult(
                     request_id=request.request_id,
                     text=result_text,
                     success=True,
+                    worker_id=worker_id,
                     speaker_labels=speaker_labels if speaker_labels else None,
                     new_speakers=new_speakers if new_speakers else None
                 ))
 
             except Exception as e:
-                print(f"[SUBPROCESS] Transcription failed: {e}")
+                log(f"Transcription failed: {e}")
                 import traceback
                 traceback.print_exc()
+                sys.stdout.flush()
+                sys.stderr.flush()
                 output_queue.put(TranscriptionResult(
                     request_id=request.request_id,
                     text="",
                     success=False,
+                    worker_id=worker_id,
                     error=str(e),
                     speaker_labels=None,
                     new_speakers=None
                 ))
 
         except Exception as e:
-            print(f"[SUBPROCESS] Error in worker loop: {e}")
+            log(f"Error in worker loop: {e}")
             import traceback
             traceback.print_exc()
+            sys.stdout.flush()
+            sys.stderr.flush()
             # Continue processing
 
-    print("[SUBPROCESS] Worker shutting down")
+    log(f"Worker shutting down")
 
 
 class SubprocessTranscriber:
     """
-    Manages a subprocess for transcription to avoid Windows threading issues.
+    Manages a pool of subprocesses for transcription to handle concurrent requests.
 
-    The subprocess loads the Whisper model once and processes transcription
-    requests via queues.
+    The subprocess pool loads the Whisper model in each worker and processes
+    transcription requests via queues.
     """
 
-    def __init__(self, model_size: str = "small", compute_type: str = "float32"):
+    def __init__(self, model_size: str = "small", compute_type: str = "float32", num_workers: int = 3):
         """
-        Initialize subprocess transcriber.
+        Initialize subprocess transcriber pool.
 
         Args:
             model_size: Whisper model size
             compute_type: Compute type (float32 recommended for Windows)
+            num_workers: Number of worker processes to spawn (default: 3)
         """
         self.model_size = model_size
         self.compute_type = compute_type
+        self.num_workers = num_workers
+        self.models_dir = _get_models_directory()
 
-        # IPC queues
-        self.input_queue = mp.Queue(maxsize=10)
-        self.output_queue = mp.Queue(maxsize=10)
+        # Shared IPC queues
+        self.input_queue = mp.Queue(maxsize=50)  # Larger queue for pool
+        self.output_queue = mp.Queue(maxsize=50)
 
-        # Process
-        self.process: Optional[mp.Process] = None
+        # Worker processes
+        self.workers: List[mp.Process] = []
+        self.workers_ready = 0
         self.is_ready = False
         self.request_counter = 0
 
-        logger.info(f"SubprocessTranscriber initialized: model={model_size}, compute_type={compute_type}")
+        logger.info(f"SubprocessTranscriber pool initialized: model={model_size}, compute_type={compute_type}, workers={num_workers}")
 
     def start(self) -> bool:
         """
-        Start the transcription subprocess.
+        Start the transcription worker pool.
 
         Returns:
-            True if subprocess started successfully
+            True if all workers started successfully
         """
-        if self.process is not None and self.process.is_alive():
-            logger.warning("Subprocess already running")
+        if self.workers:
+            logger.warning("Worker pool already running")
             return True
 
         try:
-            logger.info("Starting transcription subprocess...")
+            logger.info(f"Starting transcription worker pool ({self.num_workers} workers)...")
 
-            # Create subprocess
-            self.process = mp.Process(
-                target=transcription_worker,
-                args=(self.input_queue, self.output_queue, self.model_size, self.compute_type),
-                daemon=False  # Not daemon so we can clean shutdown
-            )
-            self.process.start()
+            # Start all workers
+            for i in range(self.num_workers):
+                worker = mp.Process(
+                    target=transcription_worker,
+                    args=(i, self.input_queue, self.output_queue, self.model_size,
+                          self.compute_type, self.models_dir),
+                    daemon=False  # Not daemon so we can clean shutdown
+                )
+                worker.start()
+                self.workers.append(worker)
+                logger.info(f"Worker {i} started (PID: {worker.pid})")
 
-            logger.info(f"Subprocess started (PID: {self.process.pid})")
-
-            # Wait for READY signal (with timeout)
-            timeout = 30.0  # Model loading can take time
+            # Wait for all workers to signal READY (with timeout)
+            timeout = 60.0  # Model loading can take time, especially for multiple workers
             start_time = time.time()
+            workers_ready = 0
 
-            while time.time() - start_time < timeout:
+            while workers_ready < self.num_workers and (time.time() - start_time) < timeout:
                 try:
-                    result = self.output_queue.get(timeout=0.5)
+                    result = self.output_queue.get(timeout=1.0)
                     if result.request_id == -1:
                         if result.success:
-                            self.is_ready = True
-                            logger.info("Subprocess ready to process requests")
-                            return True
+                            workers_ready += 1
+                            logger.info(f"Worker {result.worker_id} ready ({workers_ready}/{self.num_workers})")
                         else:
-                            logger.error(f"Subprocess failed to initialize: {result.error}")
-                            self.stop()
-                            return False
+                            logger.error(f"Worker {result.worker_id} failed to initialize: {result.error}")
+                            # Continue, we may have enough workers
                 except:
                     # No result yet, keep waiting
-                    if not self.process.is_alive():
-                        logger.error("Subprocess died during initialization")
-                        return False
+                    # Check if any worker died
+                    for i, worker in enumerate(self.workers):
+                        if not worker.is_alive():
+                            logger.error(f"Worker {i} died during initialization")
 
-            logger.error("Timeout waiting for subprocess to initialize")
-            self.stop()
-            return False
+            if workers_ready == 0:
+                logger.error("No workers initialized successfully")
+                self.stop()
+                return False
+
+            self.workers_ready = workers_ready
+            self.is_ready = True
+
+            if workers_ready < self.num_workers:
+                logger.warning(f"Only {workers_ready}/{self.num_workers} workers initialized")
+            else:
+                logger.info(f"All {workers_ready} workers ready to process requests")
+
+            return True
 
         except Exception as e:
-            logger.error(f"Failed to start subprocess: {e}")
+            logger.error(f"Failed to start worker pool: {e}")
             import traceback
             logger.error(traceback.format_exc())
             return False
@@ -430,8 +503,8 @@ class SubprocessTranscriber:
         Returns:
             Request ID to match with results
         """
-        if not self.is_ready or not self.process or not self.process.is_alive():
-            raise RuntimeError("Subprocess not ready")
+        if not self.is_ready or not self.is_alive():
+            raise RuntimeError("Worker pool not ready")
 
         # Serialize voice DB for subprocess
         voice_db_embeddings = None
@@ -447,9 +520,9 @@ class SubprocessTranscriber:
             voice_db_embeddings=voice_db_embeddings
         )
 
-        # Send to subprocess
+        # Send to pool (any available worker will pick it up)
         self.input_queue.put(request)
-        logger.debug(f"Submitted transcription request {request.request_id}")
+        logger.debug(f"Submitted transcription request {request.request_id} to pool")
 
         return request.request_id
 
@@ -505,46 +578,67 @@ class SubprocessTranscriber:
             return None
 
     def stop(self):
-        """Stop the subprocess."""
-        if self.process is None:
+        """Stop all worker processes."""
+        if not self.workers:
             return
 
         try:
-            if self.process.is_alive():
-                logger.info("Stopping transcription subprocess...")
+            logger.info(f"Stopping {len(self.workers)} worker processes...")
 
-                # Send shutdown signal
+            # Send shutdown signal to all workers
+            for i in range(len(self.workers)):
                 try:
                     self.input_queue.put(None, timeout=1.0)
                 except:
                     pass
 
-                # Wait for graceful shutdown
-                self.process.join(timeout=5.0)
+            # Wait for graceful shutdown
+            for i, worker in enumerate(self.workers):
+                if worker.is_alive():
+                    worker.join(timeout=5.0)
 
-                # Force terminate if still alive
-                if self.process.is_alive():
-                    logger.warning("Subprocess didn't stop gracefully, terminating...")
-                    self.process.terminate()
-                    self.process.join(timeout=2.0)
+                    # Force terminate if still alive
+                    if worker.is_alive():
+                        logger.warning(f"Worker {i} didn't stop gracefully, terminating...")
+                        worker.terminate()
+                        worker.join(timeout=2.0)
 
-                # Force kill if still alive
-                if self.process.is_alive():
-                    logger.error("Subprocess still alive, killing...")
-                    self.process.kill()
-                    self.process.join(timeout=1.0)
+                    # Force kill if still alive
+                    if worker.is_alive():
+                        logger.error(f"Worker {i} still alive, killing...")
+                        worker.kill()
+                        worker.join(timeout=1.0)
 
-                logger.info("Subprocess stopped")
+            logger.info("All workers stopped")
 
-            self.process = None
+            self.workers = []
+            self.workers_ready = 0
             self.is_ready = False
 
         except Exception as e:
-            logger.error(f"Error stopping subprocess: {e}")
+            logger.error(f"Error stopping worker pool: {e}")
 
     def is_alive(self) -> bool:
-        """Check if subprocess is alive."""
-        return self.process is not None and self.process.is_alive()
+        """Check if any workers are alive."""
+        if not self.workers:
+            return False
+
+        # Check how many workers are still alive
+        alive_count = sum(1 for w in self.workers if w.is_alive())
+
+        if alive_count == 0:
+            logger.warning("All workers have died")
+            return False
+
+        if alive_count < self.workers_ready:
+            logger.warning(f"Some workers died: {alive_count}/{self.workers_ready} alive")
+
+        return alive_count > 0
+
+    @property
+    def process(self):
+        """Backward compatibility - return first worker process."""
+        return self.workers[0] if self.workers else None
 
     def __del__(self):
         """Cleanup on deletion."""
