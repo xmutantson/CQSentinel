@@ -14,7 +14,7 @@ This guide explains how to build a self-contained Windows executable for CQSenti
    conda activate cqsentinel
    pip install pyinstaller
    ```
-5. Verify all imports work (PyQt5, PyTorch, librosa, resemblyzer)
+5. Verify all imports work (PyQt5, PyTorch, librosa, whisper)
 
 If you haven't done this yet, **stop here** and follow INSTALL.md first.
 
@@ -24,13 +24,45 @@ If you haven't done this yet, **stop here** and follow INSTALL.md first.
 conda activate cqsentinel
 python -c "from PyQt5 import QtCore; print('✓ PyQt5')"
 python -c "import torch; print('✓ PyTorch')"
-python -c "from resemblyzer import VoiceEncoder; print('✓ Resemblyzer')"
+python -c "import whisper; print('✓ OpenAI Whisper')"
 python -c "import PyInstaller; print('✓ PyInstaller')"
 ```
 
 If any fail:
-- PyQt5, PyTorch, Resemblyzer: Go back to INSTALL.md
+- PyQt5, PyTorch, Whisper: Go back to INSTALL.md
 - PyInstaller: Run `pip install pyinstaller`
+
+### GPU vs CPU Builds
+
+CQSentinel supports GPU acceleration for Whisper transcription. **The build machine's PyTorch configuration determines whether GPU support is bundled:**
+
+| Build Type | PyTorch Install | Bundle Size | GPU Support |
+|------------|----------------|-------------|-------------|
+| **CPU-only** | Default conda/pip PyTorch | ~500 MB | ❌ No |
+| **GPU-enabled** | PyTorch with CUDA | ~2.5-3.5 GB | ✅ Yes |
+
+**For GPU-enabled builds**, install PyTorch with CUDA support before building:
+
+```powershell
+conda activate cqsentinel
+
+# Remove CPU-only PyTorch
+pip uninstall torch torchaudio -y
+
+# Install PyTorch with CUDA 11.8 (recommended)
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu118
+
+# OR for CUDA 12.1:
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+# Verify CUDA support
+python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}')"
+# Should print: CUDA available: True
+```
+
+**Note**: GPU builds bundle CUDA runtime libraries (~2 GB), significantly increasing distribution size. However, this enables 10-30x faster transcription for users with NVIDIA GPUs.
+
+**CPU-only builds** will still work - they automatically fall back to CPU workers at runtime if no GPU is detected. But GPU acceleration will not be available even if the user has a GPU.
 
 ## Step-by-Step Build Process
 
@@ -225,16 +257,34 @@ Traditional Windows installer with Start Menu integration.
 
 Expected sizes (approximate):
 
+### CPU-Only Build
+
 | Component | Size |
 |-----------|------|
 | Base executable | ~50 MB |
 | PyQt5 dependencies | ~60 MB |
 | Torch dependencies (CPU-only) | ~180 MB |
 | Audio libraries (librosa, sounddevice) | ~40 MB |
-| Resemblyzer + webrtcvad | ~20 MB |
-| Whisper models (if bundled) | ~500 MB |
-| **Total (without models)** | **~350 MB** |
-| **Total (with models)** | **~850 MB** |
+| Whisper + tiktoken | ~30 MB |
+| Whisper medium.en model (if bundled) | ~1.5 GB |
+| **Total (without models)** | **~360 MB** |
+| **Total (with models)** | **~1.9 GB** |
+
+### GPU-Enabled Build (with CUDA)
+
+| Component | Size |
+|-----------|------|
+| Base executable | ~50 MB |
+| PyQt5 dependencies | ~60 MB |
+| Torch dependencies (with CUDA) | ~800 MB |
+| CUDA runtime libraries | ~1.5-2 GB |
+| Audio libraries (librosa, sounddevice) | ~40 MB |
+| Whisper + tiktoken | ~30 MB |
+| Whisper medium.en model (if bundled) | ~1.5 GB |
+| **Total (without models)** | **~2.5-3 GB** |
+| **Total (with models)** | **~4-4.5 GB** |
+
+**Note**: GPU builds are significantly larger due to bundled CUDA libraries (cudart, cublas, cudnn, etc.), but provide 10-30x faster transcription for users with NVIDIA GPUs.
 
 ### Reducing Size
 
@@ -404,6 +454,53 @@ conda env update -f environment.yml
 
 See "Reducing Size" section above
 
+### "CUDA not available - building CPU-only version"
+
+**Message during build**:
+```
+⚠ CUDA not available - building CPU-only version
+  To enable GPU support, install PyTorch with CUDA support
+```
+
+**Cause**: PyTorch was installed without CUDA support. The build will complete but GPU acceleration won't be available in the distributed executable.
+
+**Solution**: Install PyTorch with CUDA before building:
+```powershell
+conda activate cqsentinel
+
+# Remove CPU-only PyTorch
+pip uninstall torch torchaudio -y
+
+# Install with CUDA support
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu118
+
+# Verify
+python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}')"
+# Must show: CUDA: True
+
+# Then rebuild
+python scripts/build_windows.py --clean
+```
+
+**Expected output** (GPU-enabled):
+```
+✓ CUDA available (version 11.8), bundling CUDA libraries...
+  ✓ Including CUDA lib: cudart64_110.dll
+  ✓ Including CUDA lib: cublas64_11.dll
+  ✓ Including CUDA lib: cudnn64_8.dll
+  ...
+✓ Included 15 CUDA libraries
+```
+
+### GPU build takes very long time
+
+Building with CUDA libraries can take 10-20 minutes longer due to:
+- Scanning ~2 GB of CUDA DLLs
+- Copying large binary files
+- PyInstaller analyzing CUDA-related imports
+
+This is normal. The final executable will include full GPU support.
+
 ## CI/CD Build (Advanced)
 
 For automated builds with GitHub Actions:
@@ -530,22 +627,44 @@ python scripts/build_windows.py
 
 **DO NOT use** `pyinstaller cqsentinel.spec` directly - it will skip Hamlib bundling!
 
+**For GPU-enabled builds** (optional but recommended):
+```powershell
+# Install PyTorch with CUDA BEFORE building
+pip uninstall torch torchaudio -y
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu118
+
+# Verify CUDA support
+python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}')"
+# Should print: CUDA: True
+
+# Then build
+python scripts/build_windows.py --clean
+```
+
 **Output files**:
 - Executable: `dist/CQSentinel/CQSentinel.exe`
-- Portable ZIP: `CQSentinel-windows-portable.zip` (~350 MB without models)
+- Portable ZIP: `CQSentinel-windows-portable.zip`
+  - CPU-only: ~360 MB (without models)
+  - GPU-enabled: ~2.5-3 GB (without models)
 - Installer (optional): `Output/CQSentinel-Setup-0.1.0.exe`
 
 **Key points**:
 - ✅ Environment must be set up via INSTALL.md first
 - ✅ Always activate `cqsentinel` conda environment before building
 - ✅ **Use `python scripts/build_windows.py` to ensure Hamlib is bundled**
+- ✅ **For GPU support**: Install PyTorch with CUDA before building
 - ✅ Test the .exe on a clean machine without Python installed
 - ✅ Use conda-forge packages to avoid compilation issues
 
 **What gets bundled automatically**:
-- All Python dependencies (PyQt5, PyTorch, librosa, etc.)
+- All Python dependencies (PyQt5, PyTorch, librosa, Whisper, etc.)
 - **Hamlib binaries (rigctld.exe and DLLs)** - downloaded automatically during build
+- **CUDA libraries** (if PyTorch has CUDA support) - enables GPU acceleration
 - Audio libraries
 - Application code and resources
+
+**Build types**:
+- **CPU-only build**: Smaller (~360 MB), works on any machine, transcription uses CPU
+- **GPU-enabled build**: Larger (~2.5-3 GB), includes CUDA runtime, 10-30x faster transcription
 
 **Done!** You now have a distributable Windows executable with zero installation requirements for end users.

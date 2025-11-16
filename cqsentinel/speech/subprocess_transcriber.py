@@ -34,6 +34,10 @@ class TranscriptionResult:
     success: bool
     worker_id: int = -1
     error: Optional[str] = None
+    # Speech detection info from Whisper
+    has_speech: bool = False  # True if any segment has speech
+    speech_ratio: float = 0.0  # Ratio of audio segments with speech (0.0-1.0)
+    avg_no_speech_prob: float = 1.0  # Average no_speech_prob across segments
 
 
 def _get_models_directory():
@@ -324,14 +328,27 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
                     log(f"Detected language: {result.get('language', 'unknown')}")
                     safe_flush()
 
-                    # Extract text from result
+                    # Extract text from result and speech detection info
                     texts = []
+                    no_speech_probs = []
+                    segments_with_speech = 0
+                    total_segments = 0
+
                     if 'segments' in result:
                         segment_count = len(result['segments'])
                         log(f"Processing {segment_count} segments...")
                         for i, seg in enumerate(result['segments']):
                             seg_text = seg.get('text', '').strip()
-                            log(f"Segment {i+1}: [{seg.get('start', 0):.2f}-{seg.get('end', 0):.2f}] '{seg_text}'")
+                            no_speech_prob = seg.get('no_speech_prob', 1.0)
+                            no_speech_probs.append(no_speech_prob)
+                            total_segments += 1
+
+                            # Consider segment has speech if no_speech_prob < threshold
+                            has_segment_speech = no_speech_prob < no_speech_threshold
+                            if has_segment_speech:
+                                segments_with_speech += 1
+
+                            log(f"Segment {i+1}: [{seg.get('start', 0):.2f}-{seg.get('end', 0):.2f}] no_speech_prob={no_speech_prob:.3f} '{seg_text}'")
                             if seg_text:
                                 texts.append(seg_text)
                             safe_flush()
@@ -340,8 +357,17 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
                         full_text = result.get('text', '').strip()
                         if full_text:
                             texts.append(full_text)
+                            # Assume speech if we got text
+                            segments_with_speech = 1
+                            total_segments = 1
+                            no_speech_probs.append(0.0)
 
-                    log(f"Transcription complete: {len(texts)} text segments")
+                    # Calculate speech detection metrics
+                    has_speech = segments_with_speech > 0
+                    speech_ratio = segments_with_speech / total_segments if total_segments > 0 else 0.0
+                    avg_no_speech_prob = sum(no_speech_probs) / len(no_speech_probs) if no_speech_probs else 1.0
+
+                    log(f"Transcription complete: {len(texts)} text segments, speech_ratio={speech_ratio:.2f}, avg_no_speech_prob={avg_no_speech_prob:.3f}")
                 except Exception as te:
                     log(f"model.transcribe() EXCEPTION: {te}")
                     import traceback
@@ -358,12 +384,15 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
                 total_time = time.time() - processing_start
                 log(f"Transcription complete in {total_time:.2f}s: {result_text}")
 
-                # Send result
+                # Send result with speech detection info
                 output_queue.put(TranscriptionResult(
                     request_id=request.request_id,
                     text=result_text,
                     success=True,
-                    worker_id=worker_id
+                    worker_id=worker_id,
+                    has_speech=has_speech,
+                    speech_ratio=speech_ratio,
+                    avg_no_speech_prob=avg_no_speech_prob
                 ))
 
             except Exception as e:
