@@ -92,6 +92,7 @@ python -c "import torch; print('✓ PyTorch')"
 python -c "from PyQt5 import QtCore; print('✓ PyQt5')"
 python -c "import librosa; print('✓ librosa')"
 python -c "import whisper; print('✓ OpenAI Whisper')"
+python -c "import win32api; print('✓ pywin32 (GPU cleanup)')"
 
 # Optional: Check GPU support (if installed CUDA PyTorch)
 python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}')"
@@ -123,6 +124,9 @@ pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu118
 
 # Python packages from PyPI
 pip install noisereduce openai-whisper tiktoken
+
+# Windows-specific: Console event handling (prevents BSOD on GPU worker shutdown)
+pip install pywin32
 ```
 
 ---

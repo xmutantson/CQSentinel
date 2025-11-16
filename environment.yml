@@ -72,3 +72,6 @@ dependencies:
     - pyinstaller-hooks-contrib>=2023.6
     - pytest-qt>=4.2.0
     - pytest-cov>=4.1.0
+    # Windows-specific: Console event handling for GPU cleanup
+    # Prevents BSOD when closing PowerShell with GPU workers running
+    - pywin32>=306  # Only installs on Windows
