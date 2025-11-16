@@ -199,18 +199,19 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
         from resemblyzer import VoiceEncoder
         import uuid
 
-        # Load Whisper model - use local_files_only to prevent network access
+        # Load Whisper model - use SAME settings as model_downloader_dialog.py
         log(f"Loading Whisper {model_size} model (compute_type={compute_type})...")
         log(f"Models directory: {models_dir}")
+        log(f"HF_HOME: {os.environ['HF_HOME']}")
 
-        # Construct path to the cached model
-        hf_cache = os.path.join(models_dir, 'huggingface', 'hub')
-
+        # CRITICAL: Use download_root=None to match how the model was downloaded
+        # The HF_HOME environment variable will direct it to the correct cache
+        # Using local_files_only=True prevents any network access
         model = WhisperModel(
             model_size,
             device="cpu",
             compute_type=compute_type,
-            download_root=hf_cache,
+            download_root=None,  # Use default (respects HF_HOME env var)
             local_files_only=True  # CRITICAL: Prevent any network access
         )
         log(f"Whisper model loaded (offline mode)")
@@ -257,6 +258,14 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
 
             log(f"Processing request {request.request_id}, audio duration: {len(request.audio)/request.sample_rate:.1f}s")
             processing_start = time.time()
+
+            # Validate audio data after unpickling
+            log(f"Audio validation: dtype={request.audio.dtype}, shape={request.audio.shape}, range=[{request.audio.min():.3f}, {request.audio.max():.3f}]")
+            if not np.isfinite(request.audio).all():
+                log(f"WARNING: Audio contains NaN or Inf values!")
+            if request.audio.dtype != np.float32:
+                log(f"Converting audio to float32 (was {request.audio.dtype})")
+                request.audio = request.audio.astype(np.float32)
 
             # Process transcription and voice ID
             try:
@@ -319,15 +328,26 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
 
                 # Step 2: Transcribe
                 log(f"Transcribing...")
+                log(f"About to call model.transcribe() with audio shape={request.audio.shape}")
+                sys.stdout.flush()
+                sys.stderr.flush()
                 transcribe_start = time.time()
-                segments, info = model.transcribe(
-                    request.audio,
-                    language="en",
-                    beam_size=5,
-                    temperature=0.0,  # Disable fallback (Windows stability)
-                    vad_filter=False  # VAD already applied
-                )
-                log(f"model.transcribe() returned in {time.time() - transcribe_start:.2f}s")
+                try:
+                    segments, info = model.transcribe(
+                        request.audio,
+                        language="en",
+                        beam_size=5,
+                        temperature=0.0,  # Disable fallback (Windows stability)
+                        vad_filter=False  # VAD already applied
+                    )
+                    log(f"model.transcribe() returned in {time.time() - transcribe_start:.2f}s")
+                except Exception as te:
+                    log(f"model.transcribe() EXCEPTION: {te}")
+                    import traceback
+                    traceback.print_exc()
+                    sys.stdout.flush()
+                    sys.stderr.flush()
+                    raise
 
                 # Collect all segments (this actually runs the transcription - it's a generator!)
                 log(f"Consuming transcription segments...")
