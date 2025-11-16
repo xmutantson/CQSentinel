@@ -118,7 +118,11 @@ def _detect_speaker_changes(voice_encoder, audio: np.ndarray, sample_rate: int,
 
         except Exception as e:
             # Skip this window if embedding fails
-            print(f"[WORKER] Failed to compute embedding for window: {e}")
+            if sys.stdout is not None:
+                try:
+                    print(f"[WORKER] Failed to compute embedding for window: {e}")
+                except Exception:
+                    pass
             continue
 
     # Add final segment
@@ -195,9 +199,13 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
             except Exception:
                 pass
 
-    # Helper for immediate output
+    # Helper for immediate output (handles None stdout in subprocess)
     def log(msg):
-        print(f"[WORKER-{worker_id}] {msg}", flush=True)
+        if sys.stdout is not None:
+            try:
+                print(f"[WORKER-{worker_id}] {msg}", flush=True)
+            except Exception:
+                pass
         safe_flush()
 
     # Import inside subprocess to avoid loading in main process
@@ -246,7 +254,11 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
     except Exception as e:
         log(f"Failed to load models: {e}")
         import traceback
-        traceback.print_exc()
+        if sys.stderr is not None:
+            try:
+                traceback.print_exc()
+            except Exception:
+                pass
         safe_flush()
         output_queue.put(TranscriptionResult(
             request_id=-1,
@@ -356,7 +368,11 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
                 except Exception as te:
                     log(f"model.transcribe() EXCEPTION: {te}")
                     import traceback
-                    traceback.print_exc()
+                    if sys.stderr is not None:
+                        try:
+                            traceback.print_exc()
+                        except Exception:
+                            pass
                     safe_flush()
                     raise
 
@@ -395,7 +411,11 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
             except Exception as e:
                 log(f"Transcription failed: {e}")
                 import traceback
-                traceback.print_exc()
+                if sys.stderr is not None:
+                    try:
+                        traceback.print_exc()
+                    except Exception:
+                        pass
                 safe_flush()
                 output_queue.put(TranscriptionResult(
                     request_id=request.request_id,
@@ -410,7 +430,11 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
         except Exception as e:
             log(f"Error in worker loop: {e}")
             import traceback
-            traceback.print_exc()
+            if sys.stderr is not None:
+                try:
+                    traceback.print_exc()
+                except Exception:
+                    pass
             safe_flush()
             # Continue processing
 
