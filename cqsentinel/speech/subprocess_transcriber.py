@@ -240,34 +240,40 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
         os.environ['TRANSFORMERS_OFFLINE'] = '1'  # Force offline mode
         os.environ['HF_HUB_OFFLINE'] = '1'  # Force HuggingFace Hub offline
 
-        from faster_whisper import WhisperModel
+        # Use openai-whisper instead of faster-whisper for Windows PyInstaller stability
+        # faster-whisper uses ctranslate2 which crashes on Windows frozen builds
+        import whisper
         from resemblyzer import VoiceEncoder
         import uuid
 
-        # Load Whisper model - use SAME settings as model_downloader_dialog.py
-        log(f"Loading Whisper {model_size} model (compute_type={compute_type})...")
+        # Load Whisper model using openai-whisper (PyTorch backend - more stable)
+        log(f"Loading Whisper {model_size} model (using openai-whisper for stability)...")
         log(f"Models directory: {models_dir}")
-        log(f"HF_HOME: {os.environ['HF_HOME']}")
+        log(f"TORCH_HOME: {os.environ['TORCH_HOME']}")
 
-        # CRITICAL: Use download_root=None to match how the model was downloaded
-        # The HF_HOME environment variable will direct it to the correct cache
-        # Using local_files_only=True prevents any network access
-        log(f"Creating WhisperModel with cpu_threads=1, num_workers=1...")
-        model = WhisperModel(
+        # openai-whisper downloads models to ~/.cache/whisper by default
+        # Set download_root to our models directory
+        whisper_cache = os.path.join(models_dir, 'whisper')
+        os.makedirs(whisper_cache, exist_ok=True)
+        log(f"Whisper cache directory: {whisper_cache}")
+
+        model = whisper.load_model(
             model_size,
             device="cpu",
-            compute_type=compute_type,
-            download_root=None,  # Use default (respects HF_HOME env var)
-            local_files_only=True,  # CRITICAL: Prevent any network access
-            cpu_threads=1,  # CRITICAL: Single-threaded for Windows stability
-            num_workers=1  # CRITICAL: Single worker for Windows stability
+            download_root=whisper_cache
         )
-        log(f"Whisper model loaded (offline mode, single-threaded)")
+        log(f"Whisper model loaded (openai-whisper, PyTorch backend)")
 
-        # NOTE: Skipping model test because it causes crashes on Windows PyInstaller builds
-        # The crash occurs in ctranslate2 during feature extraction, even with silence.
-        # We'll test on first real audio request instead.
-        log(f"Skipping model test (known to crash on Windows PyInstaller)")
+        # Test model with silence to verify it works
+        log(f"Testing model with 1-second silence...")
+        test_audio = np.zeros(16000, dtype=np.float32)
+        try:
+            # openai-whisper expects audio as float32 numpy array at 16kHz
+            test_result = model.transcribe(test_audio, language="en", fp16=False)
+            log(f"Model test PASSED: transcribed silence successfully")
+        except Exception as test_e:
+            log(f"Model test FAILED: {test_e}")
+            raise RuntimeError(f"Model failed basic transcription test: {test_e}")
 
         # Load VoiceEmbedder model
         log(f"Loading Resemblyzer voice encoder...")
@@ -399,36 +405,39 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
 
                 transcribe_start = time.time()
                 try:
-                    # DIAGNOSTIC: Force immediate evaluation by converting to list
-                    # This avoids generator issues and gives immediate crash point
                     log(f"Calling model.transcribe()...")
                     safe_flush()
 
-                    segments_gen, info = model.transcribe(
+                    # openai-whisper API (returns dict with 'text' and 'segments')
+                    result = model.transcribe(
                         request.audio,
                         language="en",
-                        beam_size=5,
-                        temperature=0.0,  # Disable fallback (Windows stability)
-                        vad_filter=False  # VAD already applied
+                        fp16=False,  # Use float32 on CPU
+                        verbose=False  # Don't print progress
                     )
 
-                    log(f"model.transcribe() returned generator in {time.time() - transcribe_start:.2f}s")
-                    log(f"Info: language={info.language}, language_probability={info.language_probability:.2f}")
+                    log(f"model.transcribe() completed in {time.time() - transcribe_start:.2f}s")
+                    log(f"Detected language: {result.get('language', 'unknown')}")
                     safe_flush()
 
-                    # DIAGNOSTIC: Consume generator with per-segment logging
-                    log(f"Consuming transcription segments...")
-                    segment_start = time.time()
+                    # Extract text from result
                     texts = []
-                    segment_count = 0
-                    for seg in segments_gen:
-                        segment_count += 1
-                        log(f"Segment {segment_count}: [{seg.start:.2f}-{seg.end:.2f}] '{seg.text.strip()}'")
-                        if seg.text.strip():
-                            texts.append(seg.text.strip())
-                        safe_flush()
+                    if 'segments' in result:
+                        segment_count = len(result['segments'])
+                        log(f"Processing {segment_count} segments...")
+                        for i, seg in enumerate(result['segments']):
+                            seg_text = seg.get('text', '').strip()
+                            log(f"Segment {i+1}: [{seg.get('start', 0):.2f}-{seg.get('end', 0):.2f}] '{seg_text}'")
+                            if seg_text:
+                                texts.append(seg_text)
+                            safe_flush()
+                    else:
+                        # Fallback to full text if no segments
+                        full_text = result.get('text', '').strip()
+                        if full_text:
+                            texts.append(full_text)
 
-                    log(f"Segment iteration complete: {segment_count} segments in {time.time() - segment_start:.2f}s")
+                    log(f"Transcription complete: {len(texts)} text segments")
                 except Exception as te:
                     log(f"model.transcribe() EXCEPTION: {te}")
                     import traceback
