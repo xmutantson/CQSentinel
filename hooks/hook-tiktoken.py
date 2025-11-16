@@ -8,48 +8,109 @@
 # This hook pre-imports the native extension before tiktoken is imported.
 
 import sys
-import importlib.util
+import os
 
 def _preload_tiktoken_native():
     """
     Pre-load tiktoken's native Rust extension to avoid circular import.
 
-    The issue: When we do 'import tiktoken._tiktoken', Python first initializes
-    the parent package 'tiktoken' (runs tiktoken/__init__.py), which itself tries
-    to import _tiktoken, causing a circular import.
+    The issue: When we use importlib.util.find_spec('tiktoken._tiktoken'), Python's
+    import machinery still tries to initialize the parent 'tiktoken' package first,
+    which runs tiktoken/__init__.py, which tries to import _tiktoken - circular import.
 
-    Solution: Use importlib.util to load the native extension directly without
-    triggering the parent package initialization.
+    Solution: Directly locate and load the .pyd/.so file using ExtensionFileLoader
+    without going through the import system at all. This bypasses parent package
+    initialization entirely.
     """
     if 'tiktoken._tiktoken' in sys.modules:
         # Already loaded, nothing to do
         return
 
+    # Only run in frozen (PyInstaller) environment
+    if not getattr(sys, 'frozen', False):
+        return
+
     try:
-        # Find the native extension module spec
-        spec = importlib.util.find_spec('tiktoken._tiktoken')
-        if spec is None:
-            print("Warning: Could not find tiktoken._tiktoken module spec")
+        # Get the base path where PyInstaller extracts files
+        if hasattr(sys, '_MEIPASS'):
+            base_path = sys._MEIPASS
+        else:
+            base_path = os.path.dirname(sys.executable)
+
+        # Find the native extension file directly in the filesystem
+        # PyInstaller places it as tiktoken/_tiktoken.{ext} or _tiktoken.{ext}
+        ext_suffixes = ['.pyd', '.so', '.cpython-310-x86_64-linux-gnu.so']
+
+        # Also check for version-specific suffixes
+        if sys.version_info[:2] == (3, 10):
+            ext_suffixes.extend([
+                '.cp310-win_amd64.pyd',
+                '.cpython-310-x86_64-linux-gnu.so',
+            ])
+
+        tiktoken_ext_path = None
+
+        # Search in tiktoken subdirectory first (PyInstaller usually puts it here)
+        tiktoken_dir = os.path.join(base_path, 'tiktoken')
+        if os.path.isdir(tiktoken_dir):
+            for suffix in ext_suffixes:
+                candidate = os.path.join(tiktoken_dir, f'_tiktoken{suffix}')
+                if os.path.isfile(candidate):
+                    tiktoken_ext_path = candidate
+                    break
+
+        # Also check base path (some PyInstaller configs put extensions at root)
+        if tiktoken_ext_path is None:
+            for suffix in ext_suffixes:
+                candidate = os.path.join(base_path, f'_tiktoken{suffix}')
+                if os.path.isfile(candidate):
+                    tiktoken_ext_path = candidate
+                    break
+
+        if tiktoken_ext_path is None:
+            # Last resort: scan tiktoken directory for any _tiktoken.* file
+            if os.path.isdir(tiktoken_dir):
+                for fname in os.listdir(tiktoken_dir):
+                    if fname.startswith('_tiktoken.') and not fname.endswith('.py'):
+                        tiktoken_ext_path = os.path.join(tiktoken_dir, fname)
+                        break
+
+        if tiktoken_ext_path is None:
+            print("Warning: Could not find tiktoken._tiktoken native extension file")
             return
 
-        # Create the module from spec without importing the parent
+        # Load the extension module directly using ExtensionFileLoader
+        # This bypasses the import system entirely, avoiding parent package init
+        import importlib.machinery
+        import importlib.util
+
+        loader = importlib.machinery.ExtensionFileLoader('tiktoken._tiktoken', tiktoken_ext_path)
+        spec = importlib.util.spec_from_file_location(
+            'tiktoken._tiktoken',
+            tiktoken_ext_path,
+            loader=loader,
+            submodule_search_locations=[]
+        )
+
+        if spec is None:
+            print(f"Warning: Could not create spec for {tiktoken_ext_path}")
+            return
+
+        # Create the module object
         module = importlib.util.module_from_spec(spec)
 
-        # Add to sys.modules BEFORE executing to handle any internal imports
+        # CRITICAL: Add to sys.modules BEFORE executing
+        # This ensures that when tiktoken/__init__.py runs and tries to import
+        # _tiktoken, it finds our pre-loaded module in sys.modules
         sys.modules['tiktoken._tiktoken'] = module
 
-        # Execute the module (loads the native extension)
-        if spec.loader is not None:
-            spec.loader.exec_module(module)
+        # Execute/load the native extension
+        spec.loader.exec_module(module)
 
-    except ImportError as e:
-        # If this fails, tiktoken won't work, but let the main code handle the error
-        # Remove from sys.modules if we added it but failed to load
+    except Exception as e:
+        # Clean up on failure
         sys.modules.pop('tiktoken._tiktoken', None)
         print(f"Warning: Could not pre-load tiktoken._tiktoken: {e}")
-    except Exception as e:
-        sys.modules.pop('tiktoken._tiktoken', None)
-        print(f"Warning: Error pre-loading tiktoken: {e}")
 
 # Execute the preload
 _preload_tiktoken_native()
