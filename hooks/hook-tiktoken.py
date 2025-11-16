@@ -1,17 +1,29 @@
-# PyInstaller runtime hook for tiktoken
+# PyInstaller ANALYSIS hook for tiktoken
 #
-# NOTE: This hook is intentionally empty. Previous attempts to "pre-load" tiktoken._tiktoken
-# using `import tiktoken._tiktoken` CAUSED the circular import error, they didn't fix it.
+# This hook runs during PyInstaller's analysis phase to ensure all tiktoken
+# submodules and data files are properly included in the bundle.
 #
-# The circular import happens because:
-# 1. `import tiktoken._tiktoken` triggers tiktoken package initialization
-# 2. tiktoken/__init__.py imports from .core
-# 3. tiktoken/core.py does `from tiktoken import _tiktoken` (absolute import)
-# 4. Python sees tiktoken is already being initialized → circular import
-#
-# The solution is to NOT pre-import anything. Just let Python's import system handle it
-# naturally when whisper imports tiktoken. The hidden imports in cqsentinel.spec ensure
-# all necessary modules are bundled.
-#
-# If tiktoken still fails to load, the issue is with PyInstaller bundling, not import order.
-pass
+# NOTE: This is an ANALYSIS hook, not a runtime hook. Runtime hooks should
+# be in rthook-*.py files and specified in runtime_hooks in the spec file.
+
+from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
+
+# Explicitly list all tiktoken submodules since collect_submodules() fails
+# due to circular import issues in tiktoken's package structure
+hiddenimports = [
+    'tiktoken',
+    'tiktoken._tiktoken',  # Native Rust extension
+    'tiktoken.core',
+    'tiktoken.load',
+    'tiktoken.model',
+    'tiktoken.registry',
+    'tiktoken_ext',
+    'tiktoken_ext.openai_public',
+]
+
+# Collect data files (encoding files like cl100k_base.tiktoken)
+datas = collect_data_files('tiktoken')
+datas += collect_data_files('tiktoken_ext')
+
+# Collect native extension libraries
+binaries = collect_dynamic_libs('tiktoken')
