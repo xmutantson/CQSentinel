@@ -1267,8 +1267,9 @@ class MainWindow(QMainWindow):
                     if result.new_speakers and self.voice_db:
                         import numpy as np
                         for voice_id, speaker_data in result.new_speakers.items():
-                            embedding = np.array(speaker_data['embedding'])
-                            metadata = speaker_data.get('metadata', {})
+                            # speaker_data is tuple: (embedding_list, callsign, metadata)
+                            embedding = np.array(speaker_data[0])
+                            metadata = speaker_data[2] if len(speaker_data) > 2 else {}
                             # Add new speaker to voice DB
                             self.voice_db.add_operator(embedding, voice_id=voice_id, metadata=metadata)
                             logger.info(f"Added new speaker to voice DB: {voice_id[:8]}")
