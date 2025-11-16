@@ -293,14 +293,23 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
                 pass
         safe_flush()
 
-    # CRITICAL: Disable numba JIT BEFORE importing anything that uses it
-    # librosa (used by Resemblyzer) uses numba for mel spectrograms, and
-    # numba JIT compilation in subprocesses causes deadlocks/crashes on Windows
-    os.environ['NUMBA_DISABLE_JIT'] = '1'
-    # Also set threading layer to safe defaults
-    os.environ['NUMBA_THREADING_LAYER'] = 'safe'
-    os.environ['NUMBA_NUM_THREADS'] = '1'
-    log(f"Numba JIT disabled (NUMBA_DISABLE_JIT={os.environ.get('NUMBA_DISABLE_JIT')})")
+    # CRITICAL: Configure numba for safe subprocess operation
+    # librosa (used by Resemblyzer) uses numba for mel spectrograms
+    # Full JIT disable (NUMBA_DISABLE_JIT=1) breaks librosa with 'get_call_template' errors
+    # Instead, configure numba for single-threaded, subprocess-safe operation
+    os.environ['NUMBA_THREADING_LAYER'] = 'workqueue'  # Single-threaded backend
+    os.environ['NUMBA_NUM_THREADS'] = '1'  # Single thread to prevent deadlocks
+    os.environ['NUMBA_BOUNDSCHECK'] = '0'  # Disable for performance
+    os.environ['NUMBA_WARNINGS'] = '0'  # Suppress numba warnings
+    # Set cache directory for this subprocess (writable location)
+    numba_cache_dir = os.path.join(models_dir, 'numba_cache')
+    try:
+        os.makedirs(numba_cache_dir, exist_ok=True)
+        os.environ['NUMBA_CACHE_DIR'] = numba_cache_dir
+        log(f"Numba cache directory: {numba_cache_dir}")
+    except Exception as e:
+        log(f"Warning: Could not create numba cache dir: {e}")
+    log(f"Numba configured for subprocess (THREADING_LAYER={os.environ.get('NUMBA_THREADING_LAYER')}, NUM_THREADS={os.environ.get('NUMBA_NUM_THREADS')})")
 
     # CRITICAL: Fix None stdout/stderr in PyInstaller frozen subprocess
     # whisper internally writes to stdout/stderr (tqdm progress, warnings, etc.)
