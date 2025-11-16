@@ -422,70 +422,74 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
 
             # Process transcription and voice ID
             try:
-                # Step 1: Speaker detection (if voice DB has entries)
+                # Step 1: Speaker detection (ALWAYS run to build voice fingerprints)
                 speaker_labels = []
                 new_speakers = {}
 
-                # Only do speaker detection if we have voices to match against
-                # Empty voice DB causes crashes in Resemblyzer's embed_utterance
-                if request.voice_db_embeddings is not None and len(request.voice_db_embeddings) > 0:
-                    log(f"Running speaker detection with {len(request.voice_db_embeddings)} known voices...")
-                    speaker_start = time.time()
-                    try:
-                        # Detect speaker changes using sliding window
-                        speaker_segments = _detect_speaker_changes(
-                            voice_encoder,
-                            request.audio,
-                            request.sample_rate,
-                            window_duration=2.5,
-                            stride=1.0,
-                            similarity_threshold=0.75
-                        )
-                        log(f"Speaker detection took {time.time() - speaker_start:.2f}s")
+                # Always run speaker detection to build voice database
+                # Even if DB is empty, we need to fingerprint new speakers
+                num_known_voices = len(request.voice_db_embeddings) if request.voice_db_embeddings else 0
+                log(f"Running speaker detection (known voices: {num_known_voices})...")
+                speaker_start = time.time()
+                try:
+                    # Detect speaker changes using sliding window
+                    speaker_segments = _detect_speaker_changes(
+                        voice_encoder,
+                        request.audio,
+                        request.sample_rate,
+                        window_duration=2.5,
+                        stride=1.0,
+                        similarity_threshold=0.75
+                    )
+                    log(f"Speaker detection took {time.time() - speaker_start:.2f}s, found {len(speaker_segments)} segments")
 
-                        # Match speakers against voice DB
-                        match_start = time.time()
-                        for seg in speaker_segments:
-                            if seg['embedding'] is not None:
-                                # Find matching voice
+                    # Match speakers against voice DB (or create new entries if DB is empty)
+                    match_start = time.time()
+                    for seg in speaker_segments:
+                        if seg['embedding'] is not None:
+                            # Try to find matching voice in DB
+                            match = None
+                            if request.voice_db_embeddings and len(request.voice_db_embeddings) > 0:
                                 match = _find_matching_voice(seg['embedding'], request.voice_db_embeddings)
 
-                                if match:
-                                    voice_id, callsign, similarity = match
-                                    label = callsign or f"Speaker {voice_id[:8]}"
-                                    log(f"Matched voice at {seg['start']:.1f}-{seg['end']:.1f}s: {label} (similarity: {similarity:.2f})")
-                                else:
-                                    # New speaker - generate ID and store
-                                    voice_id = str(uuid.uuid4())
-                                    label = f"Speaker {voice_id[:8]}"
-                                    new_speakers[voice_id] = {
-                                        'embedding': seg['embedding'].tolist(),  # Convert to list for serialization
-                                        'first_heard': time.time()
-                                    }
-                                    log(f"New speaker at {seg['start']:.1f}-{seg['end']:.1f}s: {label}")
+                            if match:
+                                voice_id, callsign, similarity = match
+                                label = callsign or f"Speaker {voice_id[:8]}"
+                                log(f"Matched voice at {seg['start']:.1f}-{seg['end']:.1f}s: {label} (similarity: {similarity:.2f})")
+                            else:
+                                # New speaker - generate ID and store fingerprint
+                                voice_id = str(uuid.uuid4())
+                                label = f"Speaker {voice_id[:8]}"
+                                new_speakers[voice_id] = {
+                                    'embedding': seg['embedding'].tolist(),  # Convert to list for serialization
+                                    'first_heard': time.time()
+                                }
+                                log(f"New speaker at {seg['start']:.1f}-{seg['end']:.1f}s: {label}")
 
-                                speaker_labels.append({
-                                    'start': seg['start'],
-                                    'end': seg['end'],
-                                    'label': label,
-                                    'voice_id': voice_id
-                                })
+                            speaker_labels.append({
+                                'start': seg['start'],
+                                'end': seg['end'],
+                                'label': label,
+                                'voice_id': voice_id
+                            })
 
-                        if speaker_labels:
-                            unique_speakers = len(set(s['voice_id'] for s in speaker_labels))
-                            unique_labels = ', '.join(set(s['label'] for s in speaker_labels))
-                            log(f"Detected {unique_speakers} speakers: {unique_labels}")
-                            log(f"Voice matching took {time.time() - match_start:.2f}s")
+                    if speaker_labels:
+                        unique_speakers = len(set(s['voice_id'] for s in speaker_labels))
+                        unique_labels = ', '.join(set(s['label'] for s in speaker_labels))
+                        log(f"Detected {unique_speakers} speakers: {unique_labels}")
+                        log(f"Voice matching took {time.time() - match_start:.2f}s")
+                    elif len(speaker_segments) == 0:
+                        log(f"No speaker segments detected (audio too short or silent)")
 
-                    except Exception as e:
-                        log(f"Speaker detection failed: {e}")
-                        # Continue with transcription even if speaker detection fails
-                else:
-                    # Skip speaker detection when voice DB is empty to avoid crashes
-                    if request.voice_db_embeddings is not None:
-                        log(f"Skipping speaker detection (voice database empty)")
-                    else:
-                        log(f"Skipping speaker detection (no voice database)")
+                except Exception as e:
+                    log(f"Speaker detection failed: {e}")
+                    import traceback
+                    if sys.stderr is not None:
+                        try:
+                            traceback.print_exc()
+                        except Exception:
+                            pass
+                    # Continue with transcription even if speaker detection fails
 
                 # Step 2: Transcribe
                 log(f"Transcribing...")

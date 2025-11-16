@@ -1098,13 +1098,17 @@ class MainWindow(QMainWindow):
                     self._pending_transcription_requests = []
                 self._pending_transcription_requests.append(request_id)
 
-                # Increment active count for concurrency management
-                with self._transcription_lock:
-                    self._active_transcriptions += 1
-                    logger.debug(f"Transcription submitted ({self._active_transcriptions}/{self._max_concurrent_transcriptions} active)")
+                # NOTE: Counter is already incremented before this function is called
+                # (see lines 981/1022 in audio callback). Don't double-increment!
+                logger.debug(f"Transcription submitted ({self._active_transcriptions}/{self._max_concurrent_transcriptions} active)")
 
             except Exception as e:
                 logger.error(f"Failed to submit transcription to subprocess: {e}", exc_info=True)
+                # CRITICAL: Decrement counter since we failed to submit
+                # Counter was incremented BEFORE calling this function
+                with self._transcription_lock:
+                    self._active_transcriptions = max(0, self._active_transcriptions - 1)
+                    logger.warning(f"Reverted counter after failed submission ({self._active_transcriptions}/{self._max_concurrent_transcriptions} active)")
 
         else:
             # Fallback: Use QThread worker approach (may crash on Windows)
@@ -1227,10 +1231,17 @@ class MainWindow(QMainWindow):
                     stale_duration = time.time() - self._queue_stale_time
                     if stale_duration > 30.0:  # 30 seconds of being "full" with no results
                         logger.warning(f"Queue appears stale for {stale_duration:.1f}s, attempting recovery...")
-                        # Reset counter - some transcriptions may have been lost
+                        # Reset counter based on actual pending requests if known
                         old_count = self._active_transcriptions
-                        self._active_transcriptions = max(0, alive_count)  # Can't have more active than alive workers
-                        logger.warning(f"Reset active transcription count from {old_count} to {self._active_transcriptions}")
+                        if hasattr(self, '_pending_transcription_requests'):
+                            # Use actual pending count (most accurate)
+                            pending_count = len(self._pending_transcription_requests)
+                            self._active_transcriptions = min(pending_count, alive_count)
+                            logger.warning(f"Reset active count from {old_count} to {self._active_transcriptions} (pending={pending_count}, alive={alive_count})")
+                        else:
+                            # Fallback: reset to 0 to allow new transcriptions
+                            self._active_transcriptions = 0
+                            logger.warning(f"Reset active transcription count from {old_count} to 0 (forced recovery)")
                         self._queue_stale_time = time.time()
             else:
                 # Reset stale timer when not at max capacity
