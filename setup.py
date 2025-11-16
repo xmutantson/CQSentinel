@@ -39,7 +39,7 @@ setup(
         'silero-vad>=4.0.0',
         'faster-whisper>=0.10.0',
         'librosa>=0.10.0',
-        'resemblyzer>=0.1.1',
+        # Note: resemblyzer removed - not effective for SSB audio
         'numpy>=1.24.0',
         'scipy>=1.10.0',
         'scikit-learn>=1.3.0',

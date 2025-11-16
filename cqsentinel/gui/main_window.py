@@ -38,7 +38,6 @@ from cqsentinel.audio.denoiser import AudioDenoiser
 from cqsentinel.audio.vad import VoiceActivityDetector
 from cqsentinel.speech.transcription import SpeechTranscriber
 from cqsentinel.speech.subprocess_transcriber import SubprocessTranscriber
-from cqsentinel.voice import VoiceDatabase, VoiceEmbedder
 from cqsentinel.contest import CallsignExtractor, BehaviorAnalyzer
 from cqsentinel.bandmap.station import BandMapState
 from cqsentinel.bandmap.widget import BandMapWidget
@@ -623,8 +622,6 @@ class MainWindow(QMainWindow):
         self.auto_tuner: SSBAutoTuner = None
         self.transcriber: SpeechTranscriber = None
         self.subprocess_transcriber: SubprocessTranscriber = None  # Subprocess-based transcription for Windows
-        self.voice_embedder: VoiceEmbedder = None
-        self.voice_db: VoiceDatabase = None
         self.callsign_extractor: CallsignExtractor = None
         self.behavior_analyzer: BehaviorAnalyzer = None
         self.band_map: BandMapState = None
@@ -779,19 +776,6 @@ class MainWindow(QMainWindow):
             if not self.transcriber:
                 self.log("  Initializing speech transcriber (may download AI model)...")
                 self.transcriber = SpeechTranscriber()
-
-            # Voice embedder (speaker ID - may download model)
-            if not self.voice_embedder:
-                self.log("  Initializing voice embedder...")
-                self.voice_embedder = VoiceEmbedder()
-
-            # Voice database
-            if not self.voice_db:
-                self.log("  Initializing voice database...")
-                self.voice_db = VoiceDatabase()
-
-                # Check voice database age and warn if old
-                self._check_voice_db_age()
 
             # Contest logic
             if not self.callsign_extractor:
@@ -1088,8 +1072,7 @@ class MainWindow(QMainWindow):
             try:
                 request_id = self.subprocess_transcriber.transcribe_async(
                     audio=audio_data,
-                    sample_rate=self.audio.sample_rate,
-                    voice_db=self.voice_db  # Pass voice DB for speaker identification
+                    sample_rate=self.audio.sample_rate
                 )
                 logger.debug(f"Submitted transcription request {request_id} to subprocess")
 
@@ -1132,8 +1115,8 @@ class MainWindow(QMainWindow):
                 audio=audio_data.copy(),
                 sample_rate=self.audio.sample_rate,
                 transcriber=self.audio_pipeline.transcriber,
-                voice_embedder=self.voice_embedder,
-                voice_db=self.voice_db,
+                voice_embedder=None,  # Voice fingerprinting removed
+                voice_db=None,  # Voice fingerprinting removed
                 log_queue=self._log_queue,  # Thread-safe logging
                 transcriber_lock=self._transcriber_lock  # Protect shared transcriber
             )
@@ -1258,47 +1241,6 @@ class MainWindow(QMainWindow):
                 logger.debug(f"Received transcription result for request {result.request_id}")
 
                 if result.success:
-                    # Log speaker detection results
-                    if result.speaker_labels:
-                        unique_labels = list(set(s['label'] for s in result.speaker_labels))
-                        logger.info(f"Speaker detection: {len(unique_labels)} speaker(s) detected - {', '.join(unique_labels)}")
-
-                    # Debug: log what we received
-                    logger.info(f"Result new_speakers: {type(result.new_speakers)}, count: {len(result.new_speakers) if result.new_speakers else 0}")
-                    if result.new_speakers:
-                        logger.info(f"Received {len(result.new_speakers)} new speaker(s) from subprocess: {list(result.new_speakers.keys())}")
-                    else:
-                        logger.info(f"No new speakers in result (new_speakers={result.new_speakers})")
-
-                    # Update voice DB with new speakers detected in subprocess
-                    logger.info(f"voice_db check: exists={self.voice_db is not None}, type={type(self.voice_db)}")
-
-                    # Explicit checks - use "is not None" instead of truthiness because VoiceDatabase
-                    # has __len__ which makes empty database falsy!
-                    has_new_speakers = result.new_speakers is not None and len(result.new_speakers) > 0
-                    has_voice_db = self.voice_db is not None
-                    logger.info(f"Condition check: has_new_speakers={has_new_speakers}, has_voice_db={has_voice_db}, combined={has_new_speakers and has_voice_db}")
-
-                    if has_new_speakers and has_voice_db:
-                        logger.info(f"Entering voice DB update loop with {len(result.new_speakers)} speakers")
-                        import numpy as np
-                        for voice_id, speaker_data in result.new_speakers.items():
-                            try:
-                                # speaker_data is tuple: (embedding_list, callsign, metadata)
-                                logger.info(f"Processing new speaker {voice_id[:8]}, data type: {type(speaker_data)}, len: {len(speaker_data)}")
-                                embedding = np.array(speaker_data[0])
-                                metadata = speaker_data[2] if len(speaker_data) > 2 else {}
-                                logger.info(f"Embedding shape: {embedding.shape}, metadata: {metadata}")
-                                # Add new speaker to voice DB
-                                added_id = self.voice_db.add_operator(embedding, voice_id=voice_id, metadata=metadata)
-                                logger.info(f"Added new speaker to voice DB: {voice_id[:8]} (returned: {added_id[:8]})")
-                                # Also log to GUI debug console
-                                self.log(f"[VOICE] New speaker detected: {voice_id[:8]}")
-                            except Exception as e:
-                                logger.error(f"Failed to add speaker {voice_id[:8]} to voice DB: {e}")
-                                import traceback
-                                traceback.print_exc()
-
                     # Emit transcription signal (thread-safe)
                     if result.text.strip():
                         # Emit with frequency=0.0 (no frequency info in subprocess mode)
@@ -1917,7 +1859,7 @@ class MainWindow(QMainWindow):
                     audio_capture=self.audio,
                     audio_pipeline=self.audio_pipeline,
                     auto_tuner=self.auto_tuner,
-                    voice_database=self.voice_db,
+                    voice_database=None,  # Voice fingerprinting removed
                     callsign_extractor=self.callsign_extractor,
                     behavior_analyzer=self.behavior_analyzer,
                     band_map=self.band_map,
@@ -2272,39 +2214,13 @@ class MainWindow(QMainWindow):
         logger.info(f"Updated band visibility: {num_visible} bands visible, {height_per_band}px each")
 
     def _check_voice_db_age(self):
-        """Check voice database age and warn if stale"""
-        if not self.voice_db:
-            return
+        """Check voice database age and warn if stale.
 
-        try:
-            age_days = self.voice_db.get_age_days()
-            warn_threshold = self.config.voice_db.warn_age_days
-
-            if age_days > warn_threshold:
-                self.log(f"[WARNING] Voice database is {age_days:.1f} days old (>{warn_threshold} days)")
-
-                result = QMessageBox.question(
-                    self,
-                    "Voice Database Age Warning",
-                    f"The voice database is {age_days:.1f} days old.\n\n"
-                    f"For best results in contests, it's recommended to reset the voice database "
-                    f"before each new contest to avoid false dupe detection.\n\n"
-                    f"Would you like to reset the voice database now?",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                    QMessageBox.StandardButton.No
-                )
-
-                if result == QMessageBox.StandardButton.Yes:
-                    self.voice_db.reset()
-                    self.log("[OK] Voice database reset")
-                    QMessageBox.information(self, "Database Reset", "Voice database has been reset.")
-                else:
-                    self.log("Voice database kept (user chose not to reset)")
-            else:
-                self.log(f"Voice database age: {age_days:.1f} days (OK)")
-
-        except Exception as e:
-            logger.warning(f"Failed to check voice database age: {e}")
+        NOTE: Voice fingerprinting has been disabled. This method is kept for
+        backward compatibility but does nothing.
+        """
+        # Voice fingerprinting disabled - no voice database to check
+        pass
 
     def _connect_n3fjp(self):
         """Connect to N3FJP logging software"""
@@ -2378,7 +2294,7 @@ class MainWindow(QMainWindow):
             audio_capture=self.audio,
             audio_pipeline=self.audio_pipeline,
             auto_tuner=self.auto_tuner,
-            voice_database=self.voice_db,
+            voice_database=None,  # Voice fingerprinting removed
             callsign_extractor=self.callsign_extractor,
             behavior_analyzer=self.behavior_analyzer,
             band_map=current_band_map,

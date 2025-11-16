@@ -10,7 +10,7 @@ import numpy as np
 import logging
 import os
 import sys
-from typing import Optional, Tuple, List
+from typing import Optional, List
 from dataclasses import dataclass
 import time
 
@@ -19,26 +19,21 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class TranscriptionRequest:
-    """Request to transcribe audio with voice identification"""
+    """Request to transcribe audio"""
     audio: np.ndarray
     sample_rate: int
     request_id: int
     worker_id: int = -1  # Assigned by pool
-    # Voice ID data (serializable)
-    voice_db_embeddings: Optional[dict] = None  # {voice_id: (embedding, callsign, metadata)}
 
 
 @dataclass
 class TranscriptionResult:
-    """Result of transcription with speaker identification"""
+    """Result of transcription"""
     request_id: int
     text: str
     success: bool
     worker_id: int = -1
     error: Optional[str] = None
-    # Speaker identification results
-    speaker_labels: Optional[list] = None  # List of {start, end, label, voice_id}
-    new_speakers: Optional[dict] = None  # {voice_id: (embedding, metadata)} for new speakers detected
 
 
 def _get_models_directory():
@@ -52,271 +47,12 @@ def _get_models_directory():
         return os.path.join(os.path.dirname(__file__), '..', '..', 'models')
 
 
-def _wav_to_mel_spectrogram_torchaudio(wav, sampling_rate=16000,
-                                        mel_window_length=25, mel_window_step=10,
-                                        mel_n_channels=40):
-    """
-    Mel spectrogram using torchaudio (PyTorch native - NO NUMBA).
-
-    This replaces librosa.feature.melspectrogram() which uses numba and crashes
-    on Windows subprocesses. torchaudio is already a dependency and uses pure
-    PyTorch operations.
-
-    Parameters match Resemblyzer's defaults:
-    - sampling_rate: 16000 Hz
-    - mel_window_length: 25 ms
-    - mel_window_step: 10 ms (hop)
-    - mel_n_channels: 40 mel bands
-    """
-    import torch
-    import torchaudio.transforms as T
-
-    # Convert to torch tensor if needed
-    if isinstance(wav, np.ndarray):
-        wav_tensor = torch.from_numpy(wav).float()
-    else:
-        wav_tensor = wav
-
-    # Ensure 1D
-    if wav_tensor.dim() > 1:
-        wav_tensor = wav_tensor.squeeze()
-
-    # Calculate parameters in samples
-    n_fft = int(sampling_rate * mel_window_length / 1000)
-    hop_length = int(sampling_rate * mel_window_step / 1000)
-
-    # Create MelSpectrogram transform (no numba involved!)
-    mel_transform = T.MelSpectrogram(
-        sample_rate=sampling_rate,
-        n_fft=n_fft,
-        hop_length=hop_length,
-        n_mels=mel_n_channels,
-        norm='slaney',  # Match librosa's default normalization
-        mel_scale='htk'  # Match librosa's mel scale
-    )
-
-    # Compute mel spectrogram
-    mel_spec = mel_transform(wav_tensor)
-
-    # Convert to log scale (like librosa)
-    mel_spec = torch.log10(torch.clamp(mel_spec, min=1e-10))
-
-    # Convert back to numpy and transpose to match librosa output (time x freq)
-    return mel_spec.numpy().T.astype(np.float32)
-
-
-def _detect_speaker_changes(voice_encoder, audio: np.ndarray, sample_rate: int,
-                           window_duration: float = 2.5, stride: float = 1.0,
-                           similarity_threshold: float = 0.75) -> list:
-    """
-    Detect speaker changes in audio using sliding window embeddings.
-
-    Args:
-        voice_encoder: Resemblyzer VoiceEncoder instance
-        audio: Audio signal (mono, float32)
-        sample_rate: Sample rate
-        window_duration: Window duration in seconds
-        stride: Stride in seconds
-        similarity_threshold: Similarity threshold for same speaker
-
-    Returns:
-        List of speaker segments with embeddings
-    """
-    segments = []
-    window_samples = int(window_duration * sample_rate)
-    stride_samples = int(stride * sample_rate)
-
-    # Validate audio before processing
-    if len(audio) < window_samples:
-        # Audio too short for speaker detection
-        return segments
-
-    # Check for problematic audio (silence, extreme values)
-    audio_rms = np.sqrt(np.mean(audio ** 2))
-    if audio_rms < 0.001:  # Nearly silent
-        return segments
-
-    # CRITICAL: Preprocess audio using scipy (NOT librosa - it uses numba which crashes)
-    # Resample to 16kHz (Resemblyzer's expected rate) and normalize volume
-    preprocessed_audio = audio
-    try:
-        from scipy import signal as scipy_signal
-
-        # Resample to 16kHz if needed
-        if sample_rate != 16000:
-            num_samples = int(len(audio) * 16000 / sample_rate)
-            preprocessed_audio = scipy_signal.resample(audio, num_samples)
-            if sys.stdout is not None:
-                try:
-                    print(f"[WORKER] Resampled audio (scipy): {sample_rate}Hz -> 16000Hz ({len(audio)} -> {len(preprocessed_audio)} samples)")
-                except Exception:
-                    pass
-            sample_rate = 16000
-            window_samples = int(window_duration * sample_rate)
-            stride_samples = int(stride * sample_rate)
-
-        # Normalize volume (simple RMS normalization to -23 dBFS)
-        # -23 dBFS matches Resemblyzer's default and provides good speech clarity
-        # This AMPLIFIES quiet/weak signals, not reduces them
-        rms = np.sqrt(np.mean(preprocessed_audio ** 2))
-        if rms > 1e-10:
-            target_rms = 10 ** (-23 / 20.0)  # -23 dBFS (Resemblyzer default)
-            preprocessed_audio = preprocessed_audio * (target_rms / rms)
-            preprocessed_audio = np.clip(preprocessed_audio, -1.0, 1.0)
-
-        if sys.stdout is not None:
-            try:
-                print(f"[WORKER] Preprocessed audio (scipy): normalized to -23 dBFS")
-            except Exception:
-                pass
-
-    except Exception as e:
-        if sys.stdout is not None:
-            try:
-                print(f"[WORKER] scipy preprocessing failed: {e}, using raw audio")
-            except Exception:
-                pass
-
-    current_speaker_idx = 0
-    prev_embedding = None
-    current_segment_start = 0.0
-    failed_windows = 0
-    max_failed_windows = 3  # Give up if too many failures
-
-    for start_sample in range(0, len(preprocessed_audio) - window_samples + 1, stride_samples):
-        end_sample = start_sample + window_samples
-        window = preprocessed_audio[start_sample:end_sample]
-
-        # After preprocess_wav, audio is already at 16kHz, but double-check
-        if sample_rate != 16000:
-            # Simple resampling
-            from scipy import signal
-            window = signal.resample(window, int(len(window) * 16000 / sample_rate))
-
-        try:
-            # Validate window before passing to Resemblyzer
-            if not np.isfinite(window).all():
-                failed_windows += 1
-                continue
-
-            # Ensure window is contiguous float32
-            window = np.ascontiguousarray(window, dtype=np.float32)
-
-            # Check window has enough energy (avoid silent windows that crash encoder)
-            window_rms = np.sqrt(np.mean(window ** 2))
-            if window_rms < 0.0001:
-                continue  # Skip silent windows
-
-            embedding = voice_encoder.embed_utterance(window)
-
-            # Validate embedding
-            if embedding is None or not np.isfinite(embedding).all():
-                failed_windows += 1
-                if failed_windows >= max_failed_windows:
-                    if sys.stdout is not None:
-                        try:
-                            print(f"[WORKER] Too many embedding failures, aborting speaker detection")
-                        except Exception:
-                            pass
-                    break
-                continue
-
-            # Check if this is a different speaker
-            is_new_speaker = False
-            if prev_embedding is not None:
-                from numpy import dot
-                from numpy.linalg import norm
-                similarity = dot(embedding, prev_embedding) / (norm(embedding) * norm(prev_embedding))
-                if similarity < similarity_threshold:
-                    is_new_speaker = True
-
-            if is_new_speaker:
-                # End current segment
-                segment_end = start_sample / sample_rate
-                segments.append({
-                    'start': current_segment_start,
-                    'end': segment_end,
-                    'speaker_idx': current_speaker_idx,
-                    'embedding': prev_embedding
-                })
-
-                # Start new segment
-                current_speaker_idx += 1
-                current_segment_start = segment_end
-
-            prev_embedding = embedding
-            failed_windows = 0  # Reset failure counter on success
-
-        except Exception as e:
-            # Skip this window if embedding fails
-            failed_windows += 1
-            if sys.stdout is not None:
-                try:
-                    print(f"[WORKER] Failed to compute embedding for window: {e}")
-                except Exception:
-                    pass
-
-            if failed_windows >= max_failed_windows:
-                if sys.stdout is not None:
-                    try:
-                        print(f"[WORKER] Too many embedding failures ({failed_windows}), aborting speaker detection")
-                    except Exception:
-                        pass
-                break
-            continue
-
-    # Add final segment
-    if prev_embedding is not None:
-        segments.append({
-            'start': current_segment_start,
-            'end': len(preprocessed_audio) / sample_rate,
-            'speaker_idx': current_speaker_idx,
-            'embedding': prev_embedding
-        })
-
-    return segments
-
-
-def _find_matching_voice(embedding: np.ndarray, voice_db_embeddings: dict,
-                         similarity_threshold: float = 0.75) -> Optional[Tuple[str, str, float]]:
-    """
-    Find matching voice in database.
-
-    Args:
-        embedding: Voice embedding to match
-        voice_db_embeddings: Dict of {voice_id: (embedding_list, callsign, metadata)}
-        similarity_threshold: Minimum similarity threshold
-
-    Returns:
-        (voice_id, callsign, similarity) if match found, None otherwise
-    """
-    from numpy import dot, array
-    from numpy.linalg import norm
-
-    best_match = None
-    best_similarity = similarity_threshold
-
-    for voice_id, voice_data in voice_db_embeddings.items():
-        # voice_data is (embedding_list, callsign, metadata)
-        stored_embedding = array(voice_data[0])  # Convert list back to numpy array
-        callsign = voice_data[1]
-
-        # Compute cosine similarity
-        similarity = dot(embedding, stored_embedding) / (norm(embedding) * norm(stored_embedding))
-
-        if similarity > best_similarity:
-            best_similarity = similarity
-            best_match = (voice_id, callsign, similarity)
-
-    return best_match
-
-
 def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp.Queue,
                          model_size: str, compute_type: str, models_dir: str):
     """
-    Worker process that loads Whisper model and VoiceEmbedder, processes transcription requests with voice ID.
+    Worker process that loads Whisper model and processes transcription requests.
 
-    This runs in a separate process to avoid Windows threading issues with ctranslate2 and resemblyzer.
+    This runs in a separate process to avoid Windows threading issues with ctranslate2.
 
     Args:
         worker_id: Unique identifier for this worker
@@ -347,14 +83,6 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
             except Exception:
                 pass
         safe_flush()
-
-    # CRITICAL: Disable numba JIT to prevent crashes on Windows subprocess
-    # librosa uses numba internally, and numba JIT crashes on Windows PyInstaller builds
-    # We'll monkey-patch Resemblyzer to use torchaudio instead, so librosa won't be called
-    os.environ['NUMBA_DISABLE_JIT'] = '1'
-    os.environ['NUMBA_THREADING_LAYER'] = 'safe'
-    os.environ['NUMBA_NUM_THREADS'] = '1'
-    log(f"Numba JIT disabled (NUMBA_DISABLE_JIT={os.environ.get('NUMBA_DISABLE_JIT')})")
 
     # CRITICAL: Fix None stdout/stderr in PyInstaller frozen subprocess
     # whisper internally writes to stdout/stderr (tqdm progress, warnings, etc.)
@@ -429,19 +157,6 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
         # faster-whisper uses ctranslate2 which crashes on Windows frozen builds
 
         import whisper
-        from resemblyzer import VoiceEncoder
-        import uuid
-
-        # CRITICAL: Monkey-patch Resemblyzer to use torchaudio instead of librosa
-        # This avoids librosa's numba dependency that crashes on Windows subprocesses
-        # torchaudio is already a dependency and uses pure PyTorch (no numba)
-        try:
-            import resemblyzer.audio
-            original_mel = resemblyzer.audio.wav_to_mel_spectrogram
-            resemblyzer.audio.wav_to_mel_spectrogram = _wav_to_mel_spectrogram_torchaudio
-            log(f"Patched Resemblyzer to use torchaudio MelSpectrogram (avoiding numba/librosa)")
-        except Exception as patch_err:
-            log(f"Warning: Could not patch Resemblyzer: {patch_err}")
 
         # Load Whisper model using openai-whisper (PyTorch backend - more stable)
         log(f"Loading Whisper {model_size} model (using openai-whisper for stability)...")
@@ -471,11 +186,6 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
         except Exception as test_e:
             log(f"Model test FAILED: {test_e}")
             raise RuntimeError(f"Model failed basic transcription test: {test_e}")
-
-        # Load VoiceEmbedder model
-        log(f"Loading Resemblyzer voice encoder...")
-        voice_encoder = VoiceEncoder()
-        log(f"Voice encoder loaded")
 
         # Signal that we're ready
         output_queue.put(TranscriptionResult(
@@ -532,90 +242,8 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
                 request.audio = np.ascontiguousarray(request.audio)
                 log(f"Audio now C-contiguous: {request.audio.flags['C_CONTIGUOUS']}")
 
-            # Process transcription and voice ID
+            # Process transcription
             try:
-                # Step 1: Speaker detection (ALWAYS run to build voice fingerprints)
-                speaker_labels = []
-                new_speakers = {}
-
-                # Always run speaker detection to build voice database
-                # Even if DB is empty, we need to fingerprint new speakers
-                num_known_voices = len(request.voice_db_embeddings) if request.voice_db_embeddings else 0
-                log(f"Running speaker detection (known voices: {num_known_voices})...")
-                speaker_start = time.time()
-                try:
-                    # Detect speaker changes using sliding window
-                    speaker_segments = _detect_speaker_changes(
-                        voice_encoder,
-                        request.audio,
-                        request.sample_rate,
-                        window_duration=2.5,
-                        stride=1.0,
-                        similarity_threshold=0.75
-                    )
-                    log(f"Speaker detection took {time.time() - speaker_start:.2f}s, found {len(speaker_segments)} segments")
-
-                    # Match speakers against voice DB (or create new entries if DB is empty)
-                    match_start = time.time()
-                    for seg in speaker_segments:
-                        if seg['embedding'] is not None:
-                            # Try to find matching voice in DB
-                            match = None
-                            if request.voice_db_embeddings and len(request.voice_db_embeddings) > 0:
-                                match = _find_matching_voice(seg['embedding'], request.voice_db_embeddings)
-
-                            # Also check against new speakers discovered in this request
-                            # This handles the case where same speaker appears in multiple segments
-                            if not match and new_speakers:
-                                local_match = _find_matching_voice(seg['embedding'], new_speakers, similarity_threshold=0.75)
-                                if local_match:
-                                    voice_id, _, similarity = local_match
-                                    label = f"Speaker {voice_id[:8]}"
-                                    log(f"Matched to local speaker at {seg['start']:.1f}-{seg['end']:.1f}s: {label} (similarity: {similarity:.2f})")
-                                    match = (voice_id, None, similarity)  # Treat as match
-
-                            if match:
-                                voice_id, callsign, similarity = match
-                                label = callsign or f"Speaker {voice_id[:8]}"
-                                log(f"Matched voice at {seg['start']:.1f}-{seg['end']:.1f}s: {label} (similarity: {similarity:.2f})")
-                            else:
-                                # New speaker - generate ID and store fingerprint
-                                # Store in tuple format (embedding_list, callsign, metadata) to match voice_db_embeddings
-                                voice_id = str(uuid.uuid4())
-                                label = f"Speaker {voice_id[:8]}"
-                                new_speakers[voice_id] = (
-                                    seg['embedding'].tolist(),  # Convert to list for serialization
-                                    None,  # No callsign yet
-                                    {'first_heard': time.time()}
-                                )
-                                log(f"New speaker at {seg['start']:.1f}-{seg['end']:.1f}s: {label}")
-
-                            speaker_labels.append({
-                                'start': seg['start'],
-                                'end': seg['end'],
-                                'label': label,
-                                'voice_id': voice_id
-                            })
-
-                    if speaker_labels:
-                        unique_speakers = len(set(s['voice_id'] for s in speaker_labels))
-                        unique_labels = ', '.join(set(s['label'] for s in speaker_labels))
-                        log(f"Detected {unique_speakers} speakers: {unique_labels}")
-                        log(f"Voice matching took {time.time() - match_start:.2f}s")
-                    elif len(speaker_segments) == 0:
-                        log(f"No speaker segments detected (audio too short or silent)")
-
-                except Exception as e:
-                    log(f"Speaker detection failed: {e}")
-                    import traceback
-                    if sys.stderr is not None:
-                        try:
-                            traceback.print_exc()
-                        except Exception:
-                            pass
-                    # Continue with transcription even if speaker detection fails
-
-                # Step 2: Transcribe
                 log(f"Transcribing...")
                 log(f"About to call model.transcribe() with audio shape={request.audio.shape}")
 
@@ -672,25 +300,15 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
 
                 result_text = " ".join(texts)
 
-                # Add speaker labels to text if detected
-                if speaker_labels:
-                    unique_labels = list(set(s['label'] for s in speaker_labels))
-                    if len(unique_labels) == 1:
-                        result_text = f"[{unique_labels[0]}] {result_text}"
-                    else:
-                        result_text = f"[{'/'.join(unique_labels)}] {result_text}"
-
                 total_time = time.time() - processing_start
                 log(f"Transcription complete in {total_time:.2f}s: {result_text}")
 
-                # Send result with speaker info
+                # Send result
                 output_queue.put(TranscriptionResult(
                     request_id=request.request_id,
                     text=result_text,
                     success=True,
-                    worker_id=worker_id,
-                    speaker_labels=speaker_labels if speaker_labels else None,
-                    new_speakers=new_speakers if new_speakers else None
+                    worker_id=worker_id
                 ))
 
             except Exception as e:
@@ -707,9 +325,7 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
                     text="",
                     success=False,
                     worker_id=worker_id,
-                    error=str(e),
-                    speaker_labels=None,
-                    new_speakers=None
+                    error=str(e)
                 ))
 
         except Exception as e:
@@ -843,12 +459,12 @@ class SubprocessTranscriber:
 
     def transcribe_async(self, audio: np.ndarray, sample_rate: int, voice_db=None) -> int:
         """
-        Submit audio for transcription with voice identification (non-blocking).
+        Submit audio for transcription (non-blocking).
 
         Args:
             audio: Audio signal (mono, float32)
             sample_rate: Sample rate
-            voice_db: Optional VoiceDatabase instance for speaker identification
+            voice_db: Deprecated - ignored (kept for backward compatibility)
 
         Returns:
             Request ID to match with results
@@ -856,18 +472,12 @@ class SubprocessTranscriber:
         if not self.is_ready or not self.is_alive():
             raise RuntimeError("Worker pool not ready")
 
-        # Serialize voice DB for subprocess
-        voice_db_embeddings = None
-        if voice_db is not None:
-            voice_db_embeddings = self._serialize_voice_db(voice_db)
-
         # Create request
         self.request_counter += 1
         request = TranscriptionRequest(
             audio=audio.copy(),  # Copy to avoid shared memory issues
             sample_rate=sample_rate,
-            request_id=self.request_counter,
-            voice_db_embeddings=voice_db_embeddings
+            request_id=self.request_counter
         )
 
         # Send to pool (any available worker will pick it up)
@@ -875,39 +485,6 @@ class SubprocessTranscriber:
         logger.debug(f"Submitted transcription request {request.request_id} to pool")
 
         return request.request_id
-
-    def _serialize_voice_db(self, voice_db) -> dict:
-        """
-        Serialize voice database for passing to subprocess.
-
-        Args:
-            voice_db: VoiceDatabase instance
-
-        Returns:
-            Dict of {voice_id: (embedding_list, callsign, metadata)}
-        """
-        serialized = {}
-        try:
-            # Get all operators from voice DB
-            for operator in voice_db.get_all_operators():
-                if operator and operator.embedding is not None:
-                    # Convert embedding to list for serialization
-                    embedding_list = operator.embedding.tolist() if hasattr(operator.embedding, 'tolist') else list(operator.embedding)
-                    callsign = operator.callsign if hasattr(operator, 'callsign') else None
-                    metadata = {}
-                    if hasattr(operator, 'first_heard'):
-                        metadata['first_heard'] = operator.first_heard.isoformat() if operator.first_heard else None
-                    if hasattr(operator, 'last_heard'):
-                        metadata['last_heard'] = operator.last_heard.isoformat() if operator.last_heard else None
-
-                    serialized[operator.voice_id] = (embedding_list, callsign, metadata)
-
-            logger.debug(f"Serialized {len(serialized)} voices for subprocess")
-        except Exception as e:
-            logger.error(f"Failed to serialize voice DB: {e}")
-
-        # Return empty dict (not None) to enable speaker detection even with no existing voices
-        return serialized
 
     def get_result(self, timeout: float = 0.1) -> Optional[TranscriptionResult]:
         """

@@ -76,11 +76,12 @@ try:
 except:
     print("⚠ ctranslate2 not found")
 
-try:
-    datas += collect_data_files('resemblyzer')
-    print("✓ Including resemblyzer data files")
-except:
-    print("⚠ resemblyzer not found")
+# NOTE: Resemblyzer removed - not effective for SSB audio
+# try:
+#     datas += collect_data_files('resemblyzer')
+#     print("✓ Including resemblyzer data files")
+# except:
+#     print("⚠ resemblyzer not found")
 
 try:
     datas += collect_data_files('whisper')
@@ -165,7 +166,7 @@ hiddenimports = [
     'av.codec',
     'faster_whisper',
     'ctranslate2',
-    'resemblyzer',
+    # 'resemblyzer',  # Removed - not effective for SSB audio
     'webrtcvad',
     # openai-whisper (PyTorch-based, more stable on Windows)
     'whisper',
@@ -239,12 +240,13 @@ try:
 except:
     pass
 
-try:
-    # resemblyzer is small, collect_submodules is OK
-    hiddenimports += collect_submodules('resemblyzer')
-    print("✓ Including resemblyzer submodules")
-except:
-    pass
+# NOTE: Resemblyzer removed - not effective for SSB audio
+# try:
+#     # resemblyzer is small, collect_submodules is OK
+#     hiddenimports += collect_submodules('resemblyzer')
+#     print("✓ Including resemblyzer submodules")
+# except:
+#     pass
 
 # PyAV (av) - can be large, use selective imports if build is slow
 try:

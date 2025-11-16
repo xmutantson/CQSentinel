@@ -62,8 +62,8 @@ dependencies:
   - pip:
     # These packages are only on PyPI
     - faster-whisper>=0.10.0
-    # Voice fingerprinting (webrtcvad pre-installed from conda-forge above)
-    - resemblyzer>=0.1.1
+    # Voice fingerprinting - removed (not effective for SSB audio)
+    # - resemblyzer>=0.1.1
     - noisereduce>=3.0.0
     - silero-vad>=4.0.0
     # Note: openai-whisper may pull in obsolete 'typing' package as dependency
