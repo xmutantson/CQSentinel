@@ -122,10 +122,10 @@ class BandScanner:
         audio_capture,
         audio_pipeline,
         auto_tuner,
-        voice_database,
-        callsign_extractor,
-        behavior_analyzer,
-        band_map,
+        voice_database=None,  # Voice fingerprinting disabled, parameter kept for compatibility
+        callsign_extractor=None,
+        behavior_analyzer=None,
+        band_map=None,
         n3fjp_client=None,
         multiplier_tracker=None,
         # Scan parameters
@@ -460,9 +460,9 @@ class BandScanner:
             self.progress.current_station_callsign = callsign
             self.progress.current_station_contestness = behavior.score
 
-        # Check voice database
+        # Check voice database (if available)
         voice_id = None
-        if voice_segments:
+        if self.voice_db and voice_segments:
             for seg in voice_segments:
                 match = self.voice_db.find_matching_voice(seg.embedding)
                 if match:
@@ -526,8 +526,8 @@ class BandScanner:
             for seg in transcripts[:3]:  # Last 3
                 station.add_transcript(seg.text)
 
-        # Update voice database
-        if callsign and voice_segments:
+        # Update voice database (if available)
+        if self.voice_db and callsign and voice_segments:
             for seg in voice_segments:
                 self.voice_db.add_or_update(
                     seg.embedding,

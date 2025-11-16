@@ -39,8 +39,9 @@ resampy>=0.4.2
 # crepe>=0.0.12
 
 # Voice Fingerprinting / Speaker Diarization
-# Resemblyzer uses PyTorch backend
-resemblyzer>=0.1.1
+# NOTE: Resemblyzer removed - not effective for SSB audio (300-3000 Hz bandwidth)
+# See FUTURE_WORK_VOICE_ID.md for custom SSB voice model training plan
+# resemblyzer>=0.1.1
 # Alternative/Additional: pyannote.audio for advanced diarization
 # pyannote-audio>=3.0.0
 
