@@ -418,40 +418,39 @@ class ModelDownloadThread(QThread):
     def _download_whisper(self):
         """Download Whisper model"""
         try:
-            # Check ctranslate2 first (required by faster-whisper)
-            try:
-                import ctranslate2
-                logger.info(f"ctranslate2 version: {ctranslate2.__version__}")
-                self.progress_signal.emit(f"  Using ctranslate2 {ctranslate2.__version__}")
-            except ImportError:
-                self.progress_signal.emit("  [FAIL] ctranslate2 not installed")
-                logger.error("ctranslate2 not installed")
-                return False
+            # Use openai-whisper instead of faster-whisper for Windows PyInstaller stability
+            # faster-whisper uses ctranslate2 which crashes on Windows frozen builds
+            import whisper
+            import sys
+            from pathlib import Path
 
-            from faster_whisper import WhisperModel
+            # Set up whisper cache directory
+            if getattr(sys, 'frozen', False):
+                # Packaged - use models dir next to exe
+                whisper_cache = str(Path(sys.executable).parent / "models" / "whisper")
+            else:
+                # Source - use local models dir
+                whisper_cache = str(Path(__file__).parent.parent.parent / "models" / "whisper")
 
-            self.progress_signal.emit(f"  Downloading Whisper {self.model_size} (~460 MB)...")
+            Path(whisper_cache).mkdir(parents=True, exist_ok=True)
+            logger.info(f"Whisper cache directory: {whisper_cache}")
+
+            self.progress_signal.emit(f"  Downloading Whisper {self.model_size} (openai-whisper)...")
+            self.progress_signal.emit(f"  Cache directory: {whisper_cache}")
 
             # This will download the model if not already cached
-            model = WhisperModel(
+            model = whisper.load_model(
                 self.model_size,
                 device="cpu",
-                compute_type="int8",
-                download_root=None  # Use default cache
+                download_root=whisper_cache
             )
 
-            self.progress_signal.emit(f"  [OK] Whisper {self.model_size} downloaded")
+            self.progress_signal.emit(f"  [OK] Whisper {self.model_size} downloaded (openai-whisper)")
             return True
 
         except ImportError as e:
-            self.progress_signal.emit(f"  [FAIL] faster-whisper import failed: {e}")
-            logger.error(f"faster-whisper import failed: {e}")
-            return False
-        except AttributeError as e:
-            # Version mismatch between faster-whisper and ctranslate2
-            self.progress_signal.emit(f"  [FAIL] faster-whisper/ctranslate2 version mismatch")
-            self.progress_signal.emit(f"    Error: {e}")
-            logger.error(f"Version compatibility issue: {e}", exc_info=True)
+            self.progress_signal.emit(f"  [FAIL] openai-whisper import failed: {e}")
+            logger.error(f"openai-whisper import failed: {e}")
             return False
         except Exception as e:
             self.progress_signal.emit(f"  [FAIL] Whisper download failed: {e}")
@@ -803,7 +802,7 @@ def check_models_exist():
             base_path = Path(sys.executable).parent
             models_dir = base_path / "models"
 
-            hf_cache = models_dir / "huggingface" / "hub"
+            whisper_cache = models_dir / "whisper"
             torch_cache = models_dir / "torch" / "hub"
             resemblyzer_cache = models_dir / "torch" / "hub" / "checkpoints"
 
@@ -811,17 +810,25 @@ def check_models_exist():
         else:
             # Source build - check standard cache directories
             home = Path.home()
-            hf_cache = home / ".cache" / "huggingface" / "hub"
+            # Check both local models dir and standard cache
+            local_models = Path(__file__).parent.parent.parent / "models"
+            whisper_cache = local_models / "whisper"
             torch_cache = home / ".cache" / "torch" / "hub"
             resemblyzer_cache = home / ".cache" / "torch" / "hub" / "checkpoints"
 
-            logger.info(f"Checking for models in standard cache")
+            # Also check standard cache location
+            if not whisper_cache.exists():
+                whisper_cache = home / ".cache" / "whisper"
 
-        # Check for Whisper models
+            logger.info(f"Checking for models in: {local_models} and standard cache")
+
+        # Check for Whisper models (openai-whisper stores .pt files)
         whisper_exists = False
-        if hf_cache.exists():
-            whisper_models = list(hf_cache.glob("models--Systran--faster-whisper-*"))
+        if whisper_cache.exists():
+            whisper_models = list(whisper_cache.glob("*.pt"))
             whisper_exists = len(whisper_models) > 0
+            if whisper_exists:
+                logger.info(f"Found Whisper models: {[m.name for m in whisper_models]}")
 
         # Check for Silero VAD
         vad_exists = False
