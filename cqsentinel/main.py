@@ -89,10 +89,16 @@ def main():
     # On Windows, multiprocessing creates subprocesses by re-launching the executable,
     # which would re-run main() and create infinite window spawning.
     # We must exit early if we're in a worker subprocess.
+    #
+    # Note: This is a defense-in-depth measure. freeze_support() should handle
+    # worker processes, but in case it doesn't detect them (e.g., due to PyInstaller
+    # quirks), we check here too. Returning early from main() prevents GUI initialization
+    # while still allowing the worker function to execute (it runs via multiprocessing
+    # internals independent of main()).
     import multiprocessing
     if multiprocessing.current_process().name != 'MainProcess':
         # We're in a worker subprocess - don't initialize GUI, just return
-        # The multiprocessing module will handle executing the worker function
+        # The worker function will be invoked by multiprocessing internals
         return 0
 
     # CRITICAL FIX: PyInstaller sets sys.stderr and sys.stdout to None in frozen builds
@@ -295,9 +301,11 @@ def check_dependencies():
 if __name__ == '__main__':
     # CRITICAL: Required for multiprocessing support in frozen Windows executables
     # This must be called before any multiprocessing code runs
+    # If this is a worker process, freeze_support() will handle it and call sys.exit()
     import multiprocessing
     multiprocessing.freeze_support()
 
+    # If we get here, freeze_support() didn't detect a worker, so we should run normally
     try:
         exit_code = main()
         sys.exit(exit_code)
