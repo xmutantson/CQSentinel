@@ -271,6 +271,17 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
                     log(f"Calling model.transcribe()...")
                     safe_flush()
 
+                    # Initial prompt to provide context for amateur radio communications
+                    # This biases Whisper towards ham radio vocabulary and patterns
+                    ham_radio_prompt = (
+                        "Amateur radio contest communication in North America. "
+                        "NATO phonetic alphabet: Alpha, Bravo, Charlie, Delta, Echo, Foxtrot, Golf, Hotel, India, Juliet, Kilo, Lima, Mike, November, Oscar, Papa, Quebec, Romeo, Sierra, Tango, Uniform, Victor, Whiskey, X-ray, Yankee, Zulu. "
+                        "Callsigns like W1ABC, N3XYZ, K4DEF, AA5GH, KG7JK. "
+                        "Signal reports: five nine, 59, five seven, 57. "
+                        "Common phrases: CQ, CQ contest, copy, QSL, roger, thanks, 73, good luck. "
+                        "Exchange: class, section, state, zone, serial number."
+                    )
+
                     # openai-whisper API (returns dict with 'text' and 'segments')
                     # Enhanced decoding parameters for better accuracy
                     result = model.transcribe(
@@ -278,6 +289,9 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
                         language="en",
                         fp16=use_fp16,  # Use fp16 on GPU, fp32 on CPU
                         verbose=False,  # Don't print progress
+
+                        # Provide ham radio context to bias decoder
+                        initial_prompt=ham_radio_prompt,
 
                         # Decoding parameters for better contest audio transcription
                         beam_size=beam_size,  # Beam search (5 is good balance)
