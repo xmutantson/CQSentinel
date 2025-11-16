@@ -1272,7 +1272,13 @@ class MainWindow(QMainWindow):
 
                     # Update voice DB with new speakers detected in subprocess
                     logger.info(f"voice_db check: exists={self.voice_db is not None}, type={type(self.voice_db)}")
-                    if result.new_speakers and self.voice_db:
+
+                    # Explicit checks to debug condition evaluation
+                    has_new_speakers = bool(result.new_speakers)
+                    has_voice_db = bool(self.voice_db)
+                    logger.info(f"Condition check: has_new_speakers={has_new_speakers}, has_voice_db={has_voice_db}, combined={has_new_speakers and has_voice_db}")
+
+                    if has_new_speakers and has_voice_db:
                         logger.info(f"Entering voice DB update loop with {len(result.new_speakers)} speakers")
                         import numpy as np
                         for voice_id, speaker_data in result.new_speakers.items():
