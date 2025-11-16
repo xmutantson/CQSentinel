@@ -107,7 +107,7 @@ def _wav_to_mel_spectrogram_torchaudio(wav, sampling_rate=16000,
 
 def _detect_speaker_changes(voice_encoder, audio: np.ndarray, sample_rate: int,
                            window_duration: float = 2.5, stride: float = 1.0,
-                           similarity_threshold: float = 0.75) -> list:
+                           similarity_threshold: float = 0.85) -> list:
     """
     Detect speaker changes in audio using sliding window embeddings.
 
@@ -117,7 +117,7 @@ def _detect_speaker_changes(voice_encoder, audio: np.ndarray, sample_rate: int,
         sample_rate: Sample rate
         window_duration: Window duration in seconds
         stride: Stride in seconds
-        similarity_threshold: Similarity threshold for same speaker
+        similarity_threshold: Similarity threshold for same speaker (0.85 for SSB audio)
 
     Returns:
         List of speaker segments with embeddings
@@ -278,14 +278,14 @@ def _detect_speaker_changes(voice_encoder, audio: np.ndarray, sample_rate: int,
 
 
 def _find_matching_voice(embedding: np.ndarray, voice_db_embeddings: dict,
-                         similarity_threshold: float = 0.75) -> Optional[Tuple[str, str, float]]:
+                         similarity_threshold: float = 0.85) -> Optional[Tuple[str, str, float]]:
     """
     Find matching voice in database.
 
     Args:
         embedding: Voice embedding to match
         voice_db_embeddings: Dict of {voice_id: (embedding_list, callsign, metadata)}
-        similarity_threshold: Minimum similarity threshold
+        similarity_threshold: Minimum similarity threshold (0.85 for SSB audio)
 
     Returns:
         (voice_id, callsign, similarity) if match found, None otherwise
@@ -551,7 +551,7 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
                         request.sample_rate,
                         window_duration=2.5,
                         stride=1.0,
-                        similarity_threshold=0.75
+                        similarity_threshold=0.85  # Higher threshold for SSB audio (limited bandwidth)
                     )
                     log(f"Speaker detection took {time.time() - speaker_start:.2f}s, found {len(speaker_segments)} segments")
 
@@ -567,7 +567,7 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
                             # Also check against new speakers discovered in this request
                             # This handles the case where same speaker appears in multiple segments
                             if not match and new_speakers:
-                                local_match = _find_matching_voice(seg['embedding'], new_speakers, similarity_threshold=0.75)
+                                local_match = _find_matching_voice(seg['embedding'], new_speakers, similarity_threshold=0.85)
                                 if local_match:
                                     voice_id, _, similarity = local_match
                                     label = f"Speaker {voice_id[:8]}"
