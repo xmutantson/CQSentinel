@@ -620,6 +620,7 @@ class SubprocessTranscriber:
         self._last_respawn_time = 0.0
         self._respawn_cooldown = 5.0  # Minimum seconds between respawn attempts
         self._worker_id_counter = 0  # For generating unique worker IDs
+        self._last_alive_count = num_workers  # Track to avoid warning spam
 
         logger.info(f"SubprocessTranscriber pool initialized: model={model_size}, compute_type={compute_type}, workers={num_workers}")
 
@@ -840,12 +841,15 @@ class SubprocessTranscriber:
         # Check how many workers are still alive
         alive_count = sum(1 for w in self.workers if w.is_alive())
 
-        if alive_count == 0:
-            logger.warning("All workers have died")
-            return False
-
-        if alive_count < self.workers_ready:
-            logger.warning(f"Some workers died: {alive_count}/{self.workers_ready} alive")
+        # Only log if count changed (prevents spam)
+        if alive_count != self._last_alive_count:
+            if alive_count == 0:
+                logger.warning("All workers have died")
+            elif alive_count < self._last_alive_count:
+                logger.warning(f"Workers died: {alive_count}/{self.num_workers} workers alive (was {self._last_alive_count})")
+            else:
+                logger.info(f"Workers recovered: {alive_count}/{self.num_workers} workers alive (was {self._last_alive_count})")
+            self._last_alive_count = alive_count
 
         return alive_count > 0
 
