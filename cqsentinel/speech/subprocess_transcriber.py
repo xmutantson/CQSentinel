@@ -405,12 +405,14 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
 
             # Process transcription and voice ID
             try:
-                # Step 1: Speaker detection (if voice DB provided)
+                # Step 1: Speaker detection (if voice DB has entries)
                 speaker_labels = []
                 new_speakers = {}
 
-                if request.voice_db_embeddings is not None:
-                    log(f"Running speaker detection...")
+                # Only do speaker detection if we have voices to match against
+                # Empty voice DB causes crashes in Resemblyzer's embed_utterance
+                if request.voice_db_embeddings is not None and len(request.voice_db_embeddings) > 0:
+                    log(f"Running speaker detection with {len(request.voice_db_embeddings)} known voices...")
                     speaker_start = time.time()
                     try:
                         # Detect speaker changes using sliding window
@@ -461,6 +463,12 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
                     except Exception as e:
                         log(f"Speaker detection failed: {e}")
                         # Continue with transcription even if speaker detection fails
+                else:
+                    # Skip speaker detection when voice DB is empty to avoid crashes
+                    if request.voice_db_embeddings is not None:
+                        log(f"Skipping speaker detection (voice database empty)")
+                    else:
+                        log(f"Skipping speaker detection (no voice database)")
 
                 # Step 2: Transcribe
                 log(f"Transcribing...")
