@@ -4,6 +4,16 @@ CQSentinel - SSB Contest Band Scanner
 Main application entry point
 """
 
+# CRITICAL: Configure NumPy/MKL threading BEFORE any imports
+# Must be set before NumPy is imported to prevent worker thread crashes
+import os
+os.environ['OMP_NUM_THREADS'] = '1'  # OpenMP threads
+os.environ['MKL_NUM_THREADS'] = '1'  # MKL threads (Intel Math Kernel Library)
+os.environ['NUMEXPR_NUM_THREADS'] = '1'  # NumExpr threads
+os.environ['OPENBLAS_NUM_THREADS'] = '1'  # OpenBLAS threads
+os.environ['VECLIB_MAXIMUM_THREADS'] = '1'  # Accelerate threads (macOS)
+os.environ['BLIS_NUM_THREADS'] = '1'  # BLIS threads
+
 import sys
 import logging
 import traceback
@@ -98,6 +108,13 @@ def main():
     print(f"Python version: {sys.version}")
     print(f"Frozen: {getattr(sys, 'frozen', False)}")
     print(f"Executable: {sys.executable}")
+    print("")
+
+    # Verify NumPy/MKL threading configuration
+    print("NumPy/MKL threading configuration:")
+    print(f"  MKL_NUM_THREADS: {os.environ.get('MKL_NUM_THREADS', 'not set')}")
+    print(f"  OMP_NUM_THREADS: {os.environ.get('OMP_NUM_THREADS', 'not set')}")
+    print(f"  OPENBLAS_NUM_THREADS: {os.environ.get('OPENBLAS_NUM_THREADS', 'not set')}")
     print("")
 
     try:
