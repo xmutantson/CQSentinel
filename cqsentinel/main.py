@@ -218,7 +218,7 @@ def main():
             splash.hide()
 
             logger.info("AI models not found - showing download dialog")
-            downloader = ModelDownloaderDialog(model_size=config.audio.whisper_model_size)
+            downloader = ModelDownloaderDialog(model_size="medium.en")  # Hardcoded for best accuracy
             downloader.start_download()
 
             result = downloader.exec()

@@ -38,6 +38,7 @@ from cqsentinel.audio.denoiser import AudioDenoiser
 from cqsentinel.audio.vad import VoiceActivityDetector
 from cqsentinel.speech.transcription import SpeechTranscriber
 from cqsentinel.speech.subprocess_transcriber import SubprocessTranscriber
+from cqsentinel.speech.gpu_utils import select_device_and_workers, estimate_transcription_speed
 from cqsentinel.contest import CallsignExtractor, BehaviorAnalyzer
 from cqsentinel.bandmap.station import BandMapState
 from cqsentinel.bandmap.widget import BandMapWidget
@@ -638,19 +639,15 @@ class MainWindow(QMainWindow):
         self.audio_broadcaster = AudioBroadcaster()
         self.audio_level_meter = AudioLevelMeter()
         self.audio_monitor = AudioMonitor()  # For diagnostic playback
-        self.audio_buffer = AudioBuffer(buffer_duration=1.0, sample_rate=self.config.audio.sample_rate)  # Buffer for VAD
+        self.audio_buffer = AudioBuffer(buffer_duration=15.0, sample_rate=self.config.audio.sample_rate)  # 15s buffer for Whisper
 
         # Speech ratio smoothing (exponential moving average)
         self._speech_ratio_smoothed = 0.0
         self._speech_ratio_alpha = 0.3  # Smoothing factor (0.3 = 30% new, 70% old)
 
         # Transcription buffering (accumulate audio during speech, transcribe on pauses)
-        self._transcription_buffer = []  # List of denoised audio chunks
-        self._is_speaking = False  # Track if currently speaking
-        self._silence_buffers = 0  # Count consecutive silent buffers
-        self._min_transcription_duration = 2.0  # Minimum 2 seconds before transcribing
-        self._max_silence_buffers = 2  # Transcribe after 2 consecutive silent buffers (2 seconds of silence)
-        self._max_transcription_duration = 15.0  # Maximum 15 seconds before forcing transcription
+        # Legacy VAD-based buffering removed - now using continuous 15-second buffers
+        # Whisper processes all audio directly without VAD gating
         self._transcription_start_time = None  # When we started accumulating audio
 
         # Transcription queue management (prevent backup during long contests)
@@ -758,16 +755,47 @@ class MainWindow(QMainWindow):
             # The subprocess isolates faster-whisper/ctranslate2 to avoid Windows threading crashes
             if not self.subprocess_transcriber:
                 self.log("  Starting transcription subprocess (may download AI model)...")
-                model_size = self.config.audio.whisper_model_size if hasattr(self.config.audio, 'whisper_model_size') else "small"
-                self.subprocess_transcriber = SubprocessTranscriber(
-                    model_size=model_size,
-                    compute_type="float32",  # Use float32 for stability on Windows
-                    num_workers=5  # Multiple workers for parallel transcription (openai-whisper is safe)
+
+                # Detect GPU and calculate optimal worker count
+                use_gpu = self.config.audio.use_gpu if hasattr(self.config.audio, 'use_gpu') else True
+                memory_fraction = self.config.audio.gpu_memory_fraction if hasattr(self.config.audio, 'gpu_memory_fraction') else 0.85
+
+                device, num_workers, use_fp16, status_msg = select_device_and_workers(
+                    use_gpu=use_gpu,
+                    memory_fraction=memory_fraction,
+                    cpu_fallback_workers=3
                 )
+
+                self.log(f"  {status_msg}")
+                logger.info(status_msg)
+
+                # Estimate transcription speed
+                speed_msg = estimate_transcription_speed(device, num_workers)
+                self.log(f"  {speed_msg}")
+                logger.info(speed_msg)
+
+                # Get decoding parameters from config
+                beam_size = self.config.audio.whisper_beam_size if hasattr(self.config.audio, 'whisper_beam_size') else 5
+                temperature = self.config.audio.whisper_temperature if hasattr(self.config.audio, 'whisper_temperature') else 0.0
+                no_speech_threshold = self.config.audio.whisper_no_speech_threshold if hasattr(self.config.audio, 'whisper_no_speech_threshold') else 0.6
+
+                self.subprocess_transcriber = SubprocessTranscriber(
+                    model_size="medium.en",  # Hardcoded for best accuracy
+                    device=device,
+                    use_fp16=use_fp16,
+                    num_workers=num_workers,
+                    beam_size=beam_size,
+                    temperature=temperature,
+                    no_speech_threshold=no_speech_threshold
+                )
+
+                # Update max concurrent transcriptions based on worker count
+                self._max_concurrent_transcriptions = num_workers
 
                 # Start subprocess and wait for model loading
                 if self.subprocess_transcriber.start():
-                    self.log("  Transcription subprocess ready")
+                    self.log(f"  Transcription subprocess ready ({num_workers} {device.upper()} workers)")
+                    logger.info(f"Transcription workers initialized: {num_workers} {device} workers")
                 else:
                     self.log("  ERROR: Failed to start transcription subprocess")
                     logger.error("Failed to start transcription subprocess")
@@ -851,13 +879,13 @@ class MainWindow(QMainWindow):
 
             def audio_callback(audio_chunk):
                 """
-                Process audio chunks with proper buffering.
+                Process audio chunks with 15-second buffering for Whisper.
 
                 Small chunks (64ms) come from sounddevice. We:
                 1. Broadcast raw audio immediately (for real-time monitoring)
-                2. Buffer chunks into larger segments (1s) for VAD
-                3. Process buffered segments to detect speech
-                4. Broadcast denoised audio when speech detected
+                2. Buffer chunks into 15-second segments
+                3. Denoise and send directly to Whisper workers (no VAD gating)
+                4. Whisper handles speech detection internally
                 """
                 try:
                     callback_count[0] += 1
@@ -875,7 +903,7 @@ class MainWindow(QMainWindow):
                     rms, peak = self.audio_level_meter.get_levels()
                     self.audio_levels_signal.emit(rms, peak)
 
-                    # === STEP 2: Buffer audio for VAD (if pipeline available) ===
+                    # === STEP 2: Buffer audio for Whisper (15-second chunks) ===
                     if self.audio_pipeline:
                         # Add chunk to buffer
                         buffered_audio = self.audio_buffer.add_chunk(audio_chunk)
@@ -885,160 +913,55 @@ class MainWindow(QMainWindow):
                             buffers_processed[0] += 1
 
                             try:
-                                # Process buffered audio through VAD
-                                result = self.audio_pipeline.process_quick(
-                                    buffered_audio,
-                                    check_voice_only=True
+                                # Denoise the 15-second audio chunk
+                                denoised = self.audio_pipeline.denoiser.denoise(buffered_audio)
+
+                                # Broadcast denoised audio for monitoring
+                                denoised_chunk = AudioChunk(
+                                    stage=AudioStage.DENOISED,
+                                    data=denoised,
+                                    sample_rate=self.audio.sample_rate,
+                                    timestamp=time.time(),
+                                    metadata={
+                                        'buffer_duration': 15.0
+                                    }
                                 )
-                                has_speech = result.get('has_speech', False)
-                                speech_ratio = result.get('speech_ratio', 0.0)
+                                self.audio_broadcaster.broadcast(denoised_chunk)
+                                denoised_chunks_created[0] += 1
 
-                                # Apply smoothing to speech ratio (exponential moving average)
-                                self._speech_ratio_smoothed = (
-                                    self._speech_ratio_alpha * speech_ratio +
-                                    (1 - self._speech_ratio_alpha) * self._speech_ratio_smoothed
-                                )
-
-                                # Emit signal for voice detection (thread-safe) with smoothed ratio
-                                self.voice_detection_signal.emit(has_speech, self._speech_ratio_smoothed)
-
-                                # === STEP 3: Create denoised audio ===
-                                # Always denoise when we have speech, regardless of transcription
-                                if has_speech:
-                                    speech_detected_count[0] += 1
-
-                                    try:
-                                        # Denoise the buffered audio
-                                        denoised = self.audio_pipeline.denoiser.denoise(buffered_audio)
-
-                                        # Broadcast denoised audio for real-time monitoring
-                                        denoised_chunk = AudioChunk(
-                                            stage=AudioStage.DENOISED,
-                                            data=denoised,
-                                            sample_rate=self.audio.sample_rate,
-                                            timestamp=time.time(),
-                                            metadata={
-                                                'has_speech': True,
-                                                'speech_ratio': speech_ratio,
-                                                'buffer_duration': result.get('duration', 1.0)
-                                            }
+                                # === STEP 3: Send directly to Whisper worker ===
+                                # No VAD gating - Whisper handles speech detection internally
+                                can_transcribe = False
+                                with self._transcription_lock:
+                                    if self._active_transcriptions >= self._max_concurrent_transcriptions:
+                                        logger.warning(
+                                            f"Dropping 15s audio buffer - all {self._active_transcriptions} workers busy. "
+                                            f"Consider more workers or faster GPU."
                                         )
-                                        self.audio_broadcaster.broadcast(denoised_chunk)
-                                        denoised_chunks_created[0] += 1
+                                    else:
+                                        self._active_transcriptions += 1
+                                        can_transcribe = True
+                                        logger.debug(f"Submitting 15s buffer ({self._active_transcriptions}/{self._max_concurrent_transcriptions} active)")
 
-                                        # Log first few denoised chunks
-                                        if denoised_chunks_created[0] <= 3:
-                                            logger.info(
-                                                f"DIAGNOSTIC: Created denoised chunk #{denoised_chunks_created[0]} "
-                                                f"(speech_ratio: {speech_ratio:.2%}, buffer: {result.get('duration', 1.0):.2f}s)"
-                                            )
+                                if can_transcribe:
+                                    # Send denoised audio directly to Whisper
+                                    self._start_transcription_worker(denoised)
 
-                                        # === STEP 4: Accumulate audio for transcription ===
-                                        # Track when we started speaking
-                                        if not self._is_speaking:
-                                            self._transcription_start_time = time.time()
-
-                                        # Add denoised audio to transcription buffer
-                                        self._transcription_buffer.append(denoised)
-                                        self._is_speaking = True
-                                        self._silence_buffers = 0
-
-                                        # Check if we've been accumulating for too long (15s max)
-                                        if self._transcription_start_time is not None:
-                                            elapsed = time.time() - self._transcription_start_time
-                                            total_duration = len(self._transcription_buffer)  # seconds (1 buffer = 1 second)
-
-                                            if elapsed >= self._max_transcription_duration and total_duration >= self._min_transcription_duration:
-                                                # Force transcription due to timeout
-                                                logger.info(f"Forcing transcription after {elapsed:.1f}s (max {self._max_transcription_duration}s)")
-
-                                                # Check if we're falling behind
-                                                can_transcribe = False
-                                                with self._transcription_lock:
-                                                    if self._active_transcriptions >= self._max_concurrent_transcriptions:
-                                                        logger.warning(
-                                                            f"Skipping transcription (timeout) - already {self._active_transcriptions} in progress. "
-                                                            f"Falling behind! Consider faster Whisper model."
-                                                        )
-                                                        # Don't clear buffer - keep accumulating
-                                                    else:
-                                                        self._active_transcriptions += 1
-                                                        can_transcribe = True
-                                                        logger.debug(f"Starting transcription ({self._active_transcriptions}/{self._max_concurrent_transcriptions} active)")
-
-                                                if can_transcribe:
-                                                    # Concatenate all buffered audio
-                                                    full_audio = np.concatenate(self._transcription_buffer)
-
-                                                    # Start transcription using proper QThread pattern
-                                                    # (avoids Qt threading violations in PyInstaller frozen builds)
-                                                    self._start_transcription_worker(full_audio)
-
-                                                    # Clear buffer and reset state (but keep speaking=True since we might still be talking)
-                                                    self._transcription_buffer.clear()
-                                                    self._transcription_start_time = time.time()  # Restart timer for next chunk
-                                                    self._silence_buffers = 0
-
-                                    except Exception as e:
-                                        logger.error(f"Denoising failed: {e}", exc_info=True)
-
-                                else:
-                                    # No speech detected
-                                    if self._is_speaking:
-                                        # We were speaking, now silence - count it
-                                        self._silence_buffers += 1
-
-                                        # If we've had enough silence, transcribe accumulated audio
-                                        if self._silence_buffers >= self._max_silence_buffers:
-                                            # Check if we have enough audio to transcribe
-                                            total_duration = len(self._transcription_buffer)  # seconds (1 buffer = 1 second)
-
-                                            if total_duration >= self._min_transcription_duration:
-                                                # Check if we're falling behind
-                                                can_transcribe = False
-                                                with self._transcription_lock:
-                                                    if self._active_transcriptions >= self._max_concurrent_transcriptions:
-                                                        logger.warning(
-                                                            f"Skipping transcription (pause) - already {self._active_transcriptions} in progress. "
-                                                            f"Falling behind! Consider faster Whisper model."
-                                                        )
-                                                    else:
-                                                        self._active_transcriptions += 1
-                                                        can_transcribe = True
-                                                        logger.debug(f"Starting transcription ({self._active_transcriptions}/{self._max_concurrent_transcriptions} active)")
-
-                                                if can_transcribe:
-                                                    # Concatenate all buffered audio
-                                                    full_audio = np.concatenate(self._transcription_buffer)
-
-                                                    # Start transcription using proper QThread pattern
-                                                    # (avoids Qt threading violations in PyInstaller frozen builds)
-                                                    self._start_transcription_worker(full_audio)
-
-                                                    # Clear buffer and reset state
-                                                    self._transcription_buffer.clear()
-                                                    self._is_speaking = False
-                                                    self._silence_buffers = 0
-                                                    self._transcription_start_time = None
-
-                                # Periodic diagnostics every 10 buffers
-                                if buffers_processed[0] % 10 == 0:
-                                    logger.debug(
-                                        f"Audio buffer diagnostics: "
-                                        f"callbacks={callback_count[0]}, "
-                                        f"buffers={buffers_processed[0]}, "
-                                        f"speech_detected={speech_detected_count[0]}, "
-                                        f"denoised_created={denoised_chunks_created[0]}"
-                                    )
+                                    # Log progress
+                                    if denoised_chunks_created[0] <= 3 or denoised_chunks_created[0] % 10 == 0:
+                                        logger.info(
+                                            f"Sent 15s buffer #{denoised_chunks_created[0]} to Whisper "
+                                            f"({self._active_transcriptions}/{self._max_concurrent_transcriptions} workers busy)"
+                                        )
 
                             except Exception as e:
-                                logger.error(f"Buffered audio processing failed: {e}", exc_info=True)
+                                logger.error(f"Audio buffer processing failed: {e}", exc_info=True)
 
                 except Exception as e:
                     logger.error(f"Audio callback error: {e}", exc_info=True)
 
             self.audio.start_stream(audio_callback)
-            logger.info("Audio monitoring started with buffering (1.0s buffers for VAD)")
+            logger.info("Audio monitoring started with 15-second buffers for continuous Whisper transcription")
         except Exception as e:
             logger.warning(f"Failed to start audio monitoring: {e}")
 

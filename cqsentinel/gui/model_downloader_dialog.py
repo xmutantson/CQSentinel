@@ -634,10 +634,11 @@ class ModelDownloaderDialog(QDialog):
     Shows progress and allows user to continue or skip if download fails.
     """
 
-    def __init__(self, model_size="small", parent=None):
+    def __init__(self, model_size="medium.en", parent=None):
         super().__init__(parent)
 
-        self.model_size = model_size
+        # Force medium.en model for best accuracy on SSB contest audio
+        self.model_size = "medium.en"
         self.download_success = False
 
         self.setWindowTitle("Setting Up AI Features")
@@ -665,8 +666,8 @@ class ModelDownloaderDialog(QDialog):
 
         # Description
         desc_label = QLabel(
-            "Downloading AI models for speech recognition and voice fingerprinting.\n"
-            "This is a one-time download (~500 MB total)."
+            "Downloading Whisper medium.en model for speech recognition.\n"
+            "This is a one-time download (~769 MB)."
         )
         desc_label.setWordWrap(True)
         layout.addWidget(desc_label)

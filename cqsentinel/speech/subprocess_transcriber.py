@@ -48,7 +48,9 @@ def _get_models_directory():
 
 
 def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp.Queue,
-                         model_size: str, compute_type: str, models_dir: str):
+                         model_size: str, device: str, use_fp16: bool, models_dir: str,
+                         beam_size: int = 5, temperature: float = 0.0,
+                         no_speech_threshold: float = 0.6):
     """
     Worker process that loads Whisper model and processes transcription requests.
 
@@ -58,9 +60,13 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
         worker_id: Unique identifier for this worker
         input_queue: Queue for receiving TranscriptionRequest objects
         output_queue: Queue for sending TranscriptionResult objects
-        model_size: Whisper model size (tiny, base, small, medium, large)
-        compute_type: Compute type (float32, float16, int8)
+        model_size: Whisper model size (e.g., "medium.en")
+        device: Device to load model on ("cpu" or "cuda")
+        use_fp16: Use fp16 precision (True for GPU, False for CPU)
         models_dir: Directory where models are stored (for offline operation)
+        beam_size: Beam search size for decoding (default: 5)
+        temperature: Temperature for decoding (default: 0.0 for deterministic)
+        no_speech_threshold: Threshold for detecting no speech (default: 0.6)
     """
     # Helper for safe flushing (stdout/stderr can be None in subprocess on Windows)
     def safe_flush():
@@ -159,9 +165,10 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
         import whisper
 
         # Load Whisper model using openai-whisper (PyTorch backend - more stable)
-        log(f"Loading Whisper {model_size} model (using openai-whisper for stability)...")
+        log(f"Loading Whisper {model_size} model on {device} (fp16={use_fp16})...")
         log(f"Models directory: {models_dir}")
         log(f"TORCH_HOME: {os.environ['TORCH_HOME']}")
+        log(f"Decoding params: beam_size={beam_size}, temperature={temperature}, no_speech_threshold={no_speech_threshold}")
 
         # openai-whisper downloads models to ~/.cache/whisper by default
         # Set download_root to our models directory
@@ -169,19 +176,26 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
         os.makedirs(whisper_cache, exist_ok=True)
         log(f"Whisper cache directory: {whisper_cache}")
 
+        # Load model on specified device
         model = whisper.load_model(
             model_size,
-            device="cpu",
+            device=device,
             download_root=whisper_cache
         )
-        log(f"Whisper model loaded (openai-whisper, PyTorch backend)")
+
+        # Convert to fp16 if using GPU
+        if use_fp16 and device == "cuda":
+            model = model.half()
+            log(f"Model converted to fp16 for GPU inference")
+
+        log(f"Whisper model loaded on {device} (openai-whisper, PyTorch backend)")
 
         # Test model with silence to verify it works
         log(f"Testing model with 1-second silence...")
         test_audio = np.zeros(16000, dtype=np.float32)
         try:
             # openai-whisper expects audio as float32 numpy array at 16kHz
-            test_result = model.transcribe(test_audio, language="en", fp16=False)
+            test_result = model.transcribe(test_audio, language="en", fp16=use_fp16)
             log(f"Model test PASSED: transcribed silence successfully")
         except Exception as test_e:
             log(f"Model test FAILED: {test_e}")
@@ -258,11 +272,22 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
                     safe_flush()
 
                     # openai-whisper API (returns dict with 'text' and 'segments')
+                    # Enhanced decoding parameters for better accuracy
                     result = model.transcribe(
                         request.audio,
                         language="en",
-                        fp16=False,  # Use float32 on CPU
-                        verbose=False  # Don't print progress
+                        fp16=use_fp16,  # Use fp16 on GPU, fp32 on CPU
+                        verbose=False,  # Don't print progress
+
+                        # Decoding parameters for better contest audio transcription
+                        beam_size=beam_size,  # Beam search (5 is good balance)
+                        best_of=beam_size if temperature > 0 else 1,  # Only sample when using temperature
+                        temperature=temperature,  # 0.0 for deterministic
+
+                        # Hallucination reduction
+                        no_speech_threshold=no_speech_threshold,  # Higher = fewer false positives
+                        logprob_threshold=-1.0,  # Filter low-confidence tokens
+                        condition_on_previous_text=False,  # Each segment independent (better for short audio)
                     )
 
                     log(f"model.transcribe() completed in {time.time() - transcribe_start:.2f}s")
@@ -347,21 +372,38 @@ class SubprocessTranscriber:
     Manages a pool of subprocesses for transcription to handle concurrent requests.
 
     The subprocess pool loads the Whisper model in each worker and processes
-    transcription requests via queues.
+    transcription requests via queues. Supports both CPU and GPU workers.
     """
 
-    def __init__(self, model_size: str = "small", compute_type: str = "float32", num_workers: int = 3):
+    def __init__(
+        self,
+        model_size: str = "medium.en",  # Hardcoded to medium.en for best accuracy
+        device: str = "cpu",  # "cpu" or "cuda"
+        use_fp16: bool = False,  # True for GPU, False for CPU
+        num_workers: int = 3,
+        beam_size: int = 5,
+        temperature: float = 0.0,
+        no_speech_threshold: float = 0.6
+    ):
         """
         Initialize subprocess transcriber pool.
 
         Args:
-            model_size: Whisper model size
-            compute_type: Compute type (float32 recommended for Windows)
-            num_workers: Number of worker processes to spawn (default: 3)
+            model_size: Whisper model size (default: "medium.en")
+            device: Device to run on ("cpu" or "cuda")
+            use_fp16: Use fp16 precision (True for GPU, False for CPU)
+            num_workers: Number of worker processes to spawn
+            beam_size: Beam search size for decoding
+            temperature: Temperature for decoding (0.0 for deterministic)
+            no_speech_threshold: Threshold for detecting no speech
         """
         self.model_size = model_size
-        self.compute_type = compute_type
+        self.device = device
+        self.use_fp16 = use_fp16
         self.num_workers = num_workers
+        self.beam_size = beam_size
+        self.temperature = temperature
+        self.no_speech_threshold = no_speech_threshold
         self.models_dir = _get_models_directory()
 
         # Shared IPC queues
@@ -383,7 +425,10 @@ class SubprocessTranscriber:
         self._worker_id_counter = 0  # For generating unique worker IDs
         self._last_alive_count = num_workers  # Track to avoid warning spam
 
-        logger.info(f"SubprocessTranscriber pool initialized: model={model_size}, compute_type={compute_type}, workers={num_workers}")
+        logger.info(
+            f"SubprocessTranscriber pool initialized: model={model_size}, device={device}, "
+            f"fp16={use_fp16}, workers={num_workers}, beam_size={beam_size}"
+        )
 
     def start(self) -> bool:
         """
@@ -405,14 +450,24 @@ class SubprocessTranscriber:
                 self._worker_id_counter += 1
                 worker = mp.Process(
                     target=transcription_worker,
-                    args=(worker_id, self.input_queue, self.output_queue, self.model_size,
-                          self.compute_type, self.models_dir),
+                    args=(
+                        worker_id,
+                        self.input_queue,
+                        self.output_queue,
+                        self.model_size,
+                        self.device,
+                        self.use_fp16,
+                        self.models_dir,
+                        self.beam_size,
+                        self.temperature,
+                        self.no_speech_threshold
+                    ),
                     daemon=False  # Not daemon so we can clean shutdown
                 )
                 worker.start()
                 self.workers.append(worker)
                 self.worker_ids.append(worker_id)
-                logger.info(f"Worker {worker_id} started (PID: {worker.pid})")
+                logger.info(f"Worker {worker_id} started (PID: {worker.pid}, device={self.device})")
 
             # Wait for all workers to signal READY (with timeout)
             timeout = 60.0  # Model loading can take time, especially for multiple workers
@@ -620,8 +675,18 @@ class SubprocessTranscriber:
 
                     new_worker = mp.Process(
                         target=transcription_worker,
-                        args=(new_worker_id, self.input_queue, self.output_queue, self.model_size,
-                              self.compute_type, self.models_dir),
+                        args=(
+                            new_worker_id,
+                            self.input_queue,
+                            self.output_queue,
+                            self.model_size,
+                            self.device,
+                            self.use_fp16,
+                            self.models_dir,
+                            self.beam_size,
+                            self.temperature,
+                            self.no_speech_threshold
+                        ),
                         daemon=False
                     )
                     new_worker.start()

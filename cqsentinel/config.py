@@ -64,8 +64,16 @@ class AudioConfig:
     """Audio processing parameters"""
     sample_rate: int = 16000
     noise_reduction_level: str = "medium"  # off, low, medium, high
-    vad_sensitivity: float = 0.5  # 0.0 - 1.0
-    whisper_model_size: str = "small"  # tiny, base, small, medium, large
+
+    # Whisper transcription settings
+    # Model is hardcoded to "medium.en" - best balance for SSB contest audio
+    use_gpu: bool = True  # Try GPU first, auto-fallback to CPU
+    gpu_memory_fraction: float = 0.85  # Use 85% of free VRAM for workers
+    whisper_beam_size: int = 5  # Beam search size (1=greedy, 5=balanced)
+    whisper_temperature: float = 0.0  # 0.0 = deterministic decoding
+    whisper_no_speech_threshold: float = 0.6  # Higher = fewer false positives
+
+    # Pitch detection (for SSB auto-centering)
     use_crepe_pitch: bool = False  # GPU-accelerated pitch detection
     pitch_fmin: int = 50  # Hz
     pitch_fmax: int = 600  # Hz

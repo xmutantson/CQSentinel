@@ -324,13 +324,33 @@ class SettingsDialog(QDialog):
         layout = QVBoxLayout(widget)
 
         # AI model group
-        ai_group = QGroupBox("AI Models")
+        ai_group = QGroupBox("AI Transcription (Whisper medium.en)")
         ai_layout = QFormLayout()
 
-        self.whisper_model_combo = QComboBox()
-        self.whisper_model_combo.addItems(["tiny", "base", "small", "medium", "large"])
-        self.whisper_model_combo.setCurrentText("small")
-        ai_layout.addRow("Whisper Model:", self.whisper_model_combo)
+        # Model info (read-only)
+        model_label = QLabel("medium.en (769 MB)")
+        model_label.setStyleSheet("font-weight: bold;")
+        ai_layout.addRow("Model:", model_label)
+
+        # GPU settings
+        self.use_gpu_check = QCheckBox("Enable GPU acceleration (auto-fallback to CPU)")
+        self.use_gpu_check.setToolTip("If enabled, will use GPU if available. Falls back to CPU if no GPU detected.")
+        ai_layout.addRow("GPU:", self.use_gpu_check)
+
+        # GPU memory fraction
+        self.gpu_memory_spin = QSpinBox()
+        self.gpu_memory_spin.setRange(50, 95)
+        self.gpu_memory_spin.setValue(85)
+        self.gpu_memory_spin.setSuffix("% VRAM")
+        self.gpu_memory_spin.setToolTip("Percentage of free GPU memory to use for Whisper workers")
+        ai_layout.addRow("GPU Memory:", self.gpu_memory_spin)
+
+        # Beam size for accuracy
+        self.beam_size_spin = QSpinBox()
+        self.beam_size_spin.setRange(1, 10)
+        self.beam_size_spin.setValue(5)
+        self.beam_size_spin.setToolTip("Higher = more accurate but slower (5 is good balance)")
+        ai_layout.addRow("Beam Size:", self.beam_size_spin)
 
         self.use_crepe_check = QCheckBox("Use CREPE pitch detection (requires GPU)")
         ai_layout.addRow("", self.use_crepe_check)
@@ -489,7 +509,22 @@ class SettingsDialog(QDialog):
         self.n3fjp_port_spin.setValue(self.config.contest.n3fjp_port)
 
         # Advanced settings
-        self.whisper_model_combo.setCurrentText(self.config.audio.whisper_model_size)
+        # GPU settings
+        if hasattr(self.config.audio, 'use_gpu'):
+            self.use_gpu_check.setChecked(self.config.audio.use_gpu)
+        else:
+            self.use_gpu_check.setChecked(True)  # Default to GPU enabled
+
+        if hasattr(self.config.audio, 'gpu_memory_fraction'):
+            self.gpu_memory_spin.setValue(int(self.config.audio.gpu_memory_fraction * 100))
+        else:
+            self.gpu_memory_spin.setValue(85)
+
+        if hasattr(self.config.audio, 'whisper_beam_size'):
+            self.beam_size_spin.setValue(self.config.audio.whisper_beam_size)
+        else:
+            self.beam_size_spin.setValue(5)
+
         self.use_crepe_check.setChecked(self.config.audio.use_crepe_pitch)
         self.voice_threshold_spin.setValue(int(self.config.voice_db.similarity_threshold * 100))
         self.voice_age_spin.setValue(self.config.voice_db.warn_age_days)
@@ -544,8 +579,10 @@ class SettingsDialog(QDialog):
         self.config.contest.n3fjp_host = self.n3fjp_host_edit.text()
         self.config.contest.n3fjp_port = self.n3fjp_port_spin.value()
 
-        # Advanced settings
-        self.config.audio.whisper_model_size = self.whisper_model_combo.currentText()
+        # Advanced settings - GPU and transcription
+        self.config.audio.use_gpu = self.use_gpu_check.isChecked()
+        self.config.audio.gpu_memory_fraction = self.gpu_memory_spin.value() / 100.0
+        self.config.audio.whisper_beam_size = self.beam_size_spin.value()
         self.config.audio.use_crepe_pitch = self.use_crepe_check.isChecked()
         self.config.voice_db.similarity_threshold = self.voice_threshold_spin.value() / 100.0
         self.config.voice_db.warn_age_days = self.voice_age_spin.value()
