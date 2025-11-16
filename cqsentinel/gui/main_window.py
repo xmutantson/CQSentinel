@@ -735,15 +735,15 @@ class MainWindow(QMainWindow):
             else:
                 self.log("  Audio capture already active (for level meter)")
 
-            # Audio pipeline (denoiser + VAD)
+            # Audio pipeline (denoiser only - VAD removed, Whisper handles speech detection)
             if not self.audio_pipeline:
                 self.log("  Initializing audio pipeline...")
                 self.audio_pipeline = AudioPipeline(
                     sample_rate=self.config.audio.sample_rate,
                     denoise_level=self.config.audio.noise_reduction_level,
-                    vad_threshold=self.config.audio.vad_sensitivity,
-                    whisper_model=self.config.audio.whisper_model_size,
-                    enable_voice_id=True
+                    vad_threshold=0.5,  # Not used - Whisper handles speech detection internally
+                    whisper_model="medium.en",  # Not used - SubprocessTranscriber handles transcription
+                    enable_voice_id=False  # Voice ID disabled (Resemblyzer removed)
                 )
 
             # SSB Auto-tuner

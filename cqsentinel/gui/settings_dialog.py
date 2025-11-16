@@ -256,11 +256,8 @@ class SettingsDialog(QDialog):
         self.noise_reduction_combo.setCurrentText("Medium")
         proc_layout.addRow("Noise Reduction:", self.noise_reduction_combo)
 
-        self.vad_sensitivity_spin = QSpinBox()
-        self.vad_sensitivity_spin.setRange(0, 100)
-        self.vad_sensitivity_spin.setValue(50)
-        self.vad_sensitivity_spin.setSuffix("%")
-        proc_layout.addRow("VAD Sensitivity:", self.vad_sensitivity_spin)
+        # VAD sensitivity removed - Whisper handles speech detection internally
+        # using no_speech_threshold parameter
 
         proc_group.setLayout(proc_layout)
         layout.addWidget(proc_group)
@@ -500,7 +497,7 @@ class SettingsDialog(QDialog):
             self.sample_rate_combo.setCurrentIndex(index)
 
         self.noise_reduction_combo.setCurrentText(self.config.audio.noise_reduction_level.title())
-        self.vad_sensitivity_spin.setValue(int(self.config.audio.vad_sensitivity * 100))
+        # VAD sensitivity removed - Whisper handles speech detection
 
         # Contest settings
         self.contestness_spin.setValue(self.config.contest.contestness_threshold)
@@ -571,7 +568,7 @@ class SettingsDialog(QDialog):
             self.config.radio.audio_device_name = ""
         self.config.audio.sample_rate = self.sample_rate_combo.currentData()
         self.config.audio.noise_reduction_level = self.noise_reduction_combo.currentText().lower()
-        self.config.audio.vad_sensitivity = self.vad_sensitivity_spin.value() / 100.0
+        # VAD sensitivity removed - Whisper handles speech detection
 
         # Contest settings
         self.config.contest.contestness_threshold = self.contestness_spin.value()
