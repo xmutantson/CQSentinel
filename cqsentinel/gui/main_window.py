@@ -37,6 +37,7 @@ from cqsentinel.audio.pipeline import AudioPipeline
 from cqsentinel.audio.denoiser import AudioDenoiser
 from cqsentinel.audio.vad import VoiceActivityDetector
 from cqsentinel.speech.transcription import SpeechTranscriber
+from cqsentinel.speech.subprocess_transcriber import SubprocessTranscriber
 from cqsentinel.voice import VoiceDatabase, VoiceEmbedder
 from cqsentinel.contest import CallsignExtractor, BehaviorAnalyzer
 from cqsentinel.bandmap.station import BandMapState
@@ -621,6 +622,7 @@ class MainWindow(QMainWindow):
         self.audio_pipeline: AudioPipeline = None
         self.auto_tuner: SSBAutoTuner = None
         self.transcriber: SpeechTranscriber = None
+        self.subprocess_transcriber: SubprocessTranscriber = None  # Subprocess-based transcription for Windows
         self.voice_embedder: VoiceEmbedder = None
         self.voice_db: VoiceDatabase = None
         self.callsign_extractor: CallsignExtractor = None
@@ -755,7 +757,24 @@ class MainWindow(QMainWindow):
                 self.log("  Initializing SSB auto-tuner...")
                 self.auto_tuner = SSBAutoTuner()
 
-            # Speech transcriber (Whisper - may download model)
+            # Speech transcriber - using subprocess approach for Windows compatibility
+            # The subprocess isolates faster-whisper/ctranslate2 to avoid Windows threading crashes
+            if not self.subprocess_transcriber:
+                self.log("  Starting transcription subprocess (may download AI model)...")
+                model_size = self.config.audio.whisper_model_size if hasattr(self.config.audio, 'whisper_model_size') else "small"
+                self.subprocess_transcriber = SubprocessTranscriber(
+                    model_size=model_size,
+                    compute_type="float32"  # Use float32 for stability on Windows
+                )
+
+                # Start subprocess and wait for model loading
+                if self.subprocess_transcriber.start():
+                    self.log("  Transcription subprocess ready")
+                else:
+                    self.log("  ERROR: Failed to start transcription subprocess")
+                    logger.error("Failed to start transcription subprocess")
+
+            # Keep old transcriber for backward compatibility (not used with subprocess approach)
             if not self.transcriber:
                 self.log("  Initializing speech transcriber (may download AI model)...")
                 self.transcriber = SpeechTranscriber()
@@ -1040,47 +1059,115 @@ class MainWindow(QMainWindow):
 
     def _start_transcription_worker(self, audio_data):
         """
-        Start transcription in a QThread worker (proper Qt pattern).
+        Start transcription using subprocess approach (Windows-compatible).
 
-        This avoids Qt threading violations that occur with Python's threading.Thread
-        in PyInstaller frozen builds.
+        This completely isolates faster-whisper/ctranslate2 in a separate process
+        to avoid Windows threading crashes with C++ libraries.
         """
-        # Create worker and thread
-        worker = TranscriptionWorker()
-        thread = QThread()
+        # Use subprocess transcriber if available, fallback to threading approach
+        if self.subprocess_transcriber and self.subprocess_transcriber.is_alive():
+            # Submit audio to subprocess for transcription (non-blocking)
+            try:
+                request_id = self.subprocess_transcriber.transcribe_async(
+                    audio=audio_data,
+                    sample_rate=self.audio.sample_rate
+                )
+                logger.debug(f"Submitted transcription request {request_id} to subprocess")
 
-        # Move worker to thread
-        worker.moveToThread(thread)
+                # Track pending requests (for cleanup and monitoring)
+                if not hasattr(self, '_pending_transcription_requests'):
+                    self._pending_transcription_requests = []
+                self._pending_transcription_requests.append(request_id)
 
-        # Connect signals
-        worker.transcription_ready.connect(self._handle_transcription)
-        worker.transcription_complete.connect(thread.quit)
-        worker.transcription_complete.connect(lambda: self._on_transcription_finished(thread, worker))
-        worker.error_occurred.connect(lambda err: logger.error(f"Transcription worker error: {err}"))
+                # Increment active count for concurrency management
+                with self._transcription_lock:
+                    self._active_transcriptions += 1
+                    logger.debug(f"Transcription submitted ({self._active_transcriptions}/{self._max_concurrent_transcriptions} active)")
 
-        # Set worker parameters (including log queue for thread-safe logging)
-        worker.set_parameters(
-            audio=audio_data.copy(),
-            sample_rate=self.audio.sample_rate,
-            transcriber=self.audio_pipeline.transcriber,
-            voice_embedder=self.voice_embedder,
-            voice_db=self.voice_db,
-            log_queue=self._log_queue,  # Thread-safe logging
-            transcriber_lock=self._transcriber_lock  # Protect shared transcriber
-        )
+            except Exception as e:
+                logger.error(f"Failed to submit transcription to subprocess: {e}", exc_info=True)
 
-        # Start worker when thread starts
-        thread.started.connect(worker.transcribe)
+        else:
+            # Fallback: Use QThread worker approach (may crash on Windows)
+            logger.warning("Subprocess transcriber not available, falling back to QThread (may crash on Windows)")
 
-        # Keep reference to prevent garbage collection
-        if not hasattr(self, '_transcription_threads'):
-            self._transcription_threads = []
-        self._transcription_threads.append((thread, worker))
+            # Create worker and thread
+            worker = TranscriptionWorker()
+            thread = QThread()
 
-        # Start thread
-        thread.start()
+            # Move worker to thread
+            worker.moveToThread(thread)
 
-        logger.debug(f"Started transcription worker in QThread")
+            # Connect signals
+            worker.transcription_ready.connect(self._handle_transcription)
+            worker.transcription_complete.connect(thread.quit)
+            worker.transcription_complete.connect(lambda: self._on_transcription_finished(thread, worker))
+            worker.error_occurred.connect(lambda err: logger.error(f"Transcription worker error: {err}"))
+
+            # Set worker parameters (including log queue for thread-safe logging)
+            worker.set_parameters(
+                audio=audio_data.copy(),
+                sample_rate=self.audio.sample_rate,
+                transcriber=self.audio_pipeline.transcriber,
+                voice_embedder=self.voice_embedder,
+                voice_db=self.voice_db,
+                log_queue=self._log_queue,  # Thread-safe logging
+                transcriber_lock=self._transcriber_lock  # Protect shared transcriber
+            )
+
+            # Start worker when thread starts
+            thread.started.connect(worker.transcribe)
+
+            # Keep reference to prevent garbage collection
+            if not hasattr(self, '_transcription_threads'):
+                self._transcription_threads = []
+            self._transcription_threads.append((thread, worker))
+
+            # Start thread
+            thread.start()
+
+            logger.debug(f"Started transcription worker in QThread")
+
+    def _poll_transcription_results(self):
+        """
+        Poll subprocess for transcription results (called by QTimer).
+
+        This method is called periodically (every 100ms) to check if any
+        transcription results are available from the subprocess.
+        """
+        if not self.subprocess_transcriber or not self.subprocess_transcriber.is_alive():
+            return
+
+        # Poll for results (non-blocking, timeout=0)
+        try:
+            result = self.subprocess_transcriber.get_result(timeout=0)
+            if result is not None:
+                # Got a result!
+                logger.debug(f"Received transcription result for request {result.request_id}")
+
+                if result.success:
+                    # Emit transcription signal (thread-safe)
+                    if result.text.strip():
+                        # Emit with frequency=0.0 (no frequency info in subprocess mode)
+                        # and callsign=None (no speaker detection in subprocess mode yet)
+                        self.transcription_signal.emit(0.0, result.text.strip(), None)
+                        logger.info(f"Transcribed: {result.text.strip()}")
+                else:
+                    # Transcription failed
+                    logger.error(f"Transcription failed: {result.error}")
+
+                # Remove from pending requests
+                if hasattr(self, '_pending_transcription_requests'):
+                    if result.request_id in self._pending_transcription_requests:
+                        self._pending_transcription_requests.remove(result.request_id)
+
+                # Decrement active count
+                with self._transcription_lock:
+                    self._active_transcriptions -= 1
+                    logger.debug(f"Transcription complete ({self._active_transcriptions}/{self._max_concurrent_transcriptions} active)")
+
+        except Exception as e:
+            logger.debug(f"Error polling transcription results: {e}")
 
     def _on_transcription_finished(self, thread, worker):
         """Clean up after transcription completes"""
@@ -1508,6 +1595,13 @@ class MainWindow(QMainWindow):
         self.radio_timer = QTimer()
         self.radio_timer.timeout.connect(self.update_radio_status)
         # Will start when radio connects
+
+        # Subprocess transcription result polling timer
+        # Polls every 100ms for results from transcription subprocess
+        self.transcription_poll_timer = QTimer()
+        self.transcription_poll_timer.timeout.connect(self._poll_transcription_results)
+        self.transcription_poll_timer.start(100)  # Poll every 100ms
+        logger.debug("Transcription result polling timer started (100ms interval)")
 
     def connect_radio(self):
         """Connect to radio via Hamlib"""
@@ -2243,6 +2337,11 @@ class MainWindow(QMainWindow):
             get_config_manager().save()
         except:
             pass
+
+        # Stop transcription subprocess
+        if hasattr(self, 'subprocess_transcriber') and self.subprocess_transcriber:
+            logger.debug("Stopping transcription subprocess")
+            self.subprocess_transcriber.stop()
 
         # Stop QueueListener for thread-safe logging
         if hasattr(self, '_queue_listener'):
