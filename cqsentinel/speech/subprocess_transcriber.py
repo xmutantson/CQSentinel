@@ -187,12 +187,9 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
             download_root=whisper_cache
         )
 
-        # Convert to fp16 if using GPU
-        if use_fp16 and device == "cuda":
-            model = model.half()
-            log(f"Model converted to fp16 for GPU inference")
-
-        log(f"Whisper model loaded on {device} (openai-whisper, PyTorch backend)")
+        # NOTE: Don't call model.half() manually - let transcribe() handle fp16 conversion
+        # via the fp16 parameter. Manual conversion causes dtype mismatch errors.
+        log(f"Whisper model loaded on {device} (fp16={use_fp16} during inference)")
 
         # Test model with silence to verify it works
         log(f"Testing model with 1-second silence...")

@@ -976,8 +976,20 @@ class MainWindow(QMainWindow):
         # Add diagnostic logging to track subprocess state
         subprocess_available = False
         if self.subprocess_transcriber:
+            # Check if workers are ready (have finished loading models)
+            is_ready = self.subprocess_transcriber.is_ready
             is_alive = self.subprocess_transcriber.is_alive()
-            logger.info(f"Subprocess transcriber check: exists=True, is_alive={is_alive}")
+
+            if not is_ready:
+                # Workers still loading models - skip this buffer silently
+                # This is normal during startup (workers take ~10-30s to load models)
+                logger.debug(f"Subprocess transcriber not ready yet (workers still loading models), skipping buffer")
+                # Decrement counter since we didn't actually submit
+                with self._transcription_lock:
+                    self._active_transcriptions = max(0, self._active_transcriptions - 1)
+                return
+
+            logger.debug(f"Subprocess transcriber check: exists=True, is_ready={is_ready}, is_alive={is_alive}")
             if is_alive:
                 subprocess_available = True
             else:
@@ -988,7 +1000,7 @@ class MainWindow(QMainWindow):
                 else:
                     logger.warning("Subprocess process object is None")
         else:
-            logger.info("Subprocess transcriber check: exists=False")
+            logger.debug("Subprocess transcriber check: exists=False")
 
         if subprocess_available:
             # Submit audio to subprocess for transcription (non-blocking)
