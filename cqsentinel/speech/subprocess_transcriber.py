@@ -52,155 +52,6 @@ def _get_models_directory():
         return os.path.join(os.path.dirname(__file__), '..', '..', 'models')
 
 
-def _mel_filterbank(sr, n_fft, n_mels=40, fmin=0.0, fmax=None):
-    """
-    Create a Mel filterbank matrix using pure numpy.
-
-    This is a librosa-free implementation that doesn't use numba.
-    """
-    if fmax is None:
-        fmax = sr / 2.0
-
-    # Convert Hz to Mel
-    def hz_to_mel(hz):
-        return 2595.0 * np.log10(1.0 + hz / 700.0)
-
-    # Convert Mel to Hz
-    def mel_to_hz(mel):
-        return 700.0 * (10.0 ** (mel / 2595.0) - 1.0)
-
-    # Mel points
-    mel_min = hz_to_mel(fmin)
-    mel_max = hz_to_mel(fmax)
-    mel_points = np.linspace(mel_min, mel_max, n_mels + 2)
-    hz_points = mel_to_hz(mel_points)
-
-    # FFT bins
-    bin_points = np.floor((n_fft + 1) * hz_points / sr).astype(int)
-
-    # Create filterbank
-    filterbank = np.zeros((n_mels, int(1 + n_fft // 2)))
-
-    for i in range(n_mels):
-        left = bin_points[i]
-        center = bin_points[i + 1]
-        right = bin_points[i + 2]
-
-        # Rising slope
-        for j in range(left, center):
-            if j < filterbank.shape[1]:
-                filterbank[i, j] = (j - left) / max(center - left, 1)
-
-        # Falling slope
-        for j in range(center, right):
-            if j < filterbank.shape[1]:
-                filterbank[i, j] = (right - j) / max(right - center, 1)
-
-    return filterbank
-
-
-def _wav_to_mel_spectrogram_scipy(wav, sampling_rate=16000,
-                                   mel_window_length=25, mel_window_step=10,
-                                   mel_n_channels=40):
-    """
-    Pure scipy/numpy mel spectrogram computation - NO LIBROSA/NUMBA.
-
-    This is a drop-in replacement for resemblyzer.audio.wav_to_mel_spectrogram()
-    that avoids numba JIT compilation crashes on Windows.
-    """
-    from scipy import signal
-
-    # Compute STFT parameters (in samples)
-    n_fft = int(sampling_rate * mel_window_length / 1000)
-    hop_length = int(sampling_rate * mel_window_step / 1000)
-
-    # Compute STFT using scipy
-    freqs, times, Zxx = signal.stft(
-        wav,
-        fs=sampling_rate,
-        window='hann',
-        nperseg=n_fft,
-        noverlap=n_fft - hop_length,
-        nfft=n_fft,
-        boundary=None,
-        padded=False
-    )
-
-    # Power spectrogram
-    power_spec = np.abs(Zxx) ** 2
-
-    # Apply mel filterbank
-    mel_basis = _mel_filterbank(sampling_rate, n_fft, n_mels=mel_n_channels)
-    mel_spec = np.dot(mel_basis, power_spec)
-
-    # Convert to log scale (dB)
-    mel_spec = np.log10(np.maximum(mel_spec, 1e-10))
-
-    # Transpose to match librosa output format (time x frequency)
-    return mel_spec.astype(np.float32).T
-
-
-def _preprocess_wav_scipy(fpath_or_wav, source_sr=None, target_sr=16000,
-                           normalize_db=-30.0):
-    """
-    Pure scipy/numpy audio preprocessing - NO LIBROSA/NUMBA.
-
-    This is a drop-in replacement for resemblyzer.preprocess_wav()
-    that avoids numba JIT compilation crashes on Windows.
-
-    Args:
-        fpath_or_wav: File path or numpy array
-        source_sr: Source sample rate (required if passing array)
-        target_sr: Target sample rate (default 16000 Hz)
-        normalize_db: Target dBFS for normalization (default -30 dB)
-
-    Returns:
-        Preprocessed audio at target_sr
-    """
-    from scipy import signal
-
-    # Load audio if file path
-    if isinstance(fpath_or_wav, (str, os.PathLike)):
-        # Use scipy.io.wavfile for .wav files
-        from scipy.io import wavfile
-        source_sr, wav = wavfile.read(fpath_or_wav)
-        # Convert to float32 [-1, 1]
-        if wav.dtype == np.int16:
-            wav = wav.astype(np.float32) / 32768.0
-        elif wav.dtype == np.int32:
-            wav = wav.astype(np.float32) / 2147483648.0
-        elif wav.dtype == np.uint8:
-            wav = (wav.astype(np.float32) - 128) / 128.0
-        else:
-            wav = wav.astype(np.float32)
-        # Convert stereo to mono if needed
-        if len(wav.shape) > 1:
-            wav = wav.mean(axis=1)
-    else:
-        wav = np.asarray(fpath_or_wav, dtype=np.float32)
-        if source_sr is None:
-            raise ValueError("source_sr must be provided when passing numpy array")
-
-    # Resample to target rate using scipy
-    if source_sr != target_sr:
-        num_samples = int(len(wav) * target_sr / source_sr)
-        wav = signal.resample(wav, num_samples)
-
-    # Normalize volume to target dBFS
-    # Compute current RMS
-    rms = np.sqrt(np.mean(wav ** 2))
-    if rms > 1e-10:
-        # Convert target dBFS to linear
-        target_rms = 10 ** (normalize_db / 20.0)
-        # Scale audio
-        wav = wav * (target_rms / rms)
-
-    # Clip to [-1, 1] to avoid distortion
-    wav = np.clip(wav, -1.0, 1.0)
-
-    return wav.astype(np.float32)
-
-
 def _detect_speaker_changes(voice_encoder, audio: np.ndarray, sample_rate: int,
                            window_duration: float = 2.5, stride: float = 1.0,
                            similarity_threshold: float = 0.75) -> list:
@@ -218,6 +69,15 @@ def _detect_speaker_changes(voice_encoder, audio: np.ndarray, sample_rate: int,
     Returns:
         List of speaker segments with embeddings
     """
+    # Import Resemblyzer's preprocessing functions
+    try:
+        from resemblyzer import preprocess_wav
+        from resemblyzer.audio import normalize_volume
+    except ImportError:
+        # Fallback if preprocess_wav not available
+        preprocess_wav = None
+        normalize_volume = None
+
     segments = []
     window_samples = int(window_duration * sample_rate)
     stride_samples = int(stride * sample_rate)
@@ -232,31 +92,35 @@ def _detect_speaker_changes(voice_encoder, audio: np.ndarray, sample_rate: int,
     if audio_rms < 0.001:  # Nearly silent
         return segments
 
-    # CRITICAL: Preprocess audio using our scipy-based function (NO LIBROSA/NUMBA)
-    # This normalizes volume and resamples to 16kHz for Resemblyzer
+    # CRITICAL: Preprocess entire audio first using Resemblyzer's functions
+    # This normalizes volume and ensures proper format for embedding
     preprocessed_audio = audio
-    try:
-        preprocessed_audio = _preprocess_wav_scipy(audio, source_sr=sample_rate, target_sr=16000)
-        if sys.stdout is not None:
-            try:
-                print(f"[WORKER] Preprocessed audio (scipy): {len(audio)} -> {len(preprocessed_audio)} samples")
-            except Exception:
-                pass
-        # After preprocessing, audio is at 16kHz
-        sample_rate = 16000
-        # Recalculate window sizes for new sample rate
-        window_samples = int(window_duration * sample_rate)
-        stride_samples = int(stride * sample_rate)
-    except Exception as e:
-        if sys.stdout is not None:
-            try:
-                print(f"[WORKER] preprocess_wav_scipy failed: {e}, using raw audio")
-            except Exception:
-                pass
-        # Fallback: just normalize amplitude
-        max_val = np.max(np.abs(audio))
-        if max_val > 1e-10:
-            preprocessed_audio = audio / max_val * 0.9
+    if preprocess_wav is not None:
+        try:
+            # preprocess_wav expects source_sr when passing numpy array
+            preprocessed_audio = preprocess_wav(audio, source_sr=sample_rate)
+            if sys.stdout is not None:
+                try:
+                    print(f"[WORKER] Preprocessed audio: {len(audio)} -> {len(preprocessed_audio)} samples")
+                except Exception:
+                    pass
+            # After preprocessing, audio is at 16kHz
+            sample_rate = 16000
+            # Recalculate window sizes for new sample rate
+            window_samples = int(window_duration * sample_rate)
+            stride_samples = int(stride * sample_rate)
+        except Exception as e:
+            if sys.stdout is not None:
+                try:
+                    print(f"[WORKER] preprocess_wav failed: {e}, using manual normalization")
+                except Exception:
+                    pass
+            # Fallback: manual normalization
+            if normalize_volume is not None:
+                try:
+                    preprocessed_audio = normalize_volume(audio, -30, increase_only=True)
+                except Exception:
+                    pass
 
     current_speaker_idx = 0
     prev_embedding = None
@@ -429,14 +293,23 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
                 pass
         safe_flush()
 
-    # CRITICAL: Disable numba JIT BEFORE importing anything that uses it
-    # librosa (used by Resemblyzer) uses numba for mel spectrograms, and
-    # numba JIT compilation in subprocesses causes deadlocks/crashes on Windows
-    os.environ['NUMBA_DISABLE_JIT'] = '1'
-    # Also set threading layer to safe defaults
-    os.environ['NUMBA_THREADING_LAYER'] = 'safe'
-    os.environ['NUMBA_NUM_THREADS'] = '1'
-    log(f"Numba JIT disabled (NUMBA_DISABLE_JIT={os.environ.get('NUMBA_DISABLE_JIT')})")
+    # CRITICAL: Configure numba for safe subprocess operation
+    # librosa (used by Resemblyzer) uses numba for mel spectrograms
+    # Full JIT disable (NUMBA_DISABLE_JIT=1) breaks librosa with 'get_call_template' errors
+    # Instead, configure numba for single-threaded, subprocess-safe operation
+    os.environ['NUMBA_THREADING_LAYER'] = 'workqueue'  # Single-threaded backend
+    os.environ['NUMBA_NUM_THREADS'] = '1'  # Single thread to prevent deadlocks
+    os.environ['NUMBA_BOUNDSCHECK'] = '0'  # Disable for performance
+    os.environ['NUMBA_WARNINGS'] = '0'  # Suppress numba warnings
+    # Set cache directory for this subprocess (writable location)
+    numba_cache_dir = os.path.join(models_dir, 'numba_cache')
+    try:
+        os.makedirs(numba_cache_dir, exist_ok=True)
+        os.environ['NUMBA_CACHE_DIR'] = numba_cache_dir
+        log(f"Numba cache directory: {numba_cache_dir}")
+    except Exception as e:
+        log(f"Warning: Could not create numba cache dir: {e}")
+    log(f"Numba configured for subprocess (THREADING_LAYER={os.environ.get('NUMBA_THREADING_LAYER')}, NUM_THREADS={os.environ.get('NUMBA_NUM_THREADS')})")
 
     # CRITICAL: Fix None stdout/stderr in PyInstaller frozen subprocess
     # whisper internally writes to stdout/stderr (tqdm progress, warnings, etc.)
@@ -513,12 +386,6 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
         import whisper
         from resemblyzer import VoiceEncoder
         import uuid
-
-        # CRITICAL: Monkey-patch Resemblyzer to use scipy-based mel spectrogram
-        # This avoids librosa's numba-dependent functions that crash on Windows
-        import resemblyzer.audio
-        log(f"Patching Resemblyzer to use scipy-based mel spectrogram (avoiding numba)")
-        resemblyzer.audio.wav_to_mel_spectrogram = _wav_to_mel_spectrogram_scipy
 
         # Load Whisper model using openai-whisper (PyTorch backend - more stable)
         log(f"Loading Whisper {model_size} model (using openai-whisper for stability)...")
