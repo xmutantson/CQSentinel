@@ -261,6 +261,23 @@ class TranscriptionWorker(QObject):
                     traceback.print_exc()
                     pipe_test_passed = False
 
+                # DIAGNOSTIC: Check if we're in a frozen console build
+                # In console mode (console=True in spec), C++ output safely goes to console
+                # OS-level fd redirection is not needed and causes crashes in PyInstaller
+                is_frozen = getattr(sys, 'frozen', False)
+                print(f"[WORKER] DIAGNOSTIC: Frozen build: {is_frozen}")
+                print(f"[WORKER] DIAGNOSTIC: sys.stderr type: {type(sys.stderr)}")
+                if hasattr(sys.stderr, 'isatty'):
+                    print(f"[WORKER] DIAGNOSTIC: sys.stderr.isatty(): {sys.stderr.isatty()}")
+
+                # CRITICAL: Skip OS-level fd redirection in frozen console builds
+                # The PyInstaller bootloader has already set up fds, and manipulating them causes crashes
+                # In console mode, C++ output goes to the console which is safe
+                skip_fd_redirect = is_frozen
+                if skip_fd_redirect:
+                    print("[WORKER] DIAGNOSTIC: Skipping OS-level fd redirection (frozen console build)")
+                    print("[WORKER] DIAGNOSTIC: C++ output will appear in console (this is safe)")
+
                 # CRITICAL: Redirect stdout/stderr to prevent direct writes from touching Qt
                 # Libraries like tqdm, print() statements, or C++ code might write directly
                 # In frozen builds, sys.stdout/stderr are Qt-wrapped and cause threading violations
@@ -271,86 +288,89 @@ class TranscriptionWorker(QObject):
                 sys.stderr = io.StringIO()  # Capture stderr (Python level)
                 # NOTE: print() no longer works after this point!
 
-                # CRITICAL: Also redirect at OS level for C++ libraries (ctranslate2, PyTorch)
-                # C++ code writes directly to file descriptors 1/2, bypassing Python's sys.stdout/stderr
-                # NOTE: os.pipe() crashes in PyInstaller frozen builds on Windows
-                # SOLUTION: Use temporary file instead - reliable, cross-platform, captures all output
+                # Variables for fd redirection (may not be used if skipped)
                 saved_stdout_fd = None
                 saved_stderr_fd = None
                 stderr_tempfile = None
                 stderr_reader_thread = None
 
-                def tail_tempfile(filepath, log_func, stop_event):
-                    """Background thread to tail temp file and forward C++ output to logging"""
-                    try:
-                        import time
-                        with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
-                            # Start at beginning of file
-                            f.seek(0)
-                            while not stop_event.is_set():
-                                line = f.readline()
-                                if line:
+                # Only redirect fds if not in frozen console build
+                if not skip_fd_redirect:
+                    # CRITICAL: Also redirect at OS level for C++ libraries (ctranslate2, PyTorch)
+                    # C++ code writes directly to file descriptors 1/2, bypassing Python's sys.stdout/stderr
+                    # SOLUTION: Use temporary file - reliable, cross-platform, captures all output
+
+                    def tail_tempfile(filepath, log_func, stop_event):
+                        """Background thread to tail temp file and forward C++ output to logging"""
+                        try:
+                            import time
+                            with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+                                # Start at beginning of file
+                                f.seek(0)
+                                while not stop_event.is_set():
+                                    line = f.readline()
+                                    if line:
+                                        line = line.rstrip('\n\r')
+                                        if line.strip():
+                                            log_func(f"[C++] {line}")
+                                    else:
+                                        # No data, sleep briefly
+                                        time.sleep(0.01)
+
+                                # Process any remaining lines after stop
+                                for line in f:
                                     line = line.rstrip('\n\r')
                                     if line.strip():
                                         log_func(f"[C++] {line}")
-                                else:
-                                    # No data, sleep briefly
-                                    time.sleep(0.01)
+                        except Exception as e:
+                            # Tail thread failure is non-critical
+                            pass
 
-                            # Process any remaining lines after stop
-                            for line in f:
-                                line = line.rstrip('\n\r')
-                                if line.strip():
-                                    log_func(f"[C++] {line}")
-                    except Exception as e:
-                        # Tail thread failure is non-critical
+                    try:
+                        logger.info("[WORKER] Setting up OS-level fd redirection...")
+                        # Duplicate original file descriptors
+                        saved_stdout_fd = os.dup(1)  # Duplicate stdout fd
+                        saved_stderr_fd = os.dup(2)  # Duplicate stderr fd
+                        logger.info(f"[WORKER] Saved original fds: stdout={saved_stdout_fd}, stderr={saved_stderr_fd}")
+
+                        # Create temporary file for capturing C++ stderr
+                        import tempfile
+                        import threading
+                        stderr_tempfile = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.log')
+                        stderr_tempfile.close()  # Close Python handle, we'll use fd directly
+                        logger.info(f"[WORKER] Created temp file: {stderr_tempfile.name}")
+
+                        # Open temp file for writing at OS level
+                        stderr_fd = os.open(stderr_tempfile.name, os.O_WRONLY | os.O_APPEND)
+                        logger.info(f"[WORKER] Opened temp file: fd={stderr_fd}")
+
+                        # Redirect stderr to temp file (stdout to devnull, we don't expect stdout output)
+                        os.dup2(stderr_fd, 2)  # Redirect stderr fd to temp file
+                        os.close(stderr_fd)  # Close our copy, fd 2 still points to file
+
+                        # Redirect stdout to devnull
+                        devnull_fd = os.open(os.devnull, os.O_WRONLY)
+                        os.dup2(devnull_fd, 1)
+                        os.close(devnull_fd)
+                        logger.info("[WORKER] Redirected stderr to tempfile, stdout to devnull")
+
+                        # Start background thread to tail the temp file
+                        from threading import Event
+                        stop_tail = Event()
+                        stderr_reader_thread = threading.Thread(
+                            target=tail_tempfile,
+                            args=(stderr_tempfile.name, logger.debug, stop_tail),
+                            daemon=True
+                        )
+                        stderr_reader_thread.start()
+                        logger.info("[WORKER] Started stderr tail thread")
+
+                    except (OSError, AttributeError) as e:
+                        # OS-level redirection failed (shouldn't happen, but fallback gracefully)
+                        logger.error(f"[WORKER] ERROR: Failed to set up fd redirection: {e}")
+                        import traceback
+                        logger.error(traceback.format_exc())
                         pass
-
-                try:
-                    logger.info("[WORKER] Setting up OS-level fd redirection...")
-                    # Duplicate original file descriptors
-                    saved_stdout_fd = os.dup(1)  # Duplicate stdout fd
-                    saved_stderr_fd = os.dup(2)  # Duplicate stderr fd
-                    logger.info(f"[WORKER] Saved original fds: stdout={saved_stdout_fd}, stderr={saved_stderr_fd}")
-
-                    # Create temporary file for capturing C++ stderr
-                    import tempfile
-                    import threading
-                    stderr_tempfile = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.log')
-                    stderr_tempfile.close()  # Close Python handle, we'll use fd directly
-                    logger.info(f"[WORKER] Created temp file: {stderr_tempfile.name}")
-
-                    # Open temp file for writing at OS level
-                    stderr_fd = os.open(stderr_tempfile.name, os.O_WRONLY | os.O_APPEND)
-                    logger.info(f"[WORKER] Opened temp file: fd={stderr_fd}")
-
-                    # Redirect stderr to temp file (stdout to devnull, we don't expect stdout output)
-                    os.dup2(stderr_fd, 2)  # Redirect stderr fd to temp file
-                    os.close(stderr_fd)  # Close our copy, fd 2 still points to file
-
-                    # Redirect stdout to devnull
-                    devnull_fd = os.open(os.devnull, os.O_WRONLY)
-                    os.dup2(devnull_fd, 1)
-                    os.close(devnull_fd)
-                    logger.info("[WORKER] Redirected stderr to tempfile, stdout to devnull")
-
-                    # Start background thread to tail the temp file
-                    from threading import Event
-                    stop_tail = Event()
-                    stderr_reader_thread = threading.Thread(
-                        target=tail_tempfile,
-                        args=(stderr_tempfile.name, logger.debug, stop_tail),
-                        daemon=True
-                    )
-                    stderr_reader_thread.start()
-                    logger.info("[WORKER] Started stderr tail thread")
-
-                except (OSError, AttributeError) as e:
-                    # OS-level redirection failed (shouldn't happen, but fallback gracefully)
-                    logger.error(f"[WORKER] ERROR: Failed to set up fd redirection: {e}")
-                    import traceback
-                    logger.error(traceback.format_exc())
-                    pass
 
                 try:
                     logger.info(f"Transcribing {len(self._audio)/self._sample_rate:.1f}s of speech...")
