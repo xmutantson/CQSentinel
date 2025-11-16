@@ -52,6 +52,59 @@ def _get_models_directory():
         return os.path.join(os.path.dirname(__file__), '..', '..', 'models')
 
 
+def _wav_to_mel_spectrogram_torchaudio(wav, sampling_rate=16000,
+                                        mel_window_length=25, mel_window_step=10,
+                                        mel_n_channels=40):
+    """
+    Mel spectrogram using torchaudio (PyTorch native - NO NUMBA).
+
+    This replaces librosa.feature.melspectrogram() which uses numba and crashes
+    on Windows subprocesses. torchaudio is already a dependency and uses pure
+    PyTorch operations.
+
+    Parameters match Resemblyzer's defaults:
+    - sampling_rate: 16000 Hz
+    - mel_window_length: 25 ms
+    - mel_window_step: 10 ms (hop)
+    - mel_n_channels: 40 mel bands
+    """
+    import torch
+    import torchaudio.transforms as T
+
+    # Convert to torch tensor if needed
+    if isinstance(wav, np.ndarray):
+        wav_tensor = torch.from_numpy(wav).float()
+    else:
+        wav_tensor = wav
+
+    # Ensure 1D
+    if wav_tensor.dim() > 1:
+        wav_tensor = wav_tensor.squeeze()
+
+    # Calculate parameters in samples
+    n_fft = int(sampling_rate * mel_window_length / 1000)
+    hop_length = int(sampling_rate * mel_window_step / 1000)
+
+    # Create MelSpectrogram transform (no numba involved!)
+    mel_transform = T.MelSpectrogram(
+        sample_rate=sampling_rate,
+        n_fft=n_fft,
+        hop_length=hop_length,
+        n_mels=mel_n_channels,
+        norm='slaney',  # Match librosa's default normalization
+        mel_scale='htk'  # Match librosa's mel scale
+    )
+
+    # Compute mel spectrogram
+    mel_spec = mel_transform(wav_tensor)
+
+    # Convert to log scale (like librosa)
+    mel_spec = torch.log10(torch.clamp(mel_spec, min=1e-10))
+
+    # Convert back to numpy and transpose to match librosa output (time x freq)
+    return mel_spec.numpy().T.astype(np.float32)
+
+
 def _detect_speaker_changes(voice_encoder, audio: np.ndarray, sample_rate: int,
                            window_duration: float = 2.5, stride: float = 1.0,
                            similarity_threshold: float = 0.75) -> list:
@@ -69,15 +122,6 @@ def _detect_speaker_changes(voice_encoder, audio: np.ndarray, sample_rate: int,
     Returns:
         List of speaker segments with embeddings
     """
-    # Import Resemblyzer's preprocessing functions
-    try:
-        from resemblyzer import preprocess_wav
-        from resemblyzer.audio import normalize_volume
-    except ImportError:
-        # Fallback if preprocess_wav not available
-        preprocess_wav = None
-        normalize_volume = None
-
     segments = []
     window_samples = int(window_duration * sample_rate)
     stride_samples = int(stride * sample_rate)
@@ -92,35 +136,44 @@ def _detect_speaker_changes(voice_encoder, audio: np.ndarray, sample_rate: int,
     if audio_rms < 0.001:  # Nearly silent
         return segments
 
-    # CRITICAL: Preprocess entire audio first using Resemblyzer's functions
-    # This normalizes volume and ensures proper format for embedding
+    # CRITICAL: Preprocess audio using scipy (NOT librosa - it uses numba which crashes)
+    # Resample to 16kHz (Resemblyzer's expected rate) and normalize volume
     preprocessed_audio = audio
-    if preprocess_wav is not None:
-        try:
-            # preprocess_wav expects source_sr when passing numpy array
-            preprocessed_audio = preprocess_wav(audio, source_sr=sample_rate)
+    try:
+        from scipy import signal as scipy_signal
+
+        # Resample to 16kHz if needed
+        if sample_rate != 16000:
+            num_samples = int(len(audio) * 16000 / sample_rate)
+            preprocessed_audio = scipy_signal.resample(audio, num_samples)
             if sys.stdout is not None:
                 try:
-                    print(f"[WORKER] Preprocessed audio: {len(audio)} -> {len(preprocessed_audio)} samples")
+                    print(f"[WORKER] Resampled audio (scipy): {sample_rate}Hz -> 16000Hz ({len(audio)} -> {len(preprocessed_audio)} samples)")
                 except Exception:
                     pass
-            # After preprocessing, audio is at 16kHz
             sample_rate = 16000
-            # Recalculate window sizes for new sample rate
             window_samples = int(window_duration * sample_rate)
             stride_samples = int(stride * sample_rate)
-        except Exception as e:
-            if sys.stdout is not None:
-                try:
-                    print(f"[WORKER] preprocess_wav failed: {e}, using manual normalization")
-                except Exception:
-                    pass
-            # Fallback: manual normalization
-            if normalize_volume is not None:
-                try:
-                    preprocessed_audio = normalize_volume(audio, -30, increase_only=True)
-                except Exception:
-                    pass
+
+        # Normalize volume (simple RMS normalization to -30 dBFS)
+        rms = np.sqrt(np.mean(preprocessed_audio ** 2))
+        if rms > 1e-10:
+            target_rms = 10 ** (-30 / 20.0)  # -30 dBFS
+            preprocessed_audio = preprocessed_audio * (target_rms / rms)
+            preprocessed_audio = np.clip(preprocessed_audio, -1.0, 1.0)
+
+        if sys.stdout is not None:
+            try:
+                print(f"[WORKER] Preprocessed audio (scipy): normalized to -30 dBFS")
+            except Exception:
+                pass
+
+    except Exception as e:
+        if sys.stdout is not None:
+            try:
+                print(f"[WORKER] scipy preprocessing failed: {e}, using raw audio")
+            except Exception:
+                pass
 
     current_speaker_idx = 0
     prev_embedding = None
@@ -293,11 +346,10 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
                 pass
         safe_flush()
 
-    # CRITICAL: Disable numba JIT BEFORE importing anything that uses it
-    # librosa (used by Resemblyzer) uses numba for mel spectrograms, and
-    # numba JIT compilation in subprocesses causes deadlocks/crashes on Windows
+    # CRITICAL: Disable numba JIT to prevent crashes on Windows subprocess
+    # librosa uses numba internally, and numba JIT crashes on Windows PyInstaller builds
+    # We'll monkey-patch Resemblyzer to use torchaudio instead, so librosa won't be called
     os.environ['NUMBA_DISABLE_JIT'] = '1'
-    # Also set threading layer to safe defaults
     os.environ['NUMBA_THREADING_LAYER'] = 'safe'
     os.environ['NUMBA_NUM_THREADS'] = '1'
     log(f"Numba JIT disabled (NUMBA_DISABLE_JIT={os.environ.get('NUMBA_DISABLE_JIT')})")
@@ -377,6 +429,17 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
         import whisper
         from resemblyzer import VoiceEncoder
         import uuid
+
+        # CRITICAL: Monkey-patch Resemblyzer to use torchaudio instead of librosa
+        # This avoids librosa's numba dependency that crashes on Windows subprocesses
+        # torchaudio is already a dependency and uses pure PyTorch (no numba)
+        try:
+            import resemblyzer.audio
+            original_mel = resemblyzer.audio.wav_to_mel_spectrogram
+            resemblyzer.audio.wav_to_mel_spectrogram = _wav_to_mel_spectrogram_torchaudio
+            log(f"Patched Resemblyzer to use torchaudio MelSpectrogram (avoiding numba/librosa)")
+        except Exception as patch_err:
+            log(f"Warning: Could not patch Resemblyzer: {patch_err}")
 
         # Load Whisper model using openai-whisper (PyTorch backend - more stable)
         log(f"Loading Whisper {model_size} model (using openai-whisper for stability)...")
