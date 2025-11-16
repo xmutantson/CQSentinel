@@ -1164,6 +1164,12 @@ class MainWindow(QMainWindow):
                 logger.debug(f"Received transcription result for request {result.request_id}")
 
                 if result.success:
+                    # Emit voice detection signal with speech info from Whisper
+                    # has_speech: True if any segment had speech
+                    # speech_ratio: Percentage of segments with speech (0.0-1.0)
+                    self.voice_detection_signal.emit(result.has_speech, result.speech_ratio)
+                    logger.debug(f"Voice detection: has_speech={result.has_speech}, speech_ratio={result.speech_ratio:.2f}")
+
                     # Emit transcription signal (thread-safe)
                     if result.text.strip():
                         # Emit with frequency=0.0 (no frequency info in subprocess mode)
