@@ -82,6 +82,20 @@ try:
 except:
     print("⚠ resemblyzer not found")
 
+try:
+    datas += collect_data_files('whisper')
+    print("✓ Including openai-whisper data files")
+except:
+    print("⚠ openai-whisper not found")
+
+try:
+    datas += collect_data_files('tiktoken')
+    datas += collect_data_files('tiktoken_ext')
+    binaries += collect_dynamic_libs('tiktoken')
+    print("✓ Including tiktoken data files and dynamic libraries")
+except Exception as e:
+    print(f"⚠ tiktoken not found: {e}")
+
 # Hidden imports - modules that PyInstaller might miss
 hiddenimports = [
     'PyQt5.QtCore',
@@ -115,6 +129,22 @@ hiddenimports = [
     'ctranslate2',
     'resemblyzer',
     'webrtcvad',
+    # openai-whisper (PyTorch-based, more stable on Windows)
+    'whisper',
+    'whisper.audio',
+    'whisper.decoding',
+    'whisper.model',
+    'whisper.tokenizer',
+    'whisper.transcribe',
+    # tiktoken (required by openai-whisper for tokenization)
+    'tiktoken',
+    'tiktoken._tiktoken',  # Native extension
+    'tiktoken.core',
+    'tiktoken.load',
+    'tiktoken.model',
+    'tiktoken.registry',
+    'tiktoken_ext',
+    'tiktoken_ext.openai_public',
 ]
 
 # Add torch submodules - SELECTIVE IMPORT for speed!
@@ -188,6 +218,21 @@ try:
     # av_modules = ['av', 'av.audio', 'av.video', 'av.container', 'av.codec', 'av.stream']
     # hiddenimports += av_modules
     # print("✓ Including PyAV submodules (selective)")
+except:
+    pass
+
+try:
+    # openai-whisper submodules
+    hiddenimports += collect_submodules('whisper')
+    print("✓ Including openai-whisper submodules")
+except:
+    pass
+
+try:
+    # tiktoken submodules (required by openai-whisper)
+    hiddenimports += collect_submodules('tiktoken')
+    hiddenimports += collect_submodules('tiktoken_ext')
+    print("✓ Including tiktoken submodules")
 except:
     pass
 
