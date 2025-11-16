@@ -238,6 +238,23 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
         )
         log(f"Whisper model loaded (offline mode)")
 
+        # DIAGNOSTIC: Test model with short silence to verify it actually works
+        log(f"Testing model with 1-second silence...")
+        test_audio = np.zeros(16000, dtype=np.float32)  # 1 second of silence
+        try:
+            test_segments, test_info = model.transcribe(test_audio, language="en", beam_size=1)
+            test_result = list(test_segments)  # Force generator evaluation
+            log(f"Model test PASSED: transcribed {len(test_result)} segments from silence")
+        except Exception as test_e:
+            log(f"Model test FAILED: {test_e}")
+            import traceback
+            if sys.stderr is not None:
+                try:
+                    traceback.print_exc()
+                except Exception:
+                    pass
+            raise RuntimeError(f"Model failed basic transcription test: {test_e}")
+
         # Load VoiceEmbedder model
         log(f"Loading Resemblyzer voice encoder...")
         voice_encoder = VoiceEncoder()
@@ -291,6 +308,12 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
             if request.audio.dtype != np.float32:
                 log(f"Converting audio to float32 (was {request.audio.dtype})")
                 request.audio = request.audio.astype(np.float32)
+
+            # CRITICAL: Ensure audio is C-contiguous for ctranslate2
+            if not request.audio.flags['C_CONTIGUOUS']:
+                log(f"WARNING: Audio not C-contiguous, fixing...")
+                request.audio = np.ascontiguousarray(request.audio)
+                log(f"Audio now C-contiguous: {request.audio.flags['C_CONTIGUOUS']}")
 
             # Process transcription and voice ID
             try:
@@ -354,17 +377,44 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
                 # Step 2: Transcribe
                 log(f"Transcribing...")
                 log(f"About to call model.transcribe() with audio shape={request.audio.shape}")
+
+                # DIAGNOSTIC: Verify model is still valid
+                log(f"Model object type: {type(model)}")
+                log(f"Audio memory flags: C_CONTIGUOUS={request.audio.flags['C_CONTIGUOUS']}, OWNDATA={request.audio.flags['OWNDATA']}")
                 safe_flush()
+
                 transcribe_start = time.time()
                 try:
-                    segments, info = model.transcribe(
+                    # DIAGNOSTIC: Force immediate evaluation by converting to list
+                    # This avoids generator issues and gives immediate crash point
+                    log(f"Calling model.transcribe()...")
+                    safe_flush()
+
+                    segments_gen, info = model.transcribe(
                         request.audio,
                         language="en",
                         beam_size=5,
                         temperature=0.0,  # Disable fallback (Windows stability)
                         vad_filter=False  # VAD already applied
                     )
-                    log(f"model.transcribe() returned in {time.time() - transcribe_start:.2f}s")
+
+                    log(f"model.transcribe() returned generator in {time.time() - transcribe_start:.2f}s")
+                    log(f"Info: language={info.language}, language_probability={info.language_probability:.2f}")
+                    safe_flush()
+
+                    # DIAGNOSTIC: Consume generator with per-segment logging
+                    log(f"Consuming transcription segments...")
+                    segment_start = time.time()
+                    texts = []
+                    segment_count = 0
+                    for seg in segments_gen:
+                        segment_count += 1
+                        log(f"Segment {segment_count}: [{seg.start:.2f}-{seg.end:.2f}] '{seg.text.strip()}'")
+                        if seg.text.strip():
+                            texts.append(seg.text.strip())
+                        safe_flush()
+
+                    log(f"Segment iteration complete: {segment_count} segments in {time.time() - segment_start:.2f}s")
                 except Exception as te:
                     log(f"model.transcribe() EXCEPTION: {te}")
                     import traceback
@@ -375,15 +425,6 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
                             pass
                     safe_flush()
                     raise
-
-                # Collect all segments (this actually runs the transcription - it's a generator!)
-                log(f"Consuming transcription segments...")
-                segment_start = time.time()
-                texts = []
-                for seg in segments:
-                    if seg.text.strip():
-                        texts.append(seg.text.strip())
-                log(f"Segment iteration took {time.time() - segment_start:.2f}s")
 
                 result_text = " ".join(texts)
 
