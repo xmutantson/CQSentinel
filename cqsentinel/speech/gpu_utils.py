@@ -208,6 +208,20 @@ def select_device_and_workers(
         num_workers, device, msg = calculate_gpu_workers(model_name, memory_fraction)
 
         if device == "cuda" and num_workers > 0:
+            # TEMPORARY: Cap at 1 GPU worker to avoid VRAM exhaustion and CPU saturation
+            # during model loading. Multi-worker support is functional but causes issues:
+            # - 7 workers loading simultaneously exhausts 24GB VRAM
+            # - Model test transcriptions saturate CPU
+            # - 60s timeout insufficient for concurrent loading
+            # TODO: Re-enable multi-worker with staggered initialization or dynamic scaling
+            if num_workers > 1:
+                original_workers = num_workers
+                num_workers = 1
+                msg = (
+                    f"Using 1 GPU worker on {msg.split(' on ')[1].split(' (')[0]} "
+                    f"(multi-worker disabled for stability, could fit {original_workers} workers)"
+                )
+                logger.info(f"Capping GPU workers at 1 (calculated {original_workers})")
             return (device, num_workers, True, msg)
         else:
             # Fall back to CPU
