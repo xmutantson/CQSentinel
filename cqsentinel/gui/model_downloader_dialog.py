@@ -107,7 +107,7 @@ def check_dependencies_installed():
     dependencies = {
         'faster-whisper': 'faster_whisper',
         'torch': 'torch',
-        'resemblyzer': 'resemblyzer'
+        # 'resemblyzer': 'resemblyzer'  # Removed - not effective for SSB audio
     }
 
     missing = []
@@ -270,7 +270,7 @@ def install_dependencies(packages_dir, progress_callback=None):
         'faster-whisper',
         'torch',  # Will get CPU version
         'torchaudio',
-        'resemblyzer'
+        # 'resemblyzer'  # Removed - not effective for SSB audio
     ]
 
     for dep in dependencies:
@@ -356,7 +356,7 @@ class ModelDownloadThread(QThread):
                     self.progress_signal.emit(f"Missing dependencies: {', '.join(missing_deps)}")
                     self.progress_signal.emit("")
                     self.progress_signal.emit("Please install missing packages:")
-                    self.progress_signal.emit("  pip install faster-whisper torch resemblyzer")
+                    self.progress_signal.emit("  pip install faster-whisper torch torchaudio")
                     self.progress_signal.emit("")
                     self.progress_signal.emit("Click 'Skip' to continue in basic mode")
                     self.finished_signal.emit(False)
@@ -380,11 +380,8 @@ class ModelDownloadThread(QThread):
                 success = False
                 failures.append("Silero VAD")
 
-            # Download Resemblyzer
-            self.progress_signal.emit("Downloading Resemblyzer voice encoder...")
-            if not self._download_resemblyzer():
-                success = False
-                failures.append("Resemblyzer")
+            # NOTE: Resemblyzer removed - not effective for SSB audio (300-3000 Hz bandwidth)
+            # Voice fingerprinting now disabled. See FUTURE_WORK_VOICE_ID.md for custom model plans.
 
             if success:
                 self.progress_signal.emit("[OK] All models downloaded successfully!")
@@ -403,7 +400,7 @@ class ModelDownloadThread(QThread):
                     self.progress_signal.emit("This may indicate missing dependencies.")
                     self.progress_signal.emit("")
                     self.progress_signal.emit("Install required packages:")
-                    self.progress_signal.emit("  pip install faster-whisper torch resemblyzer")
+                    self.progress_signal.emit("  pip install faster-whisper torch torchaudio")
                     self.progress_signal.emit("")
                     self.progress_signal.emit("You can continue without these models.")
                     self.progress_signal.emit("Advanced features will be limited.")
@@ -775,7 +772,7 @@ class ModelDownloaderDialog(QDialog):
                     "AI Setup Failed",
                     "Failed to download AI models.\n\n"
                     "Make sure dependencies are installed:\n"
-                    "  pip install faster-whisper torch resemblyzer\n\n"
+                    "  pip install faster-whisper torch torchaudio\n\n"
                     "You can continue in basic mode or retry after installing.\n\n"
                     "Check the setup log for details."
                 )
@@ -837,19 +834,16 @@ def check_models_exist():
             vad_models = list(torch_cache.glob("snakers4_silero-vad_*"))
             vad_exists = len(vad_models) > 0
 
-        # Check for Resemblyzer
-        resemblyzer_exists = False
-        if resemblyzer_cache.exists():
-            resemblyzer_models = list(resemblyzer_cache.glob("*.pt"))
-            resemblyzer_exists = len(resemblyzer_models) > 0
+        # NOTE: Resemblyzer check removed - not effective for SSB audio
+        # Voice fingerprinting disabled. See FUTURE_WORK_VOICE_ID.md.
 
-        # All models must exist
-        models_ready = whisper_exists and vad_exists and resemblyzer_exists
+        # All models must exist (Whisper + VAD only, Resemblyzer removed)
+        models_ready = whisper_exists and vad_exists
 
         if models_ready:
             logger.info("[OK] AI models already downloaded")
         else:
-            logger.info(f"Models status: Whisper={whisper_exists}, VAD={vad_exists}, Resemblyzer={resemblyzer_exists}")
+            logger.info(f"Models status: Whisper={whisper_exists}, VAD={vad_exists}")
             logger.info("AI models need to be downloaded")
 
         return models_ready
