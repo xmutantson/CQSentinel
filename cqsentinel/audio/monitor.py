@@ -280,6 +280,14 @@ class AudioMonitor:
             self._chunks_received += 1
             self._last_chunk_time = time.time()
 
+            # Log first 5 chunks to diagnose mismatch issues
+            if self._chunks_received <= 5:
+                logger.info(
+                    f"AudioMonitor chunk #{self._chunks_received}: "
+                    f"monitoring={self._monitoring_stage.value}, chunk_stage={chunk.stage.value}, "
+                    f"match={self._monitoring_stage == chunk.stage}"
+                )
+
             # Log every 50 chunks for diagnostics
             if self._chunks_received % 50 == 0:
                 logger.debug(
