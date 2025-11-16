@@ -260,12 +260,29 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
     # even with verbose=False. If these are None, it causes AttributeError.
     class NullWriter:
         """Dummy writer that ignores all writes. Used when stdout/stderr is None."""
+        def __init__(self):
+            # Open devnull for fileno() support (needed by faulthandler)
+            self._devnull = None
+            try:
+                self._devnull = open(os.devnull, 'w')
+            except Exception:
+                pass
+
         def write(self, s):
             pass
+
         def flush(self):
             pass
+
         def isatty(self):
             return False
+
+        def fileno(self):
+            # Return devnull file descriptor if available
+            if self._devnull is not None:
+                return self._devnull.fileno()
+            # Otherwise return -1 (invalid fd)
+            return -1
 
     if sys.stdout is None:
         sys.stdout = NullWriter()
@@ -405,12 +422,14 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
 
             # Process transcription and voice ID
             try:
-                # Step 1: Speaker detection (if voice DB provided)
+                # Step 1: Speaker detection (if voice DB has entries)
                 speaker_labels = []
                 new_speakers = {}
 
-                if request.voice_db_embeddings is not None:
-                    log(f"Running speaker detection...")
+                # Only do speaker detection if we have voices to match against
+                # Empty voice DB causes crashes in Resemblyzer's embed_utterance
+                if request.voice_db_embeddings is not None and len(request.voice_db_embeddings) > 0:
+                    log(f"Running speaker detection with {len(request.voice_db_embeddings)} known voices...")
                     speaker_start = time.time()
                     try:
                         # Detect speaker changes using sliding window
@@ -461,6 +480,12 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
                     except Exception as e:
                         log(f"Speaker detection failed: {e}")
                         # Continue with transcription even if speaker detection fails
+                else:
+                    # Skip speaker detection when voice DB is empty to avoid crashes
+                    if request.voice_db_embeddings is not None:
+                        log(f"Skipping speaker detection (voice database empty)")
+                    else:
+                        log(f"Skipping speaker detection (no voice database)")
 
                 # Step 2: Transcribe
                 log(f"Transcribing...")
@@ -612,6 +637,7 @@ class SubprocessTranscriber:
         self._last_respawn_time = 0.0
         self._respawn_cooldown = 5.0  # Minimum seconds between respawn attempts
         self._worker_id_counter = 0  # For generating unique worker IDs
+        self._last_alive_count = num_workers  # Track to avoid warning spam
 
         logger.info(f"SubprocessTranscriber pool initialized: model={model_size}, compute_type={compute_type}, workers={num_workers}")
 
@@ -832,12 +858,15 @@ class SubprocessTranscriber:
         # Check how many workers are still alive
         alive_count = sum(1 for w in self.workers if w.is_alive())
 
-        if alive_count == 0:
-            logger.warning("All workers have died")
-            return False
-
-        if alive_count < self.workers_ready:
-            logger.warning(f"Some workers died: {alive_count}/{self.workers_ready} alive")
+        # Only log if count changed (prevents spam)
+        if alive_count != self._last_alive_count:
+            if alive_count == 0:
+                logger.warning("All workers have died")
+            elif alive_count < self._last_alive_count:
+                logger.warning(f"Workers died: {alive_count}/{self.num_workers} workers alive (was {self._last_alive_count})")
+            else:
+                logger.info(f"Workers recovered: {alive_count}/{self.num_workers} workers alive (was {self._last_alive_count})")
+            self._last_alive_count = alive_count
 
         return alive_count > 0
 

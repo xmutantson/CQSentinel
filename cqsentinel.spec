@@ -146,8 +146,8 @@ hiddenimports = [
     'scipy.sparse',
     'sklearn',
     'sklearn.utils._cython_blas',
-    'sklearn.neighbors.typedefs',
-    'sklearn.neighbors.quad_tree',
+    # NOTE: sklearn.neighbors.typedefs and quad_tree don't exist in sklearn 1.0+
+    # They were refactored/removed. PyInstaller handles sklearn correctly now.
     'sklearn.tree._utils',
     'sounddevice',
     'soundfile',
@@ -213,7 +213,7 @@ torch_modules = [
     'torch.utils.data',
     'torch._utils',
     'torch.hub',  # For Silero VAD model loading
-    'torch.hub.load',
+    # NOTE: torch.hub.load is a function, not a module - don't include it here
 ]
 hiddenimports += torch_modules
 

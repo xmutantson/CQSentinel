@@ -1188,6 +1188,19 @@ class MainWindow(QMainWindow):
             # Some workers dead - try to respawn (will respect cooldown)
             if not hasattr(self, '_last_respawn_warning_time'):
                 self._last_respawn_warning_time = 0.0
+            if not hasattr(self, '_last_known_alive_count'):
+                self._last_known_alive_count = self.subprocess_transcriber.num_workers
+
+            # Detect newly dead workers and adjust counter for lost requests
+            if alive_count < self._last_known_alive_count:
+                dead_count = self._last_known_alive_count - alive_count
+                with self._transcription_lock:
+                    # Assume each dead worker had at most 1 in-flight request
+                    old_count = self._active_transcriptions
+                    self._active_transcriptions = max(0, self._active_transcriptions - dead_count)
+                    if old_count != self._active_transcriptions:
+                        logger.warning(f"Adjusted active transcription count from {old_count} to {self._active_transcriptions} (workers died)")
+                self._last_known_alive_count = alive_count
 
             current_time = time.time()
             # Only warn once per 10 seconds to avoid spam
@@ -1199,6 +1212,8 @@ class MainWindow(QMainWindow):
             respawned = self.subprocess_transcriber.respawn_dead_workers()
             if respawned > 0:
                 logger.info(f"Successfully respawned {respawned} workers")
+                # Update last known count to include respawned workers
+                self._last_known_alive_count = self.subprocess_transcriber.get_alive_count()
 
         # Check for queue overload recovery
         with self._transcription_lock:
