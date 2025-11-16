@@ -764,7 +764,8 @@ class MainWindow(QMainWindow):
                 model_size = self.config.audio.whisper_model_size if hasattr(self.config.audio, 'whisper_model_size') else "small"
                 self.subprocess_transcriber = SubprocessTranscriber(
                     model_size=model_size,
-                    compute_type="float32"  # Use float32 for stability on Windows
+                    compute_type="float32",  # Use float32 for stability on Windows
+                    num_workers=1  # Single worker to avoid ctranslate2 race conditions on Windows
                 )
 
                 # Start subprocess and wait for model loading
