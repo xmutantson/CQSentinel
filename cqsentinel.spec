@@ -245,9 +245,9 @@ a = Analysis(
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
-    hookspath=[],
+    hookspath=['hooks'],  # Custom hooks directory for tiktoken, whisper, etc.
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=['hooks/hook-tiktoken.py'],  # Pre-import tiktoken native extension
     excludes=[
         'matplotlib',  # Exclude if not needed
         'tkinter',     # We use PyQt5
