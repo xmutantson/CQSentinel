@@ -423,16 +423,6 @@ class ModelDownloadThread(QThread):
             import sys
             from pathlib import Path
 
-            # CRITICAL: Pre-import tiktoken's native extension to avoid circular import
-            # This fixes "cannot import name '_tiktoken' from partially initialized module"
-            # in PyInstaller frozen builds
-            try:
-                import tiktoken._tiktoken  # Import native extension first
-                logger.info("Pre-imported tiktoken._tiktoken successfully")
-            except ImportError as e:
-                logger.warning(f"Could not pre-import tiktoken._tiktoken: {e}")
-                # Continue anyway - maybe it will work
-
             import whisper
 
             # Set up whisper cache directory
