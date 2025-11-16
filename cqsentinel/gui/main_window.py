@@ -1274,14 +1274,21 @@ class MainWindow(QMainWindow):
                     if result.new_speakers and self.voice_db:
                         import numpy as np
                         for voice_id, speaker_data in result.new_speakers.items():
-                            # speaker_data is tuple: (embedding_list, callsign, metadata)
-                            embedding = np.array(speaker_data[0])
-                            metadata = speaker_data[2] if len(speaker_data) > 2 else {}
-                            # Add new speaker to voice DB
-                            self.voice_db.add_operator(embedding, voice_id=voice_id, metadata=metadata)
-                            logger.info(f"Added new speaker to voice DB: {voice_id[:8]}")
-                            # Also log to GUI debug console
-                            self.log(f"[VOICE] New speaker detected: {voice_id[:8]}")
+                            try:
+                                # speaker_data is tuple: (embedding_list, callsign, metadata)
+                                logger.info(f"Processing new speaker {voice_id[:8]}, data type: {type(speaker_data)}, len: {len(speaker_data)}")
+                                embedding = np.array(speaker_data[0])
+                                metadata = speaker_data[2] if len(speaker_data) > 2 else {}
+                                logger.info(f"Embedding shape: {embedding.shape}, metadata: {metadata}")
+                                # Add new speaker to voice DB
+                                added_id = self.voice_db.add_operator(embedding, voice_id=voice_id, metadata=metadata)
+                                logger.info(f"Added new speaker to voice DB: {voice_id[:8]} (returned: {added_id[:8]})")
+                                # Also log to GUI debug console
+                                self.log(f"[VOICE] New speaker detected: {voice_id[:8]}")
+                            except Exception as e:
+                                logger.error(f"Failed to add speaker {voice_id[:8]} to voice DB: {e}")
+                                import traceback
+                                traceback.print_exc()
 
                     # Emit transcription signal (thread-safe)
                     if result.text.strip():
