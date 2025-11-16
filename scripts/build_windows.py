@@ -63,6 +63,73 @@ def check_dependencies():
     return True
 
 
+def validate_native_extensions():
+    """
+    Validate that native extensions match the current Python version.
+
+    This catches issues like tiktoken compiled for Python 3.11 but running in Python 3.10,
+    which causes "Library not found: python311.dll" errors during PyInstaller analysis.
+    """
+    print("🔬 Validating native extension compatibility...")
+
+    py_version = f"cp{sys.version_info.major}{sys.version_info.minor}"
+    py_version_str = f"{sys.version_info.major}.{sys.version_info.minor}"
+
+    print(f"  Python version: {py_version_str} (expecting {py_version} extensions)")
+
+    # Packages with native extensions that must match Python version
+    critical_packages = ['tiktoken', 'torch', 'numpy']
+
+    import site
+    search_dirs = []
+    try:
+        search_dirs.extend(site.getsitepackages())
+    except Exception:
+        pass
+    search_dirs.extend(sys.path)
+
+    errors = []
+
+    for package in critical_packages:
+        for search_dir in search_dirs:
+            if not os.path.isdir(search_dir):
+                continue
+
+            package_dir = os.path.join(search_dir, package)
+            if not os.path.isdir(package_dir):
+                continue
+
+            # Look for .pyd or .so files
+            for fname in os.listdir(package_dir):
+                if fname.endswith('.pyd') or (fname.endswith('.so') and 'cpython' in fname):
+                    # Check if version tag matches
+                    if 'cp3' in fname and py_version not in fname:
+                        # Extract the actual version from filename
+                        import re
+                        match = re.search(r'cp(\d+)', fname)
+                        if match:
+                            ext_version = f"cp{match.group(1)}"
+                            if ext_version != py_version:
+                                errors.append(f"  ❌ {package}: {fname} is for Python {ext_version[2]}.{ext_version[3:]}, not {py_version_str}")
+                                print(errors[-1])
+                    else:
+                        print(f"  ✓ {package}: {fname}")
+            break  # Only check first found package directory
+
+    if errors:
+        print(f"\n❌ Native extension version mismatch detected!")
+        print("This will cause PyInstaller to fail with 'Library not found: pythonXXX.dll' errors.")
+        print("\nFix by reinstalling the mismatched packages:")
+        print("  pip install --force-reinstall tiktoken")
+        print("\nOr recreate the conda environment:")
+        print("  conda env remove -n cqsentinel")
+        print("  conda env create -f environment.yml")
+        return False
+
+    print("✓ All native extensions match Python version\n")
+    return True
+
+
 def check_hamlib():
     """Check if Hamlib is present, download if needed"""
     print("📡 Checking for Hamlib...")
@@ -204,6 +271,10 @@ def main():
 
     # Check dependencies
     if not check_dependencies():
+        return 1
+
+    # Validate native extensions match Python version
+    if not validate_native_extensions():
         return 1
 
     # Check/download Hamlib
