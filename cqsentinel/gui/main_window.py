@@ -1271,7 +1271,9 @@ class MainWindow(QMainWindow):
                         logger.info(f"No new speakers in result (new_speakers={result.new_speakers})")
 
                     # Update voice DB with new speakers detected in subprocess
+                    logger.info(f"voice_db check: exists={self.voice_db is not None}, type={type(self.voice_db)}")
                     if result.new_speakers and self.voice_db:
+                        logger.info(f"Entering voice DB update loop with {len(result.new_speakers)} speakers")
                         import numpy as np
                         for voice_id, speaker_data in result.new_speakers.items():
                             try:
