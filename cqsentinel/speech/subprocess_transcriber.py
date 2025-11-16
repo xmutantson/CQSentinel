@@ -260,12 +260,29 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
     # even with verbose=False. If these are None, it causes AttributeError.
     class NullWriter:
         """Dummy writer that ignores all writes. Used when stdout/stderr is None."""
+        def __init__(self):
+            # Open devnull for fileno() support (needed by faulthandler)
+            self._devnull = None
+            try:
+                self._devnull = open(os.devnull, 'w')
+            except Exception:
+                pass
+
         def write(self, s):
             pass
+
         def flush(self):
             pass
+
         def isatty(self):
             return False
+
+        def fileno(self):
+            # Return devnull file descriptor if available
+            if self._devnull is not None:
+                return self._devnull.fileno()
+            # Otherwise return -1 (invalid fd)
+            return -1
 
     if sys.stdout is None:
         sys.stdout = NullWriter()
