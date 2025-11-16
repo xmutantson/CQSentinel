@@ -466,15 +466,18 @@ class SubprocessTranscriber:
         serialized = {}
         try:
             # Get all operators from voice DB
-            for voice_id in voice_db.list_operators():
-                operator = voice_db.get_operator(voice_id)
+            for operator in voice_db.get_all_operators():
                 if operator and operator.embedding is not None:
                     # Convert embedding to list for serialization
                     embedding_list = operator.embedding.tolist() if hasattr(operator.embedding, 'tolist') else list(operator.embedding)
                     callsign = operator.callsign if hasattr(operator, 'callsign') else None
-                    metadata = operator.metadata if hasattr(operator, 'metadata') else {}
+                    metadata = {}
+                    if hasattr(operator, 'first_heard'):
+                        metadata['first_heard'] = operator.first_heard.isoformat() if operator.first_heard else None
+                    if hasattr(operator, 'last_heard'):
+                        metadata['last_heard'] = operator.last_heard.isoformat() if operator.last_heard else None
 
-                    serialized[voice_id] = (embedding_list, callsign, metadata)
+                    serialized[operator.voice_id] = (embedding_list, callsign, metadata)
 
             logger.debug(f"Serialized {len(serialized)} voices for subprocess")
         except Exception as e:
