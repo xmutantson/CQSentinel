@@ -19,17 +19,24 @@ import logging
 import traceback
 import atexit
 import faulthandler
+import signal
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 # Global reference to main window for cleanup
 _main_window = None
+_cleanup_in_progress = False
 
 
 def cleanup_resources():
     """Cleanup all resources (rigctld, audio, etc.) on exit"""
-    global _main_window
+    global _main_window, _cleanup_in_progress
+
+    # Prevent recursive cleanup
+    if _cleanup_in_progress:
+        return
+    _cleanup_in_progress = True
 
     if _main_window is None:
         return
@@ -44,11 +51,12 @@ def cleanup_resources():
             except Exception as e:
                 logger.error(f"Error stopping transcription poll timer: {e}")
 
-        # Stop transcription subprocess
+        # Stop transcription subprocess (CUDA cleanup happens here)
         if hasattr(_main_window, 'subprocess_transcriber') and _main_window.subprocess_transcriber:
-            logger.info("Stopping transcription subprocess...")
+            logger.info("Stopping transcription subprocess (releasing GPU resources)...")
             try:
                 _main_window.subprocess_transcriber.stop()
+                logger.info("Transcription subprocess stopped")
             except Exception as e:
                 logger.error(f"Error stopping transcription subprocess: {e}")
 
@@ -77,6 +85,19 @@ def cleanup_resources():
         logger.info("Resource cleanup complete")
     except Exception as e:
         logger.error(f"Error during cleanup: {e}")
+
+
+def signal_handler(signum, frame):
+    """Handle termination signals for graceful shutdown"""
+    signal_name = signal.Signals(signum).name if hasattr(signal, 'Signals') else str(signum)
+    print(f"\nReceived signal {signal_name} - initiating graceful shutdown...")
+    logger.warning(f"Received signal {signal_name} - initiating graceful shutdown")
+
+    # Clean up resources (especially GPU workers)
+    cleanup_resources()
+
+    # Exit gracefully
+    sys.exit(0)
 
 
 def excepthook(exc_type, exc_value, exc_tb):
@@ -191,6 +212,36 @@ def main():
 
         # Register cleanup handler for normal exit and crashes
         atexit.register(cleanup_resources)
+
+        # Register signal handlers for graceful shutdown (important for GPU cleanup)
+        # SIGINT: Ctrl+C
+        # SIGTERM: kill command (Unix) or TaskManager (Windows)
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+
+        # Windows-specific: Handle console close events (closing PowerShell window)
+        if sys.platform == 'win32':
+            try:
+                import win32api
+                import win32con
+
+                def windows_console_handler(ctrl_type):
+                    """Handle Windows console events (close, logoff, shutdown)"""
+                    # CTRL_CLOSE_EVENT (2): Console window being closed
+                    # CTRL_LOGOFF_EVENT (5): User logging off
+                    # CTRL_SHUTDOWN_EVENT (6): System shutting down
+                    if ctrl_type in (win32con.CTRL_CLOSE_EVENT, win32con.CTRL_LOGOFF_EVENT,
+                                     win32con.CTRL_SHUTDOWN_EVENT):
+                        print(f"\nWindows console event {ctrl_type} - cleaning up GPU resources...")
+                        cleanup_resources()
+                        return True  # Signal handled
+                    return False  # Let default handler run
+
+                win32api.SetConsoleCtrlHandler(windows_console_handler, True)
+                logger.info("Registered Windows console close handler for GPU cleanup")
+            except ImportError:
+                logger.warning("pywin32 not available - console close events may not trigger cleanup")
+                logger.warning("If you see BSOD on console close, install pywin32: pip install pywin32")
 
         logger.info("=" * 60)
         logger.info("CQSentinel starting...")

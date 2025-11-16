@@ -78,3 +78,8 @@ mypy>=1.4.0
 # Building Windows executable
 pyinstaller>=5.13.0
 pyinstaller-hooks-contrib>=2023.6
+
+# Windows-specific: Console event handling for GPU cleanup
+# Required to properly release CUDA resources when PowerShell is closed
+# Without this, abrupt termination can cause VIDEO_SCHEDULER_INTERNAL_ERROR (BSOD)
+pywin32>=306; sys_platform == 'win32'

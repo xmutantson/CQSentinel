@@ -420,7 +420,39 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
             safe_flush()
             # Continue processing
 
-    log(f"Worker shutting down")
+    log(f"Worker shutting down - cleaning up GPU resources...")
+
+    # CRITICAL: Clean up CUDA resources to prevent BSOD on abrupt termination
+    try:
+        # Delete model to free GPU memory
+        if 'model' in dir():
+            del model
+            log(f"Model deleted from memory")
+
+        # Clean up CUDA cache if using GPU
+        if device == "cuda":
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    # Synchronize to ensure all GPU operations complete
+                    torch.cuda.synchronize()
+                    log(f"CUDA operations synchronized")
+
+                    # Empty CUDA cache to free GPU memory
+                    torch.cuda.empty_cache()
+                    log(f"CUDA cache cleared")
+
+                    # Reset peak memory stats (diagnostic)
+                    torch.cuda.reset_peak_memory_stats()
+                    log(f"CUDA memory stats reset")
+            except Exception as cuda_e:
+                log(f"Warning: CUDA cleanup error (non-fatal): {cuda_e}")
+
+        log(f"GPU cleanup complete")
+    except Exception as cleanup_e:
+        log(f"Error during GPU cleanup: {cleanup_e}")
+
+    log(f"Worker shutdown complete")
 
 
 class SubprocessTranscriber:
