@@ -119,20 +119,20 @@ BAND_10M = BandProfile(
 
 # VHF Bands
 BAND_6M = BandProfile(
-    name="6m SSB",
+    name="6m",
     band_name="6m",
-    freq_start=50.100e6,  # SSB/CW portion
-    freq_end=50.300e6,    # Main SSB calling area
+    freq_start=50.0e6,   # Full 6m band
+    freq_end=54.0e6,
     step_size=1000,
     dwell_with_voice=60.0,
     dwell_without_voice=3.0
 )
 
 BAND_2M = BandProfile(
-    name="2m SSB",
+    name="2m",
     band_name="2m",
-    freq_start=144.100e6,  # SSB portion (above repeater inputs)
-    freq_end=144.275e6,     # Main weak signal portion
+    freq_start=144.0e6,  # Full 2m band
+    freq_end=148.0e6,
     step_size=1000,
     dwell_with_voice=60.0,
     dwell_without_voice=3.0
@@ -140,10 +140,10 @@ BAND_2M = BandProfile(
 
 # UHF Band
 BAND_70CM = BandProfile(
-    name="70cm SSB",
+    name="70cm",
     band_name="70cm",
-    freq_start=432.100e6,  # SSB/CW portion
-    freq_end=432.400e6,     # Weak signal portion
+    freq_start=420.0e6,  # Full 70cm band
+    freq_end=450.0e6,
     step_size=1000,
     dwell_with_voice=60.0,
     dwell_without_voice=3.0
