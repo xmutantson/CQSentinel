@@ -1447,6 +1447,9 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel("Step:"))
         self.step_size_combo = QComboBox()
         self.step_size_combo.addItem("Auto", None)  # Use profile default
+        self.step_size_combo.addItem("0.25 kHz", 250)
+        self.step_size_combo.addItem("0.5 kHz", 500)
+        self.step_size_combo.addItem("1 kHz", 1000)
         self.step_size_combo.addItem("5 kHz", 5000)
         self.step_size_combo.addItem("12.5 kHz", 12500)
         self.step_size_combo.addItem("25 kHz", 25000)
@@ -1971,6 +1974,12 @@ class MainWindow(QMainWindow):
             # Reset carrier detector state
             self.signal_scanner.carrier_detector.reset()
             logger.info("Recording session and carrier detector reset")
+
+        # Interrupt any blocking audio capture (BandScanner's sd.rec + sd.wait)
+        if self.audio:
+            self.audio.interrupt_recording()
+            self.log("[SKIP] Interrupted audio capture")
+            logger.info("Audio capture interrupted")
 
         # Tell BandScanner to skip current frequency
         if self.band_scanner:

@@ -162,6 +162,19 @@ class AudioCapture:
             logger.error(f"Recording failed: {e}")
             return np.array([], dtype=self.dtype)
 
+    def interrupt_recording(self):
+        """
+        Interrupt any ongoing blocking recording (sd.rec + sd.wait).
+
+        This is useful for implementing a 'skip' feature that immediately
+        stops audio capture.
+        """
+        try:
+            sd.stop()
+            logger.info("Recording interrupted by user request")
+        except Exception as e:
+            logger.warning(f"Error interrupting recording: {e}")
+
     def start_stream(self, callback: Callable[[np.ndarray], None]) -> bool:
         """
         Start streaming audio with callback (non-blocking)

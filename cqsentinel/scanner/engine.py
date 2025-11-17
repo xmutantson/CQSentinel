@@ -477,6 +477,19 @@ class BandScanner:
             self.progress.state = ScanState.LISTENING
             full_audio = self.audio_cap.record(self.dwell_with_voice)
 
+            # Check for skip after audio capture (may have been interrupted)
+            with self._lock:
+                if self._skip_requested:
+                    self._skip_requested = False
+                    logger.info(f"{centered_freq/1e6:.3f} MHz: Skipped by user after audio capture")
+                    return
+
+            # Check if audio capture was interrupted (too short)
+            expected_samples = int(self.dwell_with_voice * self.audio_cap.sample_rate)
+            if len(full_audio) < expected_samples * 0.5:  # Less than 50% of expected
+                logger.info(f"{centered_freq/1e6:.3f} MHz: Audio capture interrupted, skipping processing")
+                return
+
             # Process audio
             self.progress.state = ScanState.PROCESSING
             result = self.pipeline.process(full_audio)
