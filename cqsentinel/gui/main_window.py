@@ -1859,6 +1859,8 @@ class MainWindow(QMainWindow):
                     behavior_analyzer=self.behavior_analyzer,
                     band_map=self.band_map,
                     scan_speed_steps_per_sec=getattr(self.config.scan, 'scan_speed_steps_per_sec', 1.0),
+                    s_meter_threshold=getattr(self.config.scan, 's_meter_threshold', 3),
+                    use_s_meter_scan=getattr(self.config.scan, 'use_s_meter_scan', True),
                     on_station_detected=on_station_detected_callback,
                     on_progress_update=on_progress_update_callback
                 )
@@ -2386,6 +2388,8 @@ class MainWindow(QMainWindow):
             behavior_analyzer=self.behavior_analyzer,
             band_map=current_band_map,
             scan_speed_steps_per_sec=getattr(self.config.scan, 'scan_speed_steps_per_sec', 1.0),
+            s_meter_threshold=getattr(self.config.scan, 's_meter_threshold', 3),
+            use_s_meter_scan=getattr(self.config.scan, 'use_s_meter_scan', True),
             on_station_detected=on_station_detected_callback,
             on_progress_update=on_progress_update_callback
         )

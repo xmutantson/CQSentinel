@@ -131,6 +131,8 @@ class BandScanner:
         # Scan parameters
         step_size_hz: int = 1000,
         scan_speed_steps_per_sec: float = 1.0,
+        s_meter_threshold: int = 3,
+        use_s_meter_scan: bool = True,
         dwell_with_voice_sec: float = 60.0,
         dwell_without_voice_sec: float = 3.0,
         quick_check_duration: float = 2.0,
@@ -155,6 +157,8 @@ class BandScanner:
             multiplier_tracker: MultiplierTracker instance (optional)
             step_size_hz: Frequency step in Hz (default: 1 kHz)
             scan_speed_steps_per_sec: Scan rate (0.2 to 5.0 steps/sec)
+            s_meter_threshold: Minimum S-meter reading to check for voice (0-9+)
+            use_s_meter_scan: If True, use fast S-meter based scanning
             dwell_with_voice_sec: Dwell time when voice detected
             dwell_without_voice_sec: Dwell time when no voice
             quick_check_duration: Quick voice check duration
@@ -177,6 +181,8 @@ class BandScanner:
         # Parameters
         self.step_size_hz = step_size_hz
         self.scan_speed = scan_speed_steps_per_sec
+        self.s_meter_threshold = s_meter_threshold
+        self.use_s_meter_scan = use_s_meter_scan
         self.dwell_with_voice = dwell_with_voice_sec
         self.dwell_without_voice = dwell_without_voice_sec
         self.quick_check_duration = quick_check_duration
@@ -196,7 +202,10 @@ class BandScanner:
         self._pause_requested = False
         self._lock = threading.Lock()
 
-        logger.info(f"BandScanner initialized (scan_speed={scan_speed_steps_per_sec} steps/sec, delay={self.step_delay:.2f}s)")
+        if use_s_meter_scan:
+            logger.info(f"BandScanner initialized (S-meter scan S>={s_meter_threshold}, speed={scan_speed_steps_per_sec} steps/sec)")
+        else:
+            logger.info(f"BandScanner initialized (audio scan, speed={scan_speed_steps_per_sec} steps/sec, delay={self.step_delay:.2f}s)")
 
     def start_scan(
         self,
@@ -366,9 +375,23 @@ class BandScanner:
             # Tune radio
             self.progress.state = ScanState.MOVING
             self.radio.set_frequency(int(frequency))
-            time.sleep(0.1)  # Settling time
+            time.sleep(0.05)  # Quick settling time
 
-            # Quick voice check
+            # Fast S-meter check first (if enabled)
+            if self.use_s_meter_scan:
+                try:
+                    s_meter = self.radio.get_strength()
+                    if s_meter < self.s_meter_threshold:
+                        # Signal too weak, skip immediately
+                        logger.debug(f"{frequency/1e6:.3f} MHz: S{s_meter} < S{self.s_meter_threshold}, skipping")
+                        time.sleep(self.step_delay)
+                        return
+                    logger.debug(f"{frequency/1e6:.3f} MHz: S{s_meter} >= S{self.s_meter_threshold}, checking voice")
+                except Exception as e:
+                    # S-meter failed, fall back to voice detection
+                    logger.debug(f"S-meter read failed: {e}, using voice detection")
+
+            # Quick voice check (only if S-meter passed or not enabled)
             self.progress.state = ScanState.VOICE_DETECTED
             quick_audio = self.audio_cap.record(self.quick_check_duration)
             quick_result = self.pipeline.process_quick(quick_audio)

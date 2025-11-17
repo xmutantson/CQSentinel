@@ -350,6 +350,27 @@ class SettingsDialog(QDialog):
         )
         scan_layout.addRow("Scan Speed:", self.scan_speed_spin)
 
+        # S-meter based scanning
+        self.use_s_meter_check = QCheckBox("Use S-meter for fast scanning")
+        self.use_s_meter_check.setToolTip(
+            "When enabled, checks S-meter first before audio capture.\n"
+            "Skip frequencies with weak signals instantly - much faster!"
+        )
+        self.use_s_meter_check.setChecked(True)
+        scan_layout.addRow("Fast Scan:", self.use_s_meter_check)
+
+        self.s_meter_threshold_spin = QSpinBox()
+        self.s_meter_threshold_spin.setRange(0, 9)
+        self.s_meter_threshold_spin.setValue(3)
+        self.s_meter_threshold_spin.setPrefix("S")
+        self.s_meter_threshold_spin.setToolTip(
+            "Minimum S-meter reading to check for voice.\n"
+            "S3 = typical noise floor + weak signals\n"
+            "S5 = moderate signals\n"
+            "S7 = strong signals only"
+        )
+        scan_layout.addRow("S-Meter Threshold:", self.s_meter_threshold_spin)
+
         scan_group.setLayout(scan_layout)
         layout.addWidget(scan_group)
 
@@ -556,6 +577,16 @@ class SettingsDialog(QDialog):
         else:
             self.scan_speed_spin.setValue(1.0)
 
+        if hasattr(self.config.scan, 'use_s_meter_scan'):
+            self.use_s_meter_check.setChecked(self.config.scan.use_s_meter_scan)
+        else:
+            self.use_s_meter_check.setChecked(True)
+
+        if hasattr(self.config.scan, 's_meter_threshold'):
+            self.s_meter_threshold_spin.setValue(self.config.scan.s_meter_threshold)
+        else:
+            self.s_meter_threshold_spin.setValue(3)
+
         # Advanced settings
         # GPU settings
         if hasattr(self.config.audio, 'use_gpu'):
@@ -637,7 +668,10 @@ class SettingsDialog(QDialog):
 
         # Scanning settings
         self.config.scan.scan_speed_steps_per_sec = self.scan_speed_spin.value()
-        logger.info(f"Scan speed set to {self.config.scan.scan_speed_steps_per_sec} steps/sec")
+        self.config.scan.use_s_meter_scan = self.use_s_meter_check.isChecked()
+        self.config.scan.s_meter_threshold = self.s_meter_threshold_spin.value()
+        logger.info(f"Scan settings: speed={self.config.scan.scan_speed_steps_per_sec} steps/sec, "
+                   f"S-meter={self.config.scan.use_s_meter_scan}, threshold=S{self.config.scan.s_meter_threshold}")
 
         # Advanced settings - GPU and transcription
         self.config.audio.use_gpu = self.use_gpu_check.isChecked()
