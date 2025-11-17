@@ -1254,7 +1254,7 @@ class MainWindow(QMainWindow):
         bandmaps_layout.setContentsMargins(0, 0, 0, 0)
 
         # Create band map widgets for all bands (ordered from highest to lowest frequency)
-        for band_name in ["10m", "15m", "20m", "40m", "80m", "160m"]:
+        for band_name in ["70cm", "2m", "6m", "10m", "15m", "20m", "40m", "80m", "160m"]:
             if band_name in BAND_PROFILES:
                 profile = BAND_PROFILES[band_name]
 
@@ -1367,7 +1367,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel("Bands:"))
 
         self.band_checkboxes = {}
-        for band in ["10m", "15m", "20m", "40m", "80m", "160m"]:
+        for band in ["70cm", "2m", "6m", "10m", "15m", "20m", "40m", "80m", "160m"]:
             cb = QCheckBox(band)
             cb.setChecked(band in self.config.scan.enabled_bands)
             cb.stateChanged.connect(self.on_band_selection_changed)

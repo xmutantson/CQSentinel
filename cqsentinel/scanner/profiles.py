@@ -117,6 +117,38 @@ BAND_10M = BandProfile(
     dwell_without_voice=3.0
 )
 
+# VHF Bands
+BAND_6M = BandProfile(
+    name="6m SSB",
+    band_name="6m",
+    freq_start=50.100e6,  # SSB/CW portion
+    freq_end=50.300e6,    # Main SSB calling area
+    step_size=1000,
+    dwell_with_voice=60.0,
+    dwell_without_voice=3.0
+)
+
+BAND_2M = BandProfile(
+    name="2m SSB",
+    band_name="2m",
+    freq_start=144.100e6,  # SSB portion (above repeater inputs)
+    freq_end=144.275e6,     # Main weak signal portion
+    step_size=1000,
+    dwell_with_voice=60.0,
+    dwell_without_voice=3.0
+)
+
+# UHF Band
+BAND_70CM = BandProfile(
+    name="70cm SSB",
+    band_name="70cm",
+    freq_start=432.100e6,  # SSB/CW portion
+    freq_end=432.400e6,     # Weak signal portion
+    step_size=1000,
+    dwell_with_voice=60.0,
+    dwell_without_voice=3.0
+)
+
 # Field Day focused (most active bands)
 FIELD_DAY_20M = BandProfile(
     name="Field Day 20m",
@@ -161,6 +193,9 @@ BAND_PROFILES: Dict[str, BandProfile] = {
     "20m": BAND_20M,
     "15m": BAND_15M,
     "10m": BAND_10M,
+    "6m": BAND_6M,
+    "2m": BAND_2M,
+    "70cm": BAND_70CM,
     "field_day_20m": FIELD_DAY_20M,
     "field_day_40m": FIELD_DAY_40M,
     "quick_20m": QUICK_20M,
@@ -212,6 +247,20 @@ ALL_HF_BANDS = MultiBandProfile(
     repeat=True
 )
 
+# All bands including VHF/UHF
+ALL_BANDS = MultiBandProfile(
+    name="All Bands (HF/VHF/UHF)",
+    bands=["160m", "80m", "40m", "20m", "15m", "10m", "6m", "2m", "70cm"],
+    repeat=True
+)
+
+# VHF/UHF weak signal bands
+VHF_UHF_BANDS = MultiBandProfile(
+    name="VHF/UHF Weak Signal",
+    bands=["6m", "2m", "70cm"],
+    repeat=True
+)
+
 # Daytime bands
 DAYTIME_BANDS = MultiBandProfile(
     name="Daytime Bands",
@@ -230,6 +279,8 @@ MULTI_BAND_PROFILES: Dict[str, MultiBandProfile] = {
     "hf_contest": HF_CONTEST_BANDS,
     "field_day": FIELD_DAY_BANDS,
     "all_hf": ALL_HF_BANDS,
+    "all_bands": ALL_BANDS,
+    "vhf_uhf": VHF_UHF_BANDS,
     "daytime": DAYTIME_BANDS,
     "nighttime": NIGHTTIME_BANDS,
 }
