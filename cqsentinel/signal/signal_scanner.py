@@ -44,7 +44,7 @@ def frequency_to_band(frequency_hz: float) -> Optional[str]:
 
 class SignalScanner:
     """
-    Manages the complete signal detection → transcription → band map pipeline.
+    Manages the complete signal detection -> transcription -> band map pipeline.
 
     This is the main orchestrator that:
     1. Monitors radio frequency and audio
@@ -152,7 +152,7 @@ class SignalScanner:
 
     def _on_session_state_change(self, old_state: SessionState, new_state: SessionState):
         """Handle session state changes."""
-        logger.debug(f"Session state: {old_state.value} → {new_state.value}")
+        logger.debug(f"Session state: {old_state.value} -> {new_state.value}")
 
         if self.on_session_state_change:
             self.on_session_state_change(old_state, new_state)
