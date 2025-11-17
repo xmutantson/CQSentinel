@@ -110,18 +110,62 @@ class HamlibController:
             raise RadioConnectionError("Not connected to rigctld")
 
         try:
+            # Flush any leftover data in socket buffer before sending
+            self.sock.setblocking(False)
+            try:
+                while True:
+                    leftover = self.sock.recv(1024)
+                    if not leftover:
+                        break
+            except BlockingIOError:
+                pass  # No data to flush, that's fine
+            finally:
+                self.sock.setblocking(True)
+
             # Send command
             self.sock.sendall(f"{command}\n".encode())
 
-            # Read response
+            # Read response - handle multi-line responses properly
+            # rigctld responses end with either:
+            # 1. A number on single line (frequency)
+            # 2. "RPRT N" for commands that return status
+            # 3. Multiple lines for mode (MODE\nBANDWIDTH\n)
             response = b""
-            while True:
-                chunk = self.sock.recv(1024)
-                if not chunk:
-                    break
-                response += chunk
-                if b"\n" in response:
-                    break
+            self.sock.settimeout(2.0)  # 2 second timeout
+            try:
+                while True:
+                    chunk = self.sock.recv(1024)
+                    if not chunk:
+                        break
+                    response += chunk
+
+                    # Check if we have a complete response
+                    decoded = response.decode('utf-8')
+                    lines = decoded.strip().split('\n')
+
+                    # For RPRT responses (command acknowledgment)
+                    if lines[-1].startswith("RPRT"):
+                        break
+
+                    # For single-value responses (frequency, strength, etc.)
+                    # These are just a number followed by newline
+                    if len(lines) == 1 and lines[0].strip().lstrip('-').isdigit():
+                        break
+
+                    # For mode response (two lines: MODE and BANDWIDTH)
+                    if command.lower() == "m" and len(lines) >= 2:
+                        # Mode is first line, bandwidth is second
+                        if lines[1].strip().isdigit():
+                            break
+
+                    # Safety check - don't read forever
+                    if len(response) > 1000:
+                        break
+
+            except socket.timeout:
+                logger.debug(f"Socket timeout reading response for '{command}'")
+            finally:
+                self.sock.settimeout(None)
 
             result = response.decode('utf-8').strip()
 
