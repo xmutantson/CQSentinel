@@ -637,7 +637,7 @@ class MainWindow(QMainWindow):
         self.scan_queue = []  # Queue of bands to scan
         self.current_scan_band = None  # Current band being scanned
         self.enabled_bands_for_scan = []  # Bands that were enabled when scan started (for continuous loop)
-        self.signal_scanner: SignalScanner = None  # Signal detection → band map pipeline
+        self.signal_scanner: SignalScanner = None  # Signal detection -> band map pipeline
 
         # Audio monitoring (new broadcaster pattern)
         self.audio_broadcaster = AudioBroadcaster()
@@ -824,7 +824,7 @@ class MainWindow(QMainWindow):
             # The band_maps dictionary is already created in init_ui
             self.log("  Band maps initialized for all bands")
 
-            # Signal Scanner - integrates signal detection → transcription → band map population
+            # Signal Scanner - integrates signal detection -> transcription -> band map population
             if not self.signal_scanner:
                 self.log("  Initializing signal scanner pipeline...")
                 self.signal_scanner = SignalScanner(
@@ -836,7 +836,7 @@ class MainWindow(QMainWindow):
                     on_station_added=self._on_station_discovered,
                     on_session_state_change=self._on_session_state_changed
                 )
-                self.log("  Signal scanner ready (detects signals → records 90s → transcribes → updates band maps)")
+                self.log("  Signal scanner ready (detects signals -> records 90s -> transcribes -> updates band maps)")
                 logger.info("SignalScanner initialized with band map integration")
 
             self.use_full_scanner = True
@@ -904,7 +904,7 @@ class MainWindow(QMainWindow):
 
                 Small chunks (64ms) come from sounddevice. We:
                 1. Broadcast raw audio immediately (for real-time monitoring)
-                2. Feed SignalScanner for intelligent signal detection → 90s recording → transcription
+                2. Feed SignalScanner for intelligent signal detection -> 90s recording -> transcription
                 3. SignalScanner handles the full pipeline and updates band maps
                 """
                 try:
@@ -1851,7 +1851,7 @@ class MainWindow(QMainWindow):
                 self.log("Using FULL SCANNER with AI features:")
                 self.log("  [OK] Audio processing (noise reduction + voice detection)")
                 self.log("  [OK] Speech transcription (Whisper AI)")
-                self.log("  [OK] Signal detection → 90s recording → band map population")
+                self.log("  [OK] Signal detection -> 90s recording -> band map population")
                 self.log("  [OK] SSB auto-centering")
                 self.log("  [OK] Contest logic (callsign extraction)")
 
@@ -2029,7 +2029,7 @@ class MainWindow(QMainWindow):
         Callback from SignalScanner when session state changes.
         Emits signal for thread-safe GUI update.
         """
-        logger.debug(f"Session state changed: {old_state.value} → {new_state.value}")
+        logger.debug(f"Session state changed: {old_state.value} -> {new_state.value}")
         self.session_state_changed_signal.emit(old_state, new_state)
 
     def _handle_station_discovered(self, station, band_name: str, result):
