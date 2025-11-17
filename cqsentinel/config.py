@@ -51,6 +51,7 @@ class BandPlan:
 class ScanConfig:
     """Scanning parameters"""
     step_size_hz: int = 1000  # 1 kHz steps
+    scan_speed_steps_per_sec: float = 1.0  # Range: 0.2 (1 step/5sec) to 5.0 (5 steps/sec)
     dwell_with_voice_sec: int = 60
     dwell_without_voice_sec: int = 5
     auto_center_enabled: bool = True
@@ -72,6 +73,10 @@ class AudioConfig:
     whisper_beam_size: int = 5  # Beam search size (1=greedy, 5=balanced)
     whisper_temperature: float = 0.0  # 0.0 = deterministic decoding
     whisper_no_speech_threshold: float = 0.6  # Higher = fewer false positives
+
+    # OpenAI Whisper API (cloud-based, supersedes local when API key provided)
+    openai_api_key: str = ""  # Empty = use local Whisper, set key = use OpenAI API
+    openai_whisper_model: str = "whisper-1"  # OpenAI Whisper model
 
     # Pitch detection (for SSB auto-centering)
     use_crepe_pitch: bool = False  # GPU-accelerated pitch detection

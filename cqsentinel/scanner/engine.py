@@ -130,6 +130,7 @@ class BandScanner:
         multiplier_tracker=None,
         # Scan parameters
         step_size_hz: int = 1000,
+        scan_speed_steps_per_sec: float = 1.0,
         dwell_with_voice_sec: float = 60.0,
         dwell_without_voice_sec: float = 3.0,
         quick_check_duration: float = 2.0,
@@ -153,6 +154,7 @@ class BandScanner:
             n3fjp_client: N3FJPClient instance (optional)
             multiplier_tracker: MultiplierTracker instance (optional)
             step_size_hz: Frequency step in Hz (default: 1 kHz)
+            scan_speed_steps_per_sec: Scan rate (0.2 to 5.0 steps/sec)
             dwell_with_voice_sec: Dwell time when voice detected
             dwell_without_voice_sec: Dwell time when no voice
             quick_check_duration: Quick voice check duration
@@ -174,10 +176,14 @@ class BandScanner:
 
         # Parameters
         self.step_size_hz = step_size_hz
+        self.scan_speed = scan_speed_steps_per_sec
         self.dwell_with_voice = dwell_with_voice_sec
         self.dwell_without_voice = dwell_without_voice_sec
         self.quick_check_duration = quick_check_duration
         self.min_contestness = min_contestness_score
+
+        # Calculate delay between steps based on scan speed
+        self.step_delay = 1.0 / max(0.2, min(5.0, scan_speed_steps_per_sec))
 
         # Callbacks
         self.on_station_detected = on_station_detected
@@ -190,7 +196,7 @@ class BandScanner:
         self._pause_requested = False
         self._lock = threading.Lock()
 
-        logger.info("BandScanner initialized")
+        logger.info(f"BandScanner initialized (scan_speed={scan_speed_steps_per_sec} steps/sec, delay={self.step_delay:.2f}s)")
 
     def start_scan(
         self,
@@ -259,7 +265,8 @@ class BandScanner:
 
             logger.info(
                 f"Started scan: {freq_start/1e6:.3f}-{freq_end/1e6:.3f} MHz, "
-                f"step={self.step_size_hz} Hz, mode={radio_mode}"
+                f"step={self.step_size_hz} Hz, mode={radio_mode}, "
+                f"speed={self.scan_speed} steps/sec"
             )
 
     def stop_scan(self):
@@ -366,8 +373,9 @@ class BandScanner:
             quick_result = self.pipeline.process_quick(quick_audio)
 
             if not quick_result['has_speech']:
-                # No voice, move on quickly
+                # No voice, move on after scan speed delay
                 logger.debug(f"{frequency/1e6:.3f} MHz: No voice")
+                time.sleep(self.step_delay)
                 return
 
             logger.info(f"{frequency/1e6:.3f} MHz: Voice detected!")

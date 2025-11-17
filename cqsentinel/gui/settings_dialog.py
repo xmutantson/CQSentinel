@@ -15,7 +15,7 @@ from typing import List, Tuple
 
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
-    QLabel, QPushButton, QComboBox, QSpinBox,
+    QLabel, QPushButton, QComboBox, QSpinBox, QDoubleSpinBox,
     QLineEdit, QGroupBox, QTabWidget, QWidget,
     QCheckBox, QMessageBox, QDialogButtonBox
 )
@@ -262,6 +262,26 @@ class SettingsDialog(QDialog):
         proc_group.setLayout(proc_layout)
         layout.addWidget(proc_group)
 
+        # OpenAI API group (cloud transcription)
+        openai_group = QGroupBox("OpenAI Whisper API (Cloud Transcription)")
+        openai_layout = QFormLayout()
+
+        self.openai_api_key_edit = QLineEdit()
+        self.openai_api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.openai_api_key_edit.setPlaceholderText("Leave empty to use local GPU/CPU")
+        openai_layout.addRow("API Key:", self.openai_api_key_edit)
+
+        openai_info = QLabel(
+            "If an API key is provided, cloud transcription will be used instead of local.\n"
+            "Cost: ~$0.006 per minute of audio. Leave empty for free local processing."
+        )
+        openai_info.setWordWrap(True)
+        openai_info.setStyleSheet("color: gray; font-size: 10px;")
+        openai_layout.addRow(openai_info)
+
+        openai_group.setLayout(openai_layout)
+        layout.addWidget(openai_group)
+
         layout.addStretch()
         return widget
 
@@ -311,6 +331,27 @@ class SettingsDialog(QDialog):
 
         n3fjp_group.setLayout(n3fjp_layout)
         layout.addWidget(n3fjp_group)
+
+        # Scanning settings group
+        scan_group = QGroupBox("Scanning Settings")
+        scan_layout = QFormLayout()
+
+        self.scan_speed_spin = QDoubleSpinBox()
+        self.scan_speed_spin.setRange(0.2, 5.0)
+        self.scan_speed_spin.setSingleStep(0.1)
+        self.scan_speed_spin.setValue(1.0)
+        self.scan_speed_spin.setDecimals(1)
+        self.scan_speed_spin.setSuffix(" steps/sec")
+        self.scan_speed_spin.setToolTip(
+            "Scanning speed when no signal is present.\n"
+            "0.2 = 1 step every 5 seconds (slow)\n"
+            "1.0 = 1 step per second (default)\n"
+            "5.0 = 5 steps per second (fast)"
+        )
+        scan_layout.addRow("Scan Speed:", self.scan_speed_spin)
+
+        scan_group.setLayout(scan_layout)
+        layout.addWidget(scan_group)
 
         layout.addStretch()
         return widget
@@ -499,11 +540,21 @@ class SettingsDialog(QDialog):
         self.noise_reduction_combo.setCurrentText(self.config.audio.noise_reduction_level.title())
         # VAD sensitivity removed - Whisper handles speech detection
 
+        # OpenAI API key (if configured)
+        if hasattr(self.config.audio, 'openai_api_key') and self.config.audio.openai_api_key:
+            self.openai_api_key_edit.setText(self.config.audio.openai_api_key)
+
         # Contest settings
         self.contestness_spin.setValue(self.config.contest.contestness_threshold)
         self.n3fjp_enable_check.setChecked(self.config.contest.n3fjp_enabled)
         self.n3fjp_host_edit.setText(self.config.contest.n3fjp_host)
         self.n3fjp_port_spin.setValue(self.config.contest.n3fjp_port)
+
+        # Scanning settings
+        if hasattr(self.config.scan, 'scan_speed_steps_per_sec'):
+            self.scan_speed_spin.setValue(self.config.scan.scan_speed_steps_per_sec)
+        else:
+            self.scan_speed_spin.setValue(1.0)
 
         # Advanced settings
         # GPU settings
@@ -570,11 +621,23 @@ class SettingsDialog(QDialog):
         self.config.audio.noise_reduction_level = self.noise_reduction_combo.currentText().lower()
         # VAD sensitivity removed - Whisper handles speech detection
 
+        # OpenAI API key (cloud transcription)
+        openai_key = self.openai_api_key_edit.text().strip()
+        self.config.audio.openai_api_key = openai_key
+        if openai_key:
+            logger.info("OpenAI API key configured - will use cloud transcription")
+        else:
+            logger.info("No OpenAI API key - will use local GPU/CPU transcription")
+
         # Contest settings
         self.config.contest.contestness_threshold = self.contestness_spin.value()
         self.config.contest.n3fjp_enabled = self.n3fjp_enable_check.isChecked()
         self.config.contest.n3fjp_host = self.n3fjp_host_edit.text()
         self.config.contest.n3fjp_port = self.n3fjp_port_spin.value()
+
+        # Scanning settings
+        self.config.scan.scan_speed_steps_per_sec = self.scan_speed_spin.value()
+        logger.info(f"Scan speed set to {self.config.scan.scan_speed_steps_per_sec} steps/sec")
 
         # Advanced settings - GPU and transcription
         self.config.audio.use_gpu = self.use_gpu_check.isChecked()
