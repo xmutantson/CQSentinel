@@ -111,16 +111,17 @@ class HamlibController:
 
         try:
             # Flush any leftover data in socket buffer before sending
-            self.sock.setblocking(False)
+            # Use a short timeout instead of non-blocking to avoid Windows issues
+            self.sock.settimeout(0.01)  # 10ms timeout for flush
             try:
                 while True:
                     leftover = self.sock.recv(1024)
                     if not leftover:
                         break
-            except BlockingIOError:
+            except (socket.timeout, BlockingIOError, OSError):
                 pass  # No data to flush, that's fine
             finally:
-                self.sock.setblocking(True)
+                self.sock.settimeout(None)  # Restore blocking mode
 
             # Send command
             self.sock.sendall(f"{command}\n".encode())
