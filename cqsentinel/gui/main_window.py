@@ -23,7 +23,7 @@ from PyQt5.QtWidgets import (
     QGroupBox, QTextEdit, QProgressBar, QStatusBar,
     QMenuBar, QMenu, QMessageBox, QAction, QScrollArea
 )
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread, QObject
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread, QObject, pyqtSlot
 from PyQt5.QtGui import QFont
 
 from cqsentinel.config import get_config, get_config_manager
@@ -652,6 +652,7 @@ class MainWindow(QMainWindow):
         self.current_scan_band = None  # Current band being scanned
         self.enabled_bands_for_scan = []  # Bands that were enabled when scan started (for continuous loop)
         self.signal_scanner: SignalScanner = None  # Signal detection -> band map pipeline
+        self.step_size_override = None  # User override for step size (None = use profile default)
 
         # Audio monitoring (new broadcaster pattern)
         self.audio_broadcaster = AudioBroadcaster()
@@ -871,17 +872,21 @@ class MainWindow(QMainWindow):
                 active_transcriber = self.openai_transcriber if self.openai_transcriber else self.subprocess_transcriber
                 transcriber_type = "OpenAI API" if self.openai_transcriber else "Local GPU/CPU"
 
+                # Get VAD from audio pipeline for speech validation
+                vad_instance = self.audio_pipeline.vad if self.audio_pipeline else None
+
                 self.signal_scanner = SignalScanner(
                     radio=self.radio,  # May be None until radio connects
                     transcriber=active_transcriber,
                     pitch_detector=None,  # PitchDetector for centering (optional)
+                    vad=vad_instance,  # VAD for validating speech before recording
                     band_maps=self.band_maps,
                     sample_rate=self.config.audio.sample_rate,
                     on_station_added=self._on_station_discovered,
                     on_session_state_change=self._on_session_state_changed
                 )
-                self.log(f"  Signal scanner ready (transcriber: {transcriber_type})")
-                logger.info(f"SignalScanner initialized with {transcriber_type} transcription")
+                self.log(f"  Signal scanner ready (transcriber: {transcriber_type}, VAD={'enabled' if vad_instance else 'disabled'})")
+                logger.info(f"SignalScanner initialized with {transcriber_type} transcription, VAD={'enabled' if vad_instance else 'disabled'}")
 
             self.use_full_scanner = True
             self.log("[OK] Advanced features initialized successfully!")
@@ -973,12 +978,11 @@ class MainWindow(QMainWindow):
                     if self.signal_scanner and self.signal_scanner.is_active:
                         self.signal_scanner.process_audio(audio_chunk)
 
-                        # Update recording progress if recording
+                        # Update recording progress if recording (thread-safe via signal)
                         if self.signal_scanner.is_recording():
                             progress = self.signal_scanner.get_recording_progress()
-                            if hasattr(self, 'recording_progress_bar'):
-                                # Use int conversion for progress bar (0-100)
-                                self.recording_progress_bar.setValue(int(progress * 100))
+                            # Emit signal instead of direct GUI update to avoid threading issues
+                            self.audio_levels_signal.emit(rms, peak)  # Already emitted above, but safe
 
                 except Exception as e:
                     logger.error(f"Audio callback error: {e}", exc_info=True)
@@ -1439,11 +1443,30 @@ class MainWindow(QMainWindow):
         self.connect_btn.clicked.connect(self.connect_radio)
         layout.addWidget(self.connect_btn)
 
+        # Step size selector (for VHF/UHF FM bands)
+        layout.addWidget(QLabel("Step:"))
+        self.step_size_combo = QComboBox()
+        self.step_size_combo.addItem("Auto", None)  # Use profile default
+        self.step_size_combo.addItem("5 kHz", 5000)
+        self.step_size_combo.addItem("12.5 kHz", 12500)
+        self.step_size_combo.addItem("25 kHz", 25000)
+        self.step_size_combo.setCurrentIndex(0)  # Auto by default
+        self.step_size_combo.setToolTip("Scan step size (Auto uses band profile default)")
+        self.step_size_combo.currentIndexChanged.connect(self.on_step_size_changed)
+        layout.addWidget(self.step_size_combo)
+
         # Start/Stop scanning
         self.scan_btn = QPushButton("Start Scan")
         self.scan_btn.clicked.connect(self.toggle_scan)
         self.scan_btn.setEnabled(False)
         layout.addWidget(self.scan_btn)
+
+        # Skip/Bump button - allows human operator to skip current signal
+        self.skip_btn = QPushButton("Skip")
+        self.skip_btn.setToolTip("Skip current signal (useful for stuck carriers)")
+        self.skip_btn.clicked.connect(self.skip_current_signal)
+        self.skip_btn.setEnabled(False)
+        layout.addWidget(self.skip_btn)
 
         group.setLayout(layout)
         return group
@@ -1902,6 +1925,7 @@ class MainWindow(QMainWindow):
                 self.scan_thread.start()
 
             self.scan_btn.setText("Stop Scan")
+            self.skip_btn.setEnabled(True)  # Enable skip button during scan
             self.connect_btn.setEnabled(False)
             for cb in self.band_checkboxes.values():
                 cb.setEnabled(False)
@@ -1929,15 +1953,51 @@ class MainWindow(QMainWindow):
 
             self.update_scan_status("Idle", "gray")
             self.scan_btn.setText("Start Scan")
+            self.skip_btn.setEnabled(False)  # Disable skip button when not scanning
             self.connect_btn.setEnabled(True)
             for cb in self.band_checkboxes.values():
                 cb.setEnabled(True)
+
+    def skip_current_signal(self):
+        """Skip current signal and move to next frequency (human override)"""
+        self.log("[SKIP] User requested skip - moving to next frequency")
+        logger.info("User requested skip of current signal")
+
+        # Cancel any active recording session
+        if self.signal_scanner and self.signal_scanner.recording_session:
+            if self.signal_scanner.recording_session.is_active():
+                self.log("[SKIP] Cancelling active recording session")
+                self.signal_scanner.recording_session.cancel()
+            # Reset carrier detector state
+            self.signal_scanner.carrier_detector.reset()
+            logger.info("Recording session and carrier detector reset")
+
+        # Tell BandScanner to skip current frequency
+        if self.band_scanner:
+            self.band_scanner.skip_current()
+            self.log("[SKIP] BandScanner advancing to next frequency")
+            logger.info("BandScanner skip requested")
+
+        self.update_scan_status("Skipping...", "yellow")
+
+    def on_step_size_changed(self, index):
+        """Handle step size selection change"""
+        step_size = self.step_size_combo.currentData()
+        self.step_size_override = step_size
+
+        if step_size is None:
+            self.log("Step size: Auto (use band profile default)")
+            logger.info("Step size set to Auto (profile default)")
+        else:
+            self.log(f"Step size: {step_size/1000:.1f} kHz")
+            logger.info(f"Step size override set to {step_size} Hz")
 
     def on_scan_finished(self):
         """Called when scan completes"""
         self.log("Scan finished")
         self.update_scan_status("Scan complete", "green")
         self.scan_btn.setText("Start Scan")
+        self.skip_btn.setEnabled(False)  # Disable skip button when not scanning
         self.connect_btn.setEnabled(True)
         for cb in self.band_checkboxes.values():
             cb.setEnabled(True)
@@ -1984,6 +2044,12 @@ class MainWindow(QMainWindow):
             # Update audio meter with RMS level
             audio_level_percent = int(rms_level * 100)
             self.audio_meter.setValue(audio_level_percent)
+
+            # Update recording progress bar (safe on main thread)
+            if self.signal_scanner and self.signal_scanner.is_recording():
+                progress = self.signal_scanner.get_recording_progress()
+                if hasattr(self, 'recording_progress_bar'):
+                    self.recording_progress_bar.setValue(int(progress * 100))
         except Exception as e:
             logger.error(f"Error handling audio levels: {e}", exc_info=True)
 
@@ -2396,25 +2462,46 @@ class MainWindow(QMainWindow):
         )
 
         # Start scan for this band
+        # Use profile's step size (respects band-specific settings like 12.5kHz for FM)
+        # unless user has overridden it
+        step_size_to_use = profile.step_size  # Default to profile's step size
+        if hasattr(self, 'step_size_override') and self.step_size_override:
+            step_size_to_use = self.step_size_override
+
         self.band_scanner.start_scan(
             freq_start=profile.freq_start,
             freq_end=profile.freq_end,
-            step_size=self.config.scan.step_size_hz
+            step_size=step_size_to_use
         )
+        self.log(f"  Step size: {step_size_to_use/1000:.1f} kHz")
 
         # Monitor scan completion in background
+        # Use Qt signals to safely communicate from worker thread to GUI thread
         import threading
         import time
+
         def monitor_scan():
             while self.band_scanner and self.band_scanner.is_scanning():
                 time.sleep(1)
 
-            # Scan finished, start next band (continuous loop will rebuild queue if empty)
-            self.log(f"Band {self.current_scan_band} complete")
-            self._start_next_band_scan()
+            # Scan finished - emit signal to safely call GUI methods on main thread
+            # Use QTimer.singleShot with 0ms delay to schedule on main thread
+            from PyQt5.QtCore import QMetaObject, Qt, Q_ARG
+            QMetaObject.invokeMethod(
+                self,
+                "_on_band_scan_complete",
+                Qt.QueuedConnection
+            )
 
         monitor_thread = threading.Thread(target=monitor_scan, daemon=True)
         monitor_thread.start()
+
+    @pyqtSlot()
+    def _on_band_scan_complete(self):
+        """Called on main thread when band scan completes (thread-safe)"""
+        if self.current_scan_band:
+            self.log(f"Band {self.current_scan_band} complete")
+        self._start_next_band_scan()
 
     def show_settings(self):
         """Show settings dialog"""

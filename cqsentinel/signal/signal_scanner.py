@@ -59,6 +59,7 @@ class SignalScanner:
         radio=None,
         transcriber=None,
         pitch_detector=None,
+        vad=None,  # VoiceActivityDetector for speech validation
         band_maps: Optional[Dict[str, BandMapState]] = None,
         sample_rate: int = 16000,
         on_station_added: Optional[Callable] = None,
@@ -71,6 +72,7 @@ class SignalScanner:
             radio: Radio control interface (for frequency and S-meter)
             transcriber: SubprocessTranscriber instance
             pitch_detector: PitchDetector instance (for centering)
+            vad: VoiceActivityDetector for validating speech before recording
             band_maps: Dictionary of band name -> BandMapState
             sample_rate: Audio sample rate
             on_station_added: Callback when station is added to band map
@@ -78,6 +80,7 @@ class SignalScanner:
         """
         self.radio = radio
         self.transcriber = transcriber
+        self.vad = vad
         self.sample_rate = sample_rate
         self.band_maps = band_maps or {}
 
@@ -98,6 +101,7 @@ class SignalScanner:
             carrier_detector=self.carrier_detector,
             transcript_analyzer=self.transcript_analyzer,
             transcriber=transcriber,
+            vad=vad,  # Pass VAD for speech validation
             sample_rate=sample_rate,
             recording_duration=90.0,  # 90 second recordings
             on_state_change=self._on_session_state_change,
