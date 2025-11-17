@@ -8,6 +8,7 @@ Supports 200+ radio models including Icom IC-705.
 import socket
 import time
 import logging
+import threading
 from typing import Optional, Tuple
 from enum import Enum
 
@@ -53,6 +54,7 @@ class HamlibController:
         self._connected = False
         self._last_frequency = 0
         self._last_mode = None
+        self._lock = threading.Lock()  # Thread synchronization for socket access
 
     def connect(self, timeout: float = 5.0) -> bool:
         """
@@ -93,12 +95,13 @@ class HamlibController:
         self._connected = False
         logger.info("Disconnected from rigctld")
 
-    def _send_command(self, command: str) -> str:
+    def _send_command(self, command: str, max_retries: int = 3) -> str:
         """
         Send command to rigctld and get response
 
         Args:
             command: Hamlib command string
+            max_retries: Maximum number of retries for transient errors (default 3)
 
         Returns:
             Response from rigctld
@@ -109,93 +112,113 @@ class HamlibController:
         if not self._connected or not self.sock:
             raise RadioConnectionError("Not connected to rigctld")
 
-        try:
-            # Flush any leftover data in socket buffer before sending
-            # Use a short timeout instead of non-blocking to avoid Windows issues
-            self.sock.settimeout(0.01)  # 10ms timeout for flush
-            try:
-                while True:
-                    leftover = self.sock.recv(1024)
-                    if not leftover:
-                        break
-            except (socket.timeout, BlockingIOError, OSError):
-                pass  # No data to flush, that's fine
-            finally:
-                self.sock.settimeout(None)  # Restore blocking mode
+        last_error = None
+        for attempt in range(max_retries):
+            # Use lock to prevent concurrent socket access from multiple threads
+            with self._lock:
+                try:
+                    # Flush any leftover data in socket buffer before sending
+                    # Use a short timeout instead of non-blocking to avoid Windows issues
+                    self.sock.settimeout(0.01)  # 10ms timeout for flush
+                    try:
+                        while True:
+                            leftover = self.sock.recv(1024)
+                            if not leftover:
+                                break
+                    except (socket.timeout, BlockingIOError, OSError):
+                        pass  # No data to flush, that's fine
+                    finally:
+                        self.sock.settimeout(None)  # Restore blocking mode
 
-            # Send command
-            self.sock.sendall(f"{command}\n".encode())
+                    # Send command
+                    self.sock.sendall(f"{command}\n".encode())
 
-            # Read response - handle multi-line responses properly
-            # rigctld responses end with either:
-            # 1. A number on single line (frequency)
-            # 2. "RPRT N" for commands that return status
-            # 3. Multiple lines for mode (MODE\nBANDWIDTH\n)
-            response = b""
-            self.sock.settimeout(2.0)  # 2 second timeout
-            try:
-                while True:
-                    chunk = self.sock.recv(1024)
-                    if not chunk:
-                        break
-                    response += chunk
+                    # Read response - handle multi-line responses properly
+                    # rigctld responses end with either:
+                    # 1. A number on single line (frequency)
+                    # 2. "RPRT N" for commands that return status
+                    # 3. Multiple lines for mode (MODE\nBANDWIDTH\n)
+                    response = b""
+                    self.sock.settimeout(2.0)  # 2 second timeout
+                    try:
+                        while True:
+                            chunk = self.sock.recv(1024)
+                            if not chunk:
+                                break
+                            response += chunk
 
-                    # Check if we have a complete response
-                    decoded = response.decode('utf-8')
-                    lines = decoded.strip().split('\n')
+                            # Check if we have a complete response
+                            decoded = response.decode('utf-8')
+                            lines = decoded.strip().split('\n')
 
-                    # For RPRT responses (command acknowledgment)
-                    if lines[-1].startswith("RPRT"):
-                        break
+                            # For RPRT responses (command acknowledgment)
+                            if lines[-1].startswith("RPRT"):
+                                break
 
-                    # For single-value responses (frequency, strength, etc.)
-                    # These are just a number followed by newline
-                    if len(lines) == 1 and lines[0].strip().lstrip('-').isdigit():
-                        break
+                            # For single-value responses (frequency, strength, etc.)
+                            # These are just a number followed by newline
+                            if len(lines) == 1 and lines[0].strip().lstrip('-').isdigit():
+                                break
 
-                    # For mode response (two lines: MODE and BANDWIDTH)
-                    if command.lower() == "m" and len(lines) >= 2:
-                        # Mode is first line, bandwidth is second
-                        if lines[1].strip().isdigit():
-                            break
+                            # For mode response (two lines: MODE and BANDWIDTH)
+                            if command.lower() == "m" and len(lines) >= 2:
+                                # Mode is first line, bandwidth is second
+                                if lines[1].strip().isdigit():
+                                    break
 
-                    # Safety check - don't read forever
-                    if len(response) > 1000:
-                        break
+                            # Safety check - don't read forever
+                            if len(response) > 1000:
+                                break
 
-            except socket.timeout:
-                logger.debug(f"Socket timeout reading response for '{command}'")
-            finally:
-                self.sock.settimeout(None)
+                    except socket.timeout:
+                        logger.debug(f"Socket timeout reading response for '{command}'")
+                    finally:
+                        self.sock.settimeout(None)
 
-            result = response.decode('utf-8').strip()
+                    result = response.decode('utf-8').strip()
 
-            # Check for errors
-            if result.startswith("RPRT"):
-                code = result.split()[1] if len(result.split()) > 1 else "unknown"
-                if code != "0":
-                    raise RadioConnectionError(f"Command '{command}' failed with code {code}")
-                return ""
+                    # Check for errors
+                    if result.startswith("RPRT"):
+                        code = result.split()[1] if len(result.split()) > 1 else "unknown"
+                        if code != "0":
+                            raise RadioConnectionError(f"Command '{command}' failed with code {code}")
+                        return ""
 
-            return result
+                    return result
 
-        except socket.timeout:
-            # Timeouts are not connection failures, just slow responses
-            logger.warning(f"Timeout waiting for response to '{command}'")
-            raise RadioConnectionError(f"Timeout on command '{command}'")
-        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError) as e:
-            # These indicate actual connection loss
-            self._connected = False
-            raise RadioConnectionError(f"Connection lost: {e}")
-        except socket.error as e:
-            # For other socket errors, check if it's a real connection issue
-            # Don't disconnect on EAGAIN/EWOULDBLOCK (10035 on Windows)
-            if hasattr(e, 'errno') and e.errno in (10035, 11):  # WSAEWOULDBLOCK or EAGAIN
-                logger.debug(f"Non-blocking socket operation: {e}")
-                raise RadioConnectionError(f"Socket busy: {e}")
-            else:
-                self._connected = False
-                raise RadioConnectionError(f"Communication error: {e}")
+                except socket.timeout:
+                    # Timeouts are not connection failures, just slow responses
+                    logger.warning(f"Timeout waiting for response to '{command}'")
+                    raise RadioConnectionError(f"Timeout on command '{command}'")
+                except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError) as e:
+                    # These indicate actual connection loss
+                    self._connected = False
+                    raise RadioConnectionError(f"Connection lost: {e}")
+                except socket.error as e:
+                    # For other socket errors, check if it's a real connection issue
+                    # Don't disconnect on EAGAIN/EWOULDBLOCK (10035 on Windows)
+                    if hasattr(e, 'errno') and e.errno in (10035, 11):  # WSAEWOULDBLOCK or EAGAIN
+                        last_error = e
+                        if attempt < max_retries - 1:
+                            # Socket busy - wait and retry with exponential backoff
+                            wait_time = 0.05 * (2 ** attempt)  # 50ms, 100ms, 200ms
+                            logger.debug(f"Socket busy on '{command}', retry {attempt + 1}/{max_retries} after {wait_time:.3f}s")
+                            # Note: continue will exit the lock context, then sleep before next iteration
+                        else:
+                            logger.warning(f"Socket busy on '{command}' after {max_retries} retries")
+                            raise RadioConnectionError(f"Socket busy after {max_retries} retries: {e}")
+                    else:
+                        self._connected = False
+                        raise RadioConnectionError(f"Communication error: {e}")
+
+            # Sleep outside the lock to allow other threads to proceed
+            if last_error and attempt < max_retries - 1:
+                wait_time = 0.05 * (2 ** attempt)  # 50ms, 100ms, 200ms
+                time.sleep(wait_time)
+                continue
+
+        # Should not reach here, but just in case
+        raise RadioConnectionError(f"Command failed after {max_retries} retries: {last_error}")
 
     def get_frequency(self) -> int:
         """
