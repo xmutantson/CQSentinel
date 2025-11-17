@@ -247,22 +247,41 @@ class BandMapWidget(QWidget):
         elif freq_range < 100e3 and self.zoom_level > 3:
             step = 10e3  # 10 kHz for high zoom
 
+        # Calculate label spacing - determine how often to draw labels based on pixel space
+        # Measure typical label width (e.g., "144.500")
+        sample_label = f"{freq_min_visible / 1e6:.3f}"
+        label_width = painter.fontMetrics().horizontalAdvance(sample_label)
+        min_label_spacing = label_width + 20  # Add padding between labels
+
+        # Calculate pixels per step
+        pixels_per_step = (step / freq_range) * width
+
+        # Determine label interval (draw label every N grid lines)
+        if pixels_per_step < min_label_spacing:
+            label_interval = int(min_label_spacing / pixels_per_step) + 1
+        else:
+            label_interval = 1
+
         # Draw vertical grid lines for visible range
         freq = freq_min_visible - (freq_min_visible % step)  # Start at step boundary
+        grid_index = 0
         while freq <= freq_max_visible:
             x = self._freq_to_x(freq, width)
 
             # Draw grid line
             painter.drawLine(x, 0, x, height)
 
-            # Draw frequency label
-            freq_mhz = freq / 1e6
-            label = f"{freq_mhz:.3f}"
-            painter.setPen(QColor(255, 255, 255))  # White text for better visibility
-            painter.drawText(x - 30, height - 5, label)
-            painter.setPen(pen)
+            # Draw frequency label only at intervals to avoid overlap
+            if grid_index % label_interval == 0:
+                freq_mhz = freq / 1e6
+                label = f"{freq_mhz:.3f}"
+                text_width = painter.fontMetrics().horizontalAdvance(label)
+                painter.setPen(QColor(255, 255, 255))  # White text for better visibility
+                painter.drawText(x - text_width // 2, height - 5, label)
+                painter.setPen(pen)
 
             freq += step
+            grid_index += 1
 
     def _draw_stations(self, painter: QPainter, width: int, height: int):
         """
