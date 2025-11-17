@@ -744,10 +744,37 @@ class BandMapWidget(QWidget):
         painter.setPen(pen)
         painter.drawLine(x, 0, x, height)
 
-        # Draw label at top
+        # Draw label at top with triangle pinned to the line
         painter.setPen(QColor(255, 255, 0))
         font = QFont("Monospace", 8, QFont.Weight.Bold)
         painter.setFont(font)
         freq_mhz = self.current_tuning_freq / 1e6
-        label = f"▼ {freq_mhz:.4f}"
-        painter.drawText(x - 40, 15, label)
+        freq_text = f"{freq_mhz:.4f}"
+
+        # Measure text width
+        text_width = painter.fontMetrics().horizontalAdvance(freq_text)
+        triangle_width = painter.fontMetrics().horizontalAdvance("▼")
+
+        # Check if we're too close to edges - flip triangle if needed
+        margin = 10  # Minimum margin from edge
+        space_on_right = width - x
+        space_on_left = x
+
+        if space_on_right < text_width + triangle_width + margin:
+            # Near right edge - put text on left, triangle points down but text is left of it
+            triangle_x = x - triangle_width // 2  # Center triangle on line
+            text_x = triangle_x - text_width - 4  # Text to the left
+            painter.drawText(text_x, 15, freq_text)
+            painter.drawText(triangle_x, 15, "▼")
+        elif space_on_left < margin:
+            # Near left edge - put text on right
+            triangle_x = x - triangle_width // 2  # Center triangle on line
+            text_x = triangle_x + triangle_width + 4  # Text to the right
+            painter.drawText(triangle_x, 15, "▼")
+            painter.drawText(text_x, 15, freq_text)
+        else:
+            # Normal case - triangle centered on line, text to the right
+            triangle_x = x - triangle_width // 2  # Center triangle on line
+            text_x = triangle_x + triangle_width + 4  # Text to the right
+            painter.drawText(triangle_x, 15, "▼")
+            painter.drawText(text_x, 15, freq_text)
