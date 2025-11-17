@@ -768,8 +768,9 @@ class MainWindow(QMainWindow):
 
             # SSB Auto-tuner
             if not self.auto_tuner:
-                self.log("  Initializing SSB auto-tuner...")
-                self.auto_tuner = SSBAutoTuner()
+                use_crepe = getattr(self.config.audio, 'use_crepe_pitch', False)
+                self.log(f"  Initializing SSB auto-tuner (CREPE={'enabled' if use_crepe else 'disabled'})...")
+                self.auto_tuner = SSBAutoTuner(use_crepe=use_crepe)
 
             # Speech transcription - check for OpenAI API key first
             # If API key provided, use cloud API; otherwise use local GPU/CPU

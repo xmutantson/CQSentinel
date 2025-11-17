@@ -42,7 +42,8 @@ class SSBAutoTuner:
         sample_rate: int = 16000,
         max_iterations: int = 3,
         tolerance_hz: int = 50,
-        sideband: str = "USB"
+        sideband: str = "USB",
+        use_crepe: bool = False
     ):
         """
         Initialize auto-tuner
@@ -52,6 +53,7 @@ class SSBAutoTuner:
             max_iterations: Maximum tuning iterations
             tolerance_hz: Frequency tolerance (Hz)
             sideband: 'USB' or 'LSB'
+            use_crepe: Use CREPE neural network for pitch detection (GPU)
         """
         self.sample_rate = sample_rate
         self.max_iterations = max_iterations
@@ -59,11 +61,12 @@ class SSBAutoTuner:
         self.sideband = sideband.upper()
 
         # Initialize pitch detector
-        self.pitch_detector = PitchDetector(sample_rate=sample_rate)
+        self.pitch_detector = PitchDetector(sample_rate=sample_rate, use_crepe=use_crepe)
 
         logger.info(
             f"SSBAutoTuner initialized: sideband={sideband}, "
-            f"max_iter={max_iterations}, tolerance={tolerance_hz} Hz"
+            f"max_iter={max_iterations}, tolerance={tolerance_hz} Hz, "
+            f"pitch_backend={'CREPE' if use_crepe else 'pYIN'}"
         )
 
     def analyze_centering(
