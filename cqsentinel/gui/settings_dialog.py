@@ -15,7 +15,7 @@ from typing import List, Tuple
 
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
-    QLabel, QPushButton, QComboBox, QSpinBox,
+    QLabel, QPushButton, QComboBox, QSpinBox, QDoubleSpinBox,
     QLineEdit, QGroupBox, QTabWidget, QWidget,
     QCheckBox, QMessageBox, QDialogButtonBox
 )
@@ -332,6 +332,27 @@ class SettingsDialog(QDialog):
         n3fjp_group.setLayout(n3fjp_layout)
         layout.addWidget(n3fjp_group)
 
+        # Scanning settings group
+        scan_group = QGroupBox("Scanning Settings")
+        scan_layout = QFormLayout()
+
+        self.scan_speed_spin = QDoubleSpinBox()
+        self.scan_speed_spin.setRange(0.2, 5.0)
+        self.scan_speed_spin.setSingleStep(0.1)
+        self.scan_speed_spin.setValue(1.0)
+        self.scan_speed_spin.setDecimals(1)
+        self.scan_speed_spin.setSuffix(" steps/sec")
+        self.scan_speed_spin.setToolTip(
+            "Scanning speed when no signal is present.\n"
+            "0.2 = 1 step every 5 seconds (slow)\n"
+            "1.0 = 1 step per second (default)\n"
+            "5.0 = 5 steps per second (fast)"
+        )
+        scan_layout.addRow("Scan Speed:", self.scan_speed_spin)
+
+        scan_group.setLayout(scan_layout)
+        layout.addWidget(scan_group)
+
         layout.addStretch()
         return widget
 
@@ -529,6 +550,12 @@ class SettingsDialog(QDialog):
         self.n3fjp_host_edit.setText(self.config.contest.n3fjp_host)
         self.n3fjp_port_spin.setValue(self.config.contest.n3fjp_port)
 
+        # Scanning settings
+        if hasattr(self.config.scan, 'scan_speed_steps_per_sec'):
+            self.scan_speed_spin.setValue(self.config.scan.scan_speed_steps_per_sec)
+        else:
+            self.scan_speed_spin.setValue(1.0)
+
         # Advanced settings
         # GPU settings
         if hasattr(self.config.audio, 'use_gpu'):
@@ -607,6 +634,10 @@ class SettingsDialog(QDialog):
         self.config.contest.n3fjp_enabled = self.n3fjp_enable_check.isChecked()
         self.config.contest.n3fjp_host = self.n3fjp_host_edit.text()
         self.config.contest.n3fjp_port = self.n3fjp_port_spin.value()
+
+        # Scanning settings
+        self.config.scan.scan_speed_steps_per_sec = self.scan_speed_spin.value()
+        logger.info(f"Scan speed set to {self.config.scan.scan_speed_steps_per_sec} steps/sec")
 
         # Advanced settings - GPU and transcription
         self.config.audio.use_gpu = self.use_gpu_check.isChecked()
