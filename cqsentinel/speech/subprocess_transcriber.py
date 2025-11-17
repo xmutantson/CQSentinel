@@ -274,29 +274,16 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
 
                     # Initial prompt to provide context for amateur radio communications
                     # This biases Whisper towards ham radio vocabulary and patterns
+                    # CRITICAL: Explicitly instruct to avoid hallucinations on silence/noise
                     ham_radio_prompt = (
-                        "Amateur radio contest communication in North America. "
-                        # NATO phonetic alphabet
-                        "NATO phonetic alphabet: Alpha, Bravo, Charlie, Delta, Echo, Foxtrot, Golf, Hotel, India, Juliet, Kilo, Lima, Mike, November, Oscar, Papa, Quebec, Romeo, Sierra, Tango, Uniform, Victor, Whiskey, X-ray, Yankee, Zulu. "
-                        # Creative/alternative phonetics commonly used by hams
-                        "Alternative phonetics: America, Able, Baker, Canada, David, Easy, Frank, George, Henry, Ida, John, King, Larry, Mary, Nancy, Ocean, Peter, Queen, Radio, Sugar, Thomas, United, Virginia, Washington, X-ray, Yellow, Zebra. "
-                        "More phonetics: Antenna, Apple, Boston, California, Denmark, Edward, Florida, Germany, Hawaii, Italy, Japan, Kentucky, London, Mexico, Norway, Ontario, Pacific, Portugal, Santiago, Texas, Uruguay, Venezuela, Wisconsin, Yokohama, Zanzibar. "
-                        "Additional: Kilowatt, Kilo Watt, Portable, Mobile, Stroke, Slant, Slash, Negative, Affirmative, Lima Charlie. "
-                        # Callsign patterns
-                        "Callsigns: W1ABC, N3XYZ, K4DEF, AA5GH, KG7JK, VE3ABC, VA7XYZ, W0, K0, N0. "
-                        "Prefixes: Whiskey, November, Kilo, Alpha Alpha, Kilo Golf, Victor Echo, Whiskey Alpha, November Alpha. "
-                        # Signal reports and numbers
-                        "Signal reports: five nine, 59, five seven, 57, five five, 55, four nine, 49, three three, 33, five by nine, 5 by 9. "
-                        "Numbers: zero, one, two, three, four, five, six, seven, eight, nine, niner, oh, wun, too, tree, fower, fife, six, seven, ate, niner. "
-                        # Q-codes and abbreviations
-                        "Q-codes: QSL, QRZ, QTH, QRM, QRN, QSB, QSY, QRP, QRO, QRT, QRX. "
-                        "Abbreviations: CQ, DX, OM, YL, XYL, FB, TNX, TU, 73, 88, HI, ES, DE, UR, RST, AGN, PSE, HR. "
-                        # Contest phrases
-                        "Contest phrases: CQ contest, calling CQ, copy, roger, thanks, good luck, QSL, you're 59, your 59, working, again, repeat, say again, go ahead, over, back to you, copy that. "
-                        # Exchange terminology
-                        "Exchange: class, section, state, zone, serial number, check, precedence, power, category, county, grid, grid square, sent, received. "
-                        # Contest specific
-                        "Contests: Field Day, Sweepstakes, ARRL, WPX, CQWW, SS, FD, Winter Field Day, one alpha, two echo, three foxtrot, one bravo, battery power, emergency power, home station."
+                        "Single-sideband amateur radio contest exchange in North America. "
+                        "Operators use the NATO phonetic alphabet (Whiskey Seven Whiskey Alpha), "
+                        "give callsigns, short signal reports like 'five nine', serial numbers, "
+                        "and ARRL Sweepstakes style exchanges with precedence letters, check, and section "
+                        "(for example 'one alpha, seventy nine, Northern New Jersey'). "
+                        "Transcribe only what is clearly spoken on the air. "
+                        "Do not add any extra words or filler; if you are unsure or there is only noise, "
+                        "leave the transcription empty."
                     )
 
                     # openai-whisper API (returns dict with 'text' and 'segments')
