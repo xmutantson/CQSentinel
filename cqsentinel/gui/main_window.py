@@ -1447,6 +1447,9 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel("Step:"))
         self.step_size_combo = QComboBox()
         self.step_size_combo.addItem("Auto", None)  # Use profile default
+        self.step_size_combo.addItem("0.25 kHz", 250)
+        self.step_size_combo.addItem("0.5 kHz", 500)
+        self.step_size_combo.addItem("1 kHz", 1000)
         self.step_size_combo.addItem("5 kHz", 5000)
         self.step_size_combo.addItem("12.5 kHz", 12500)
         self.step_size_combo.addItem("25 kHz", 25000)
