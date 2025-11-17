@@ -274,16 +274,12 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
 
                     # Initial prompt to provide context for amateur radio communications
                     # This biases Whisper towards ham radio vocabulary and patterns
-                    # CRITICAL: Explicitly instruct to avoid hallucinations on silence/noise
+                    # IMPORTANT: Use example transcripts only (no instructions!) to avoid prompt leakage
                     ham_radio_prompt = (
-                        "Single-sideband amateur radio contest exchange in North America. "
-                        "Operators use the NATO phonetic alphabet (Whiskey Seven Whiskey Alpha), "
-                        "give callsigns, short signal reports like 'five nine', serial numbers, "
-                        "and ARRL Sweepstakes style exchanges with precedence letters, check, and section "
-                        "(for example 'one alpha, seventy nine, Northern New Jersey'). "
-                        "Transcribe only what is clearly spoken on the air. "
-                        "Do not add any extra words or filler; if you are unsure or there is only noise, "
-                        "leave the transcription empty."
+                        "CQ contest CQ contest, whiskey seven whiskey alpha. "
+                        "November four alpha foxtrot, you're five nine, number one twenty three. "
+                        "Alpha seventy nine northern new jersey. "
+                        "Thanks for the queue, seventy three."
                     )
 
                     # openai-whisper API (returns dict with 'text' and 'segments')
@@ -352,6 +348,15 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
                     avg_no_speech_prob = sum(no_speech_probs) / len(no_speech_probs) if no_speech_probs else 1.0
 
                     log(f"Transcription complete: {len(texts)} text segments, speech_ratio={speech_ratio:.2f}, avg_no_speech_prob={avg_no_speech_prob:.3f}")
+
+                    # CRITICAL: Filter out likely hallucinations
+                    # If no_speech_prob is very high, Whisper is likely hallucinating (outputting prompt or random text)
+                    # Return empty string to indicate no real speech detected
+                    if avg_no_speech_prob > 0.85:
+                        log(f"WARNING: High no_speech_prob ({avg_no_speech_prob:.3f}), likely hallucination - discarding output")
+                        texts = []
+                        has_speech = False
+
                 except Exception as te:
                     log(f"model.transcribe() EXCEPTION: {te}")
                     import traceback
