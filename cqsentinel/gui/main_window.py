@@ -637,7 +637,7 @@ class MainWindow(QMainWindow):
         self.scan_queue = []  # Queue of bands to scan
         self.current_scan_band = None  # Current band being scanned
         self.enabled_bands_for_scan = []  # Bands that were enabled when scan started (for continuous loop)
-        self.signal_scanner: SignalScanner = None  # Signal detection → band map pipeline
+        self.signal_scanner: SignalScanner = None  # Signal detection -> band map pipeline
 
         # Audio monitoring (new broadcaster pattern)
         self.audio_broadcaster = AudioBroadcaster()
@@ -824,7 +824,7 @@ class MainWindow(QMainWindow):
             # The band_maps dictionary is already created in init_ui
             self.log("  Band maps initialized for all bands")
 
-            # Signal Scanner - integrates signal detection → transcription → band map population
+            # Signal Scanner - integrates signal detection -> transcription -> band map population
             if not self.signal_scanner:
                 self.log("  Initializing signal scanner pipeline...")
                 self.signal_scanner = SignalScanner(
@@ -836,7 +836,7 @@ class MainWindow(QMainWindow):
                     on_station_added=self._on_station_discovered,
                     on_session_state_change=self._on_session_state_changed
                 )
-                self.log("  Signal scanner ready (detects signals → records 90s → transcribes → updates band maps)")
+                self.log("  Signal scanner ready (detects signals -> records 90s -> transcribes -> updates band maps)")
                 logger.info("SignalScanner initialized with band map integration")
 
             self.use_full_scanner = True
@@ -904,7 +904,7 @@ class MainWindow(QMainWindow):
 
                 Small chunks (64ms) come from sounddevice. We:
                 1. Broadcast raw audio immediately (for real-time monitoring)
-                2. Feed SignalScanner for intelligent signal detection → 90s recording → transcription
+                2. Feed SignalScanner for intelligent signal detection -> 90s recording -> transcription
                 3. SignalScanner handles the full pipeline and updates band maps
                 """
                 try:
@@ -925,6 +925,7 @@ class MainWindow(QMainWindow):
 
                     # === STEP 2: Feed SignalScanner for intelligent signal detection ===
                     # SignalScanner detects signals, records 90s, transcribes, and updates band maps
+                    # Only active when scanning - no continuous 15s buffering anymore
                     if self.signal_scanner and self.signal_scanner.is_active:
                         self.signal_scanner.process_audio(audio_chunk)
 
@@ -935,76 +936,11 @@ class MainWindow(QMainWindow):
                                 # Use int conversion for progress bar (0-100)
                                 self.recording_progress_bar.setValue(int(progress * 100))
 
-                    # === STEP 3: Also maintain legacy 15s buffering for continuous transcription ===
-                    # This provides real-time transcription even when no signal detected
-                    if self.audio_pipeline:
-                        # Add chunk to buffer
-                        buffered_audio = self.audio_buffer.add_chunk(audio_chunk)
-
-                        # Process when buffer is full (returns None otherwise)
-                        if buffered_audio is not None:
-                            buffers_processed[0] += 1
-
-                            try:
-                                # Denoise the 15-second audio chunk
-                                denoised = self.audio_pipeline.denoiser.denoise(buffered_audio)
-
-                                # Broadcast denoised audio for monitoring
-                                denoised_chunk = AudioChunk(
-                                    stage=AudioStage.DENOISED,
-                                    data=denoised,
-                                    sample_rate=self.audio.sample_rate,
-                                    timestamp=time.time(),
-                                    metadata={
-                                        'buffer_duration': 15.0
-                                    }
-                                )
-                                self.audio_broadcaster.broadcast(denoised_chunk)
-                                denoised_chunks_created[0] += 1
-
-                                # === STEP 3: Send directly to Whisper worker ===
-                                # Only send continuous buffers if SignalScanner is NOT recording
-                                # (avoid duplicate transcription requests)
-                                skip_continuous = (
-                                    self.signal_scanner and
-                                    self.signal_scanner.is_active and
-                                    self.signal_scanner.get_session_state() != SessionState.IDLE
-                                )
-
-                                if not skip_continuous:
-                                    can_transcribe = False
-                                    with self._transcription_lock:
-                                        if self._active_transcriptions >= self._max_concurrent_transcriptions:
-                                            logger.warning(
-                                                f"Dropping 15s audio buffer - all {self._active_transcriptions} workers busy. "
-                                                f"Consider more workers or faster GPU."
-                                            )
-                                        else:
-                                            self._active_transcriptions += 1
-                                            can_transcribe = True
-                                            logger.debug(f"Submitting 15s buffer ({self._active_transcriptions}/{self._max_concurrent_transcriptions} active)")
-
-                                    if can_transcribe:
-                                        # Send denoised audio directly to Whisper
-                                        self._start_transcription_worker(denoised)
-
-                                        # Log progress
-                                        if denoised_chunks_created[0] <= 3 or denoised_chunks_created[0] % 10 == 0:
-                                            logger.info(
-                                                f"Sent 15s buffer #{denoised_chunks_created[0]} to Whisper "
-                                                f"({self._active_transcriptions}/{self._max_concurrent_transcriptions} workers busy)"
-                                            )
-                                else:
-                                    logger.debug("Skipping 15s buffer - SignalScanner is active with recording")
-
-                            except Exception as e:
-                                logger.error(f"Audio buffer processing failed: {e}", exc_info=True)
-
                 except Exception as e:
                     logger.error(f"Audio callback error: {e}", exc_info=True)
 
             self.audio.start_stream(audio_callback)
-            logger.info("Audio monitoring started with 15-second buffers for continuous Whisper transcription")
+            logger.info("Audio monitoring started (transcription triggered by signal detection during scan)")
         except Exception as e:
             logger.warning(f"Failed to start audio monitoring: {e}")
 
@@ -1851,7 +1787,7 @@ class MainWindow(QMainWindow):
                 self.log("Using FULL SCANNER with AI features:")
                 self.log("  [OK] Audio processing (noise reduction + voice detection)")
                 self.log("  [OK] Speech transcription (Whisper AI)")
-                self.log("  [OK] Signal detection → 90s recording → band map population")
+                self.log("  [OK] Signal detection -> 90s recording -> band map population")
                 self.log("  [OK] SSB auto-centering")
                 self.log("  [OK] Contest logic (callsign extraction)")
 
@@ -2029,7 +1965,7 @@ class MainWindow(QMainWindow):
         Callback from SignalScanner when session state changes.
         Emits signal for thread-safe GUI update.
         """
-        logger.debug(f"Session state changed: {old_state.value} → {new_state.value}")
+        logger.debug(f"Session state changed: {old_state.value} -> {new_state.value}")
         self.session_state_changed_signal.emit(old_state, new_state)
 
     def _handle_station_discovered(self, station, band_name: str, result):

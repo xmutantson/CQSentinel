@@ -272,32 +272,15 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
                     log(f"Calling model.transcribe()...")
                     safe_flush()
 
-                    # Initial prompt to provide context for amateur radio communications
-                    # This biases Whisper towards ham radio vocabulary and patterns
-                    # CRITICAL: Explicitly instruct to avoid hallucinations on silence/noise
-                    ham_radio_prompt = (
-                        "Single-sideband amateur radio contest exchange in North America. "
-                        "Operators use the NATO phonetic alphabet (Whiskey Seven Whiskey Alpha), "
-                        "give callsigns, short signal reports like 'five nine', serial numbers, "
-                        "and ARRL Sweepstakes style exchanges with precedence letters, check, and section "
-                        "(for example 'one alpha, seventy nine, Northern New Jersey'). "
-                        "Transcribe only what is clearly spoken on the air. "
-                        "Do not add any extra words or filler; if you are unsure or there is only noise, "
-                        "leave the transcription empty."
-                    )
-
                     # openai-whisper API (returns dict with 'text' and 'segments')
-                    # Enhanced decoding parameters for better accuracy
+                    # No initial_prompt - let Whisper transcribe without bias to avoid hallucinations
                     result = model.transcribe(
                         request.audio,
                         language="en",
                         fp16=use_fp16,  # Use fp16 on GPU, fp32 on CPU
                         verbose=False,  # Don't print progress
 
-                        # Provide ham radio context to bias decoder
-                        initial_prompt=ham_radio_prompt,
-
-                        # Decoding parameters for better contest audio transcription
+                        # Decoding parameters
                         beam_size=beam_size,  # Beam search (5 is good balance)
                         best_of=beam_size if temperature > 0 else 1,  # Only sample when using temperature
                         temperature=temperature,  # 0.0 for deterministic
@@ -352,6 +335,15 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
                     avg_no_speech_prob = sum(no_speech_probs) / len(no_speech_probs) if no_speech_probs else 1.0
 
                     log(f"Transcription complete: {len(texts)} text segments, speech_ratio={speech_ratio:.2f}, avg_no_speech_prob={avg_no_speech_prob:.3f}")
+
+                    # CRITICAL: Filter out likely hallucinations
+                    # If no_speech_prob is very high, Whisper is likely hallucinating (outputting prompt or random text)
+                    # Return empty string to indicate no real speech detected
+                    if avg_no_speech_prob > 0.85:
+                        log(f"WARNING: High no_speech_prob ({avg_no_speech_prob:.3f}), likely hallucination - discarding output")
+                        texts = []
+                        has_speech = False
+
                 except Exception as te:
                     log(f"model.transcribe() EXCEPTION: {te}")
                     import traceback
