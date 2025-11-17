@@ -1975,6 +1975,12 @@ class MainWindow(QMainWindow):
             self.signal_scanner.carrier_detector.reset()
             logger.info("Recording session and carrier detector reset")
 
+        # Interrupt any blocking audio capture (BandScanner's sd.rec + sd.wait)
+        if self.audio:
+            self.audio.interrupt_recording()
+            self.log("[SKIP] Interrupted audio capture")
+            logger.info("Audio capture interrupted")
+
         # Tell BandScanner to skip current frequency
         if self.band_scanner:
             self.band_scanner.skip_current()
