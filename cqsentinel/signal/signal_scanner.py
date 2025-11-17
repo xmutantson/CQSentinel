@@ -10,6 +10,7 @@ Coordinates:
 """
 
 import logging
+import re
 import time
 from typing import Dict, Optional, Callable
 from datetime import datetime
@@ -40,6 +41,32 @@ def frequency_to_band(frequency_hz: float) -> Optional[str]:
         if profile.freq_start <= frequency_hz <= profile.freq_end:
             return band_name
     return None
+
+
+def count_unique_words(text: str, min_word_length: int = 3) -> int:
+    """
+    Count unique English words in a transcript.
+
+    Used to validate that a transcript contains real speech
+    (not just noise or carrier artifacts).
+
+    Args:
+        text: Transcript text
+        min_word_length: Minimum word length to count (default 3)
+
+    Returns:
+        Number of unique words of minimum length
+    """
+    if not text:
+        return 0
+
+    # Extract words (alphanumeric sequences)
+    words = re.findall(r'\b[a-zA-Z]+\b', text.lower())
+
+    # Filter by length and get unique
+    unique_words = set(w for w in words if len(w) >= min_word_length)
+
+    return len(unique_words)
 
 
 class SignalScanner:
@@ -243,11 +270,41 @@ class SignalScanner:
                 station.add_transcript(result.transcript)
 
             else:
-                # Not contest activity
+                # Not contest activity - check if it's a valid ragchew
+                unique_words = count_unique_words(result.transcript)
+                min_unique_words = 10  # Require at least 10 unique words for valid speech
+
                 logger.info(
                     f"Non-contest activity on {frequency/1e6:.3f} MHz "
-                    f"(confidence={result.analysis.confidence:.2f})"
+                    f"(confidence={result.analysis.confidence:.2f}, "
+                    f"unique_words={unique_words})"
                 )
+
+                if unique_words >= min_unique_words:
+                    # Add as ragchew - valid speech but not a contest
+                    station = band_map.add_or_update_station(
+                        frequency=frequency,
+                        callsign=None,  # No callsign extracted for ragchews
+                        contestness_score=result.analysis.confidence * 100,
+                        activity_type=ActivityType.RAGCHEW,
+                        is_run_station=False,
+                        status=StationStatus.NEW
+                    )
+                    station.add_transcript(result.transcript)
+
+                    logger.info(
+                        f"[RAGCHEW] Added ragchew activity on {frequency/1e6:.3f} MHz "
+                        f"({band_name}) - {unique_words} unique words"
+                    )
+
+                    # Trigger callback
+                    if self.on_station_added and station:
+                        self.on_station_added(station, band_name, result)
+                else:
+                    logger.info(
+                        f"Skipping signal on {frequency/1e6:.3f} MHz - "
+                        f"insufficient speech content ({unique_words} unique words < {min_unique_words})"
+                    )
 
     def _add_station_to_bandmap(
         self,
