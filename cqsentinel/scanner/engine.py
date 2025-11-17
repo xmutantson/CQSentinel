@@ -364,6 +364,29 @@ class BandScanner:
             with self._lock:
                 self.progress.state = ScanState.ERROR
 
+    def _check_voice_vad(self, frequency: float) -> bool:
+        """
+        Check for voice using VAD (traditional method).
+
+        Args:
+            frequency: Current frequency in Hz
+
+        Returns:
+            True if voice detected, False otherwise
+        """
+        self.progress.state = ScanState.VOICE_DETECTED
+        quick_audio = self.audio_cap.record(self.quick_check_duration)
+        quick_result = self.pipeline.process_quick(quick_audio)
+
+        if not quick_result['has_speech']:
+            # No voice, move on after scan speed delay
+            logger.debug(f"{frequency/1e6:.3f} MHz: No voice (VAD)")
+            time.sleep(self.step_delay)
+            return False
+
+        logger.info(f"{frequency/1e6:.3f} MHz: Voice detected (VAD)!")
+        return True
+
     def _process_frequency(self, frequency: float):
         """
         Process a single frequency.
@@ -386,23 +409,18 @@ class BandScanner:
                         logger.debug(f"{frequency/1e6:.3f} MHz: S{s_meter} < S{self.s_meter_threshold}, skipping")
                         time.sleep(self.step_delay)
                         return
-                    logger.debug(f"{frequency/1e6:.3f} MHz: S{s_meter} >= S{self.s_meter_threshold}, checking voice")
+                    # Signal strong enough - trust the S-meter and proceed to full processing
+                    logger.info(f"{frequency/1e6:.3f} MHz: S{s_meter} signal detected!")
                 except Exception as e:
-                    # S-meter failed, fall back to voice detection
+                    # S-meter failed, fall back to VAD check
                     logger.debug(f"S-meter read failed: {e}, using voice detection")
-
-            # Quick voice check (only if S-meter passed or not enabled)
-            self.progress.state = ScanState.VOICE_DETECTED
-            quick_audio = self.audio_cap.record(self.quick_check_duration)
-            quick_result = self.pipeline.process_quick(quick_audio)
-
-            if not quick_result['has_speech']:
-                # No voice, move on after scan speed delay
-                logger.debug(f"{frequency/1e6:.3f} MHz: No voice")
-                time.sleep(self.step_delay)
-                return
-
-            logger.info(f"{frequency/1e6:.3f} MHz: Voice detected!")
+                    # Fall through to VAD check below
+                    self._check_voice_vad(frequency)
+                    return
+            else:
+                # No S-meter scan - use traditional VAD check
+                if not self._check_voice_vad(frequency):
+                    return
 
             # Voice detected - auto-center
             self.progress.state = ScanState.CENTERING
