@@ -259,7 +259,7 @@ class BandScanner:
 
             logger.info(
                 f"Started scan: {freq_start/1e6:.3f}-{freq_end/1e6:.3f} MHz, "
-                f"step={self.step_size_hz} Hz, mode={ssb_mode}"
+                f"step={self.step_size_hz} Hz, mode={radio_mode}"
             )
 
     def stop_scan(self):
