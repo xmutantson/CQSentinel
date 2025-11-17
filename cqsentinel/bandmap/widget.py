@@ -62,7 +62,7 @@ class BandMapWidget(QWidget):
         """
         super().__init__(parent)
 
-        self.band_map = band_map_state or BandMapState()
+        self.band_map = band_map_state if band_map_state is not None else BandMapState()
         self.selected_station: Optional[BandMapStation] = None
 
         # Display settings
