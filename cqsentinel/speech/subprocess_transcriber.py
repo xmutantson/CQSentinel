@@ -272,28 +272,15 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
                     log(f"Calling model.transcribe()...")
                     safe_flush()
 
-                    # Initial prompt to provide context for amateur radio communications
-                    # This biases Whisper towards ham radio vocabulary and patterns
-                    # IMPORTANT: Use example transcripts only (no instructions!) to avoid prompt leakage
-                    ham_radio_prompt = (
-                        "CQ contest CQ contest, whiskey seven whiskey alpha. "
-                        "November four alpha foxtrot, you're five nine, number one twenty three. "
-                        "Alpha seventy nine northern new jersey. "
-                        "Thanks for the queue, seventy three."
-                    )
-
                     # openai-whisper API (returns dict with 'text' and 'segments')
-                    # Enhanced decoding parameters for better accuracy
+                    # No initial_prompt - let Whisper transcribe without bias to avoid hallucinations
                     result = model.transcribe(
                         request.audio,
                         language="en",
                         fp16=use_fp16,  # Use fp16 on GPU, fp32 on CPU
                         verbose=False,  # Don't print progress
 
-                        # Provide ham radio context to bias decoder
-                        initial_prompt=ham_radio_prompt,
-
-                        # Decoding parameters for better contest audio transcription
+                        # Decoding parameters
                         beam_size=beam_size,  # Beam search (5 is good balance)
                         best_of=beam_size if temperature > 0 else 1,  # Only sample when using temperature
                         temperature=temperature,  # 0.0 for deterministic
