@@ -38,6 +38,7 @@ from cqsentinel.audio.denoiser import AudioDenoiser
 from cqsentinel.audio.vad import VoiceActivityDetector
 from cqsentinel.speech.transcription import SpeechTranscriber
 from cqsentinel.speech.subprocess_transcriber import SubprocessTranscriber
+from cqsentinel.speech.openai_transcriber import OpenAITranscriber
 from cqsentinel.speech.gpu_utils import select_device_and_workers, estimate_transcription_speed
 from cqsentinel.contest import CallsignExtractor, BehaviorAnalyzer
 from cqsentinel.bandmap.station import BandMapState
@@ -638,6 +639,7 @@ class MainWindow(QMainWindow):
         self.auto_tuner: SSBAutoTuner = None
         self.transcriber: SpeechTranscriber = None
         self.subprocess_transcriber: SubprocessTranscriber = None  # Subprocess-based transcription for Windows
+        self.openai_transcriber: OpenAITranscriber = None  # OpenAI API transcription (supersedes local)
         self.callsign_extractor: CallsignExtractor = None
         self.behavior_analyzer: BehaviorAnalyzer = None
         self.band_map: BandMapState = None
@@ -769,10 +771,35 @@ class MainWindow(QMainWindow):
                 self.log("  Initializing SSB auto-tuner...")
                 self.auto_tuner = SSBAutoTuner()
 
-            # Speech transcriber - using subprocess approach for Windows compatibility
-            # The subprocess isolates faster-whisper/ctranslate2 to avoid Windows threading crashes
-            if not self.subprocess_transcriber:
-                self.log("  Starting transcription subprocess (may download AI model)...")
+            # Speech transcription - check for OpenAI API key first
+            # If API key provided, use cloud API; otherwise use local GPU/CPU
+            openai_api_key = getattr(self.config.audio, 'openai_api_key', '')
+
+            if openai_api_key and not self.openai_transcriber:
+                # OpenAI API transcription (cloud-based, supersedes local)
+                self.log("  Initializing OpenAI Whisper API (cloud transcription)...")
+                try:
+                    openai_model = getattr(self.config.audio, 'openai_whisper_model', 'whisper-1')
+                    self.openai_transcriber = OpenAITranscriber(
+                        api_key=openai_api_key,
+                        model=openai_model
+                    )
+                    self.log(f"  OpenAI Whisper API ready (model={openai_model})")
+                    self.log("  [INFO] Using cloud transcription - local GPU/CPU not used")
+                    logger.info(f"OpenAI Whisper API initialized (model={openai_model})")
+
+                    # Single worker for API (no parallel requests for now)
+                    self._max_concurrent_transcriptions = 1
+
+                except Exception as e:
+                    self.log(f"  WARNING: OpenAI API init failed: {e}")
+                    self.log("  Falling back to local transcription...")
+                    logger.warning(f"OpenAI API init failed, using local: {e}")
+                    self.openai_transcriber = None
+
+            # Local transcription (GPU/CPU) - only if no OpenAI API
+            if not self.openai_transcriber and not self.subprocess_transcriber:
+                self.log("  Starting local transcription (may download AI model)...")
 
                 # Detect GPU and calculate optimal worker count
                 use_gpu = self.config.audio.use_gpu if hasattr(self.config.audio, 'use_gpu') else True
@@ -839,17 +866,21 @@ class MainWindow(QMainWindow):
             # Signal Scanner - integrates signal detection -> transcription -> band map population
             if not self.signal_scanner:
                 self.log("  Initializing signal scanner pipeline...")
+                # Use whichever transcriber is available (OpenAI takes priority)
+                active_transcriber = self.openai_transcriber if self.openai_transcriber else self.subprocess_transcriber
+                transcriber_type = "OpenAI API" if self.openai_transcriber else "Local GPU/CPU"
+
                 self.signal_scanner = SignalScanner(
                     radio=self.radio,  # May be None until radio connects
-                    transcriber=self.subprocess_transcriber,
+                    transcriber=active_transcriber,
                     pitch_detector=None,  # PitchDetector for centering (optional)
                     band_maps=self.band_maps,
                     sample_rate=self.config.audio.sample_rate,
                     on_station_added=self._on_station_discovered,
                     on_session_state_change=self._on_session_state_changed
                 )
-                self.log("  Signal scanner ready (detects signals -> records 90s -> transcribes -> updates band maps)")
-                logger.info("SignalScanner initialized with band map integration")
+                self.log(f"  Signal scanner ready (transcriber: {transcriber_type})")
+                logger.info(f"SignalScanner initialized with {transcriber_type} transcription")
 
             self.use_full_scanner = True
             self.log("[OK] Advanced features initialized successfully!")

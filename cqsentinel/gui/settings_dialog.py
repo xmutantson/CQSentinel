@@ -262,6 +262,26 @@ class SettingsDialog(QDialog):
         proc_group.setLayout(proc_layout)
         layout.addWidget(proc_group)
 
+        # OpenAI API group (cloud transcription)
+        openai_group = QGroupBox("OpenAI Whisper API (Cloud Transcription)")
+        openai_layout = QFormLayout()
+
+        self.openai_api_key_edit = QLineEdit()
+        self.openai_api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.openai_api_key_edit.setPlaceholderText("Leave empty to use local GPU/CPU")
+        openai_layout.addRow("API Key:", self.openai_api_key_edit)
+
+        openai_info = QLabel(
+            "If an API key is provided, cloud transcription will be used instead of local.\n"
+            "Cost: ~$0.006 per minute of audio. Leave empty for free local processing."
+        )
+        openai_info.setWordWrap(True)
+        openai_info.setStyleSheet("color: gray; font-size: 10px;")
+        openai_layout.addRow(openai_info)
+
+        openai_group.setLayout(openai_layout)
+        layout.addWidget(openai_group)
+
         layout.addStretch()
         return widget
 
@@ -499,6 +519,10 @@ class SettingsDialog(QDialog):
         self.noise_reduction_combo.setCurrentText(self.config.audio.noise_reduction_level.title())
         # VAD sensitivity removed - Whisper handles speech detection
 
+        # OpenAI API key (if configured)
+        if hasattr(self.config.audio, 'openai_api_key') and self.config.audio.openai_api_key:
+            self.openai_api_key_edit.setText(self.config.audio.openai_api_key)
+
         # Contest settings
         self.contestness_spin.setValue(self.config.contest.contestness_threshold)
         self.n3fjp_enable_check.setChecked(self.config.contest.n3fjp_enabled)
@@ -569,6 +593,14 @@ class SettingsDialog(QDialog):
         self.config.audio.sample_rate = self.sample_rate_combo.currentData()
         self.config.audio.noise_reduction_level = self.noise_reduction_combo.currentText().lower()
         # VAD sensitivity removed - Whisper handles speech detection
+
+        # OpenAI API key (cloud transcription)
+        openai_key = self.openai_api_key_edit.text().strip()
+        self.config.audio.openai_api_key = openai_key
+        if openai_key:
+            logger.info("OpenAI API key configured - will use cloud transcription")
+        else:
+            logger.info("No OpenAI API key - will use local GPU/CPU transcription")
 
         # Contest settings
         self.config.contest.contestness_threshold = self.contestness_spin.value()

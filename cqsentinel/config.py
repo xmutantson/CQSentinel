@@ -73,6 +73,10 @@ class AudioConfig:
     whisper_temperature: float = 0.0  # 0.0 = deterministic decoding
     whisper_no_speech_threshold: float = 0.6  # Higher = fewer false positives
 
+    # OpenAI Whisper API (cloud-based, supersedes local when API key provided)
+    openai_api_key: str = ""  # Empty = use local Whisper, set key = use OpenAI API
+    openai_whisper_model: str = "whisper-1"  # OpenAI Whisper model
+
     # Pitch detection (for SSB auto-centering)
     use_crepe_pitch: bool = False  # GPU-accelerated pitch detection
     pitch_fmin: int = 50  # Hz
