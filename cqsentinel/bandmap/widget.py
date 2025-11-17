@@ -15,7 +15,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, pyqtSignal, QPoint, QRect
 from PyQt5.QtGui import QPainter, QColor, QPen, QFont, QBrush, QPainterPath
 
-from cqsentinel.bandmap.station import BandMapStation, BandMapState, StationStatus
+from cqsentinel.bandmap.station import BandMapStation, BandMapState, StationStatus, ActivityType
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +27,9 @@ STATUS_COLORS = {
     StationStatus.WORKED: QColor(255, 0, 0),  # Red
     StationStatus.UNCLEAR: QColor(128, 128, 128),  # Gray
 }
+
+# Color for ragchew activity type (cyan/teal to distinguish from contest activity)
+RAGCHEW_COLOR = QColor(0, 200, 200)  # Cyan/teal for ragchew stations
 
 
 class BandMapWidget(QWidget):
@@ -298,8 +301,11 @@ class BandMapWidget(QWidget):
             offset = (station.contestness_score / 100.0) * (height * 0.3)
             y = int(height * 0.7 - offset)
 
-        # Get status color
-        color = STATUS_COLORS.get(station.status, STATUS_COLORS[StationStatus.UNCLEAR])
+        # Get status color - use ragchew color if activity type is RAGCHEW
+        if station.activity_type == ActivityType.RAGCHEW:
+            color = RAGCHEW_COLOR
+        else:
+            color = STATUS_COLORS.get(station.status, STATUS_COLORS[StationStatus.UNCLEAR])
 
         # Highlight if selected
         if station == self.selected_station:
@@ -308,30 +314,45 @@ class BandMapWidget(QWidget):
             painter.drawEllipse(x - self.marker_size//2 - 3, y - self.marker_size//2 - 3,
                               self.marker_size + 6, self.marker_size + 6)
 
-        # Draw marker circle
+        # Draw marker - use square for ragchews, circle for contests
         painter.setBrush(QBrush(color))
         painter.setPen(QPen(color.darker(), 2))
-        painter.drawEllipse(x - self.marker_size//2, y - self.marker_size//2,
-                           self.marker_size, self.marker_size)
+        if station.activity_type == ActivityType.RAGCHEW:
+            # Square marker for ragchews
+            painter.drawRect(x - self.marker_size//2, y - self.marker_size//2,
+                            self.marker_size, self.marker_size)
+        else:
+            # Circle marker for contests
+            painter.drawEllipse(x - self.marker_size//2, y - self.marker_size//2,
+                               self.marker_size, self.marker_size)
 
-        # Draw callsign label
-        if self.show_callsigns and station.callsign:
+        # Draw callsign label (or "RAGCHEW" for ragchew stations)
+        if self.show_callsigns:
             painter.setPen(QColor(255, 255, 255))
             font = QFont("Monospace", 8, QFont.Weight.Bold)
             painter.setFont(font)
 
-            # Draw callsign above marker
+            # Draw callsign or activity type above marker
             text_x = x - 20
             text_y = y - self.marker_size
-            painter.drawText(text_x, text_y, station.callsign)
+            if station.callsign:
+                painter.drawText(text_x, text_y, station.callsign)
+            elif station.activity_type == ActivityType.RAGCHEW:
+                painter.setPen(RAGCHEW_COLOR)  # Use cyan for ragchew label
+                painter.drawText(text_x - 10, text_y, "RAGCHEW")
 
             # Draw status below
             font.setBold(False)
             font.setPointSize(7)
             painter.setFont(font)
             painter.setPen(QColor(255, 255, 255))  # White text for better visibility
-            status_text = station.display_status
-            painter.drawText(text_x, y + self.marker_size + 12, status_text)
+            if station.callsign:
+                status_text = station.display_status
+                painter.drawText(text_x, y + self.marker_size + 12, status_text)
+            elif station.activity_type == ActivityType.RAGCHEW:
+                # Show frequency for ragchews
+                freq_text = f"{station.frequency / 1e6:.3f}"
+                painter.drawText(text_x, y + self.marker_size + 12, freq_text)
 
         # Draw signal strength indicator
         if self.show_signal_strength and station.signal_strength is not None:
@@ -723,10 +744,37 @@ class BandMapWidget(QWidget):
         painter.setPen(pen)
         painter.drawLine(x, 0, x, height)
 
-        # Draw label at top
+        # Draw label at top with triangle pinned to the line
         painter.setPen(QColor(255, 255, 0))
         font = QFont("Monospace", 8, QFont.Weight.Bold)
         painter.setFont(font)
         freq_mhz = self.current_tuning_freq / 1e6
-        label = f"▼ {freq_mhz:.4f}"
-        painter.drawText(x - 40, 15, label)
+        freq_text = f"{freq_mhz:.4f}"
+
+        # Measure text width
+        text_width = painter.fontMetrics().horizontalAdvance(freq_text)
+        triangle_width = painter.fontMetrics().horizontalAdvance("▼")
+
+        # Check if we're too close to edges - flip triangle if needed
+        margin = 10  # Minimum margin from edge
+        space_on_right = width - x
+        space_on_left = x
+
+        if space_on_right < text_width + triangle_width + margin:
+            # Near right edge - put text on left, triangle points down but text is left of it
+            triangle_x = x - triangle_width // 2  # Center triangle on line
+            text_x = triangle_x - text_width - 4  # Text to the left
+            painter.drawText(text_x, 15, freq_text)
+            painter.drawText(triangle_x, 15, "▼")
+        elif space_on_left < margin:
+            # Near left edge - put text on right
+            triangle_x = x - triangle_width // 2  # Center triangle on line
+            text_x = triangle_x + triangle_width + 4  # Text to the right
+            painter.drawText(triangle_x, 15, "▼")
+            painter.drawText(text_x, 15, freq_text)
+        else:
+            # Normal case - triangle centered on line, text to the right
+            triangle_x = x - triangle_width // 2  # Center triangle on line
+            text_x = triangle_x + triangle_width + 4  # Text to the right
+            painter.drawText(triangle_x, 15, "▼")
+            painter.drawText(text_x, 15, freq_text)
