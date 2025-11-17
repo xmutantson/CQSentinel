@@ -89,6 +89,28 @@ try:
 except:
     print("⚠ openai-whisper not found")
 
+# CREPE pitch detection models (required for SSB auto-centering)
+try:
+    datas += collect_data_files('crepe')
+    print("✓ Including CREPE pitch detection model files")
+except:
+    print("⚠ CREPE not found - SSB auto-centering will use fallback method")
+
+# TensorFlow (required by CREPE)
+# NOTE: TensorFlow is large, only include essential data files
+try:
+    # Include TensorFlow's essential data files (avoiding full collect which is huge)
+    import tensorflow as tf
+    tf_path = os.path.dirname(tf.__file__)
+    # Include the lite models and core data
+    if os.path.exists(os.path.join(tf_path, 'lite')):
+        datas.append((os.path.join(tf_path, 'lite'), 'tensorflow/lite'))
+    if os.path.exists(os.path.join(tf_path, 'python', '_pywrap_tensorflow_internal.pyd')):
+        binaries.append((os.path.join(tf_path, 'python', '_pywrap_tensorflow_internal.pyd'), 'tensorflow/python'))
+    print("✓ Including TensorFlow (for CREPE)")
+except Exception as e:
+    print(f"⚠ TensorFlow not found: {e}")
+
 # CUDA libraries for GPU support
 # Bundle PyTorch CUDA runtime libraries for GPU acceleration
 try:
@@ -237,6 +259,13 @@ hiddenimports = [
     'tiktoken.registry',
     'tiktoken_ext',
     'tiktoken_ext.openai_public',
+    # CREPE pitch detection (neural network-based F0 estimation)
+    'crepe',
+    'crepe.core',
+    'crepe.decode',
+    'tensorflow',
+    'tensorflow.keras',
+    'tensorflow.keras.models',
 ]
 
 # Add torch submodules - SELECTIVE IMPORT for speed!
