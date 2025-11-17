@@ -80,6 +80,35 @@ python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}')"
 
 **Note**: GPU support is optional. CPU-only installation works fine but transcription will be slower.
 
+### Optional: CREPE Neural Network Pitch Detection
+
+CQSentinel uses pitch detection to auto-center SSB signals. By default, it uses **librosa.pyin** (CPU-based, works well). For more accurate pitch tracking in noisy conditions, you can optionally install **CREPE** (Convolutional Representation for Pitch Estimation):
+
+```powershell
+conda activate cqsentinel
+
+# Install CREPE and TensorFlow
+pip install crepe tensorflow
+
+# Verify installation
+python -c "import crepe; print('✓ CREPE pitch detection available')"
+```
+
+**Benefits of CREPE**:
+- More accurate F0 detection in noisy HF conditions
+- Neural network-based, trained on real-world audio
+- Better handling of weak signals and interference
+
+**Considerations**:
+- **Large download**: TensorFlow adds ~500MB-2GB to your environment
+- **Higher resource usage**: Uses more memory than librosa.pyin
+- **Optional**: Default librosa.pyin works well for most SSB signals
+
+**Enable in CQSentinel**:
+After installation, enable CREPE in Settings → Audio tab → "Use CREPE pitch detection (GPU)"
+
+**Note**: Despite the checkbox label, CREPE will use CPU if no GPU is available. It's still more accurate than librosa.pyin but will be slower.
+
 ### Verify Installation
 
 Test that all imports work:

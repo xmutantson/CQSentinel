@@ -52,6 +52,8 @@ class ScanConfig:
     """Scanning parameters"""
     step_size_hz: int = 1000  # 1 kHz steps
     scan_speed_steps_per_sec: float = 1.0  # Range: 0.2 (1 step/5sec) to 5.0 (5 steps/sec)
+    s_meter_threshold: int = 3  # S-units (0-9+), skip frequencies below this
+    use_s_meter_scan: bool = True  # Use S-meter for fast scanning
     dwell_with_voice_sec: int = 60
     dwell_without_voice_sec: int = 5
     auto_center_enabled: bool = True

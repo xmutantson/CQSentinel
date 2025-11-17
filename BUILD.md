@@ -29,11 +29,15 @@ python -c "import torch; print('✓ PyTorch')"
 python -c "import whisper; print('✓ OpenAI Whisper')"
 python -c "import PyInstaller; print('✓ PyInstaller')"
 python -c "import win32api; print('✓ pywin32')"
+
+# Optional: Check CREPE (for neural network pitch detection)
+python -c "import crepe; print('✓ CREPE (optional)')" 2>/dev/null || echo "CREPE not installed (optional)"
 ```
 
 If any fail:
 - PyQt5, PyTorch, Whisper: Go back to INSTALL.md
 - PyInstaller or pywin32: Run `pip install pyinstaller pywin32`
+- CREPE (optional): Run `pip install crepe tensorflow` - see INSTALL.md for details
 
 ### GPU vs CPU Builds
 
@@ -663,6 +667,7 @@ python scripts/build_windows.py --clean
 - All Python dependencies (PyQt5, PyTorch, librosa, Whisper, etc.)
 - **Hamlib binaries (rigctld.exe and DLLs)** - downloaded automatically during build
 - **CUDA libraries** (if PyTorch has CUDA support) - enables GPU acceleration
+- **CREPE + TensorFlow** (if installed) - neural network pitch detection (adds ~500MB-2GB)
 - Audio libraries
 - Application code and resources
 

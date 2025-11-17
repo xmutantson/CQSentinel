@@ -35,8 +35,12 @@ librosa>=0.10.0
 soundfile>=0.12.1
 resampy>=0.4.2
 
-# Optional: CREPE for GPU-accelerated pitch detection
+# Optional: CREPE for GPU-accelerated pitch detection (neural network-based)
+# Note: CREPE requires TensorFlow (~500MB-2GB depending on version)
+# Only install if you want more accurate pitch detection for SSB auto-centering
+# The default librosa.pyin works well for most cases
 # crepe>=0.0.12
+# tensorflow>=2.0.0  # Required by CREPE
 
 # Voice Fingerprinting / Speaker Diarization
 # NOTE: Resemblyzer removed - not effective for SSB audio (300-3000 Hz bandwidth)

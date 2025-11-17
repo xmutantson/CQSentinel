@@ -179,9 +179,23 @@ class HamlibController:
 
             return result
 
-        except socket.error as e:
+        except socket.timeout:
+            # Timeouts are not connection failures, just slow responses
+            logger.warning(f"Timeout waiting for response to '{command}'")
+            raise RadioConnectionError(f"Timeout on command '{command}'")
+        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError) as e:
+            # These indicate actual connection loss
             self._connected = False
-            raise RadioConnectionError(f"Communication error: {e}")
+            raise RadioConnectionError(f"Connection lost: {e}")
+        except socket.error as e:
+            # For other socket errors, check if it's a real connection issue
+            # Don't disconnect on EAGAIN/EWOULDBLOCK (10035 on Windows)
+            if hasattr(e, 'errno') and e.errno in (10035, 11):  # WSAEWOULDBLOCK or EAGAIN
+                logger.debug(f"Non-blocking socket operation: {e}")
+                raise RadioConnectionError(f"Socket busy: {e}")
+            else:
+                self._connected = False
+                raise RadioConnectionError(f"Communication error: {e}")
 
     def get_frequency(self) -> int:
         """

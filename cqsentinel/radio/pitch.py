@@ -3,6 +3,10 @@ Pitch detection for SSB auto-centering
 
 Uses fundamental frequency (F0) detection to determine if SSB signal is properly tuned.
 Voice-independent approach works for male, female, and accented voices.
+
+Supports two backends:
+- librosa.pyin (CPU, default) - traditional probabilistic YIN
+- CREPE (GPU, optional) - deep learning based, more accurate for noisy audio
 """
 
 import numpy as np
@@ -12,6 +16,15 @@ from typing import Tuple, Optional
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
+
+# Try to import CREPE (optional GPU-accelerated pitch detection)
+try:
+    import crepe
+    CREPE_AVAILABLE = True
+    logger.info("CREPE pitch detection available (GPU-accelerated)")
+except ImportError:
+    CREPE_AVAILABLE = False
+    logger.debug("CREPE not available, using librosa.pyin for pitch detection")
 
 
 @dataclass
@@ -44,7 +57,8 @@ class PitchDetector:
         sample_rate: int = 16000,
         fmin: int = 50,      # Minimum F0 to detect
         fmax: int = 600,     # Maximum F0 to detect
-        frame_length: int = 2048
+        frame_length: int = 2048,
+        use_crepe: bool = False
     ):
         """
         Initialize pitch detector
@@ -54,13 +68,22 @@ class PitchDetector:
             fmin: Minimum F0 frequency (Hz)
             fmax: Maximum F0 frequency (Hz)
             frame_length: Frame size for analysis
+            use_crepe: Use CREPE neural network (GPU) instead of librosa.pyin (CPU)
         """
         self.sample_rate = sample_rate
         self.fmin = fmin
         self.fmax = fmax
         self.frame_length = frame_length
 
-        logger.info(f"PitchDetector initialized: fmin={fmin}, fmax={fmax}")
+        # Determine which backend to use
+        if use_crepe and CREPE_AVAILABLE:
+            self.use_crepe = True
+            logger.info(f"PitchDetector initialized with CREPE (GPU): fmin={fmin}, fmax={fmax}")
+        else:
+            self.use_crepe = False
+            if use_crepe and not CREPE_AVAILABLE:
+                logger.warning("CREPE requested but not installed, falling back to librosa.pyin")
+            logger.info(f"PitchDetector initialized with librosa.pyin (CPU): fmin={fmin}, fmax={fmax}")
 
     def detect_f0(
         self,
@@ -68,7 +91,7 @@ class PitchDetector:
         return_all: bool = False
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Detect fundamental frequency using pYIN
+        Detect fundamental frequency using pYIN or CREPE
 
         Args:
             audio: Audio signal (mono, float32)
@@ -82,32 +105,87 @@ class PitchDetector:
             return np.array([]), np.array([])
 
         try:
-            # Use librosa pYIN for robust F0 detection
-            f0, voiced_flag, voiced_probs = librosa.pyin(
-                audio,
-                sr=self.sample_rate,
-                fmin=self.fmin,
-                fmax=self.fmax,
-                frame_length=self.frame_length,
-                fill_na=None  # Keep NaN for unvoiced frames
-            )
-
-            # Filter to voiced frames only (unless return_all)
-            if not return_all:
-                voiced_mask = ~np.isnan(f0) & (voiced_probs > 0.5)
-                f0_voiced = f0[voiced_mask]
-                probs_voiced = voiced_probs[voiced_mask]
+            if self.use_crepe:
+                # Use CREPE neural network (GPU-accelerated)
+                f0_voiced, probs_voiced = self._detect_f0_crepe(audio, return_all)
             else:
-                f0_voiced = f0
-                probs_voiced = voiced_probs
+                # Use librosa pYIN (CPU)
+                f0_voiced, probs_voiced = self._detect_f0_pyin(audio, return_all)
 
-            logger.debug(f"Detected F0: {len(f0_voiced)} voiced frames")
+            logger.debug(f"Detected F0: {len(f0_voiced)} voiced frames (backend={'CREPE' if self.use_crepe else 'pYIN'})")
 
             return f0_voiced, probs_voiced
 
         except Exception as e:
             logger.error(f"F0 detection failed: {e}")
             return np.array([]), np.array([])
+
+    def _detect_f0_pyin(
+        self,
+        audio: np.ndarray,
+        return_all: bool = False
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Detect F0 using librosa pYIN (CPU-based).
+        """
+        f0, voiced_flag, voiced_probs = librosa.pyin(
+            audio,
+            sr=self.sample_rate,
+            fmin=self.fmin,
+            fmax=self.fmax,
+            frame_length=self.frame_length,
+            fill_na=None  # Keep NaN for unvoiced frames
+        )
+
+        # Filter to voiced frames only (unless return_all)
+        if not return_all:
+            voiced_mask = ~np.isnan(f0) & (voiced_probs > 0.5)
+            f0_voiced = f0[voiced_mask]
+            probs_voiced = voiced_probs[voiced_mask]
+        else:
+            f0_voiced = f0
+            probs_voiced = voiced_probs
+
+        return f0_voiced, probs_voiced
+
+    def _detect_f0_crepe(
+        self,
+        audio: np.ndarray,
+        return_all: bool = False
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Detect F0 using CREPE neural network (GPU-accelerated).
+
+        CREPE provides more accurate pitch tracking, especially for noisy audio.
+        """
+        if not CREPE_AVAILABLE:
+            raise RuntimeError("CREPE not available")
+
+        # CREPE expects audio at its native sample rate (16kHz works well)
+        # Returns: time, frequency, confidence, activation
+        time_arr, frequency, confidence, activation = crepe.predict(
+            audio,
+            sr=self.sample_rate,
+            viterbi=True,  # Use Viterbi smoothing for cleaner contours
+            step_size=10,  # 10ms step size (100 fps)
+            verbose=0  # Suppress output
+        )
+
+        # Filter by confidence and frequency range
+        if not return_all:
+            # Only keep high-confidence voiced frames within our F0 range
+            voiced_mask = (
+                (confidence > 0.5) &
+                (frequency >= self.fmin) &
+                (frequency <= self.fmax)
+            )
+            f0_voiced = frequency[voiced_mask]
+            probs_voiced = confidence[voiced_mask]
+        else:
+            f0_voiced = frequency
+            probs_voiced = confidence
+
+        return f0_voiced, probs_voiced
 
     def analyze_pitch(
         self,
