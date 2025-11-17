@@ -86,13 +86,25 @@ class ScanThread(QThread):
                 except Exception as e:
                     logger.error(f"Signal emit failed: {e}")
 
-                # Set SSB mode: LSB for 40m and below (10 MHz), USB for above 40m
-                ssb_mode = "LSB" if profile.freq_start <= 10_000_000 else "USB"
+                # Set mode based on band:
+                # VHF/UHF (above 30 MHz) = FM
+                # HF LSB for 40m and below (<=10 MHz)
+                # HF USB for above 40m
+                if profile.freq_start >= 30_000_000:
+                    radio_mode = "FM"
+                    bandwidth = 12000  # FM bandwidth
+                elif profile.freq_start <= 10_000_000:
+                    radio_mode = "LSB"
+                    bandwidth = 2400
+                else:
+                    radio_mode = "USB"
+                    bandwidth = 2400
+
                 try:
-                    self.radio.set_mode(ssb_mode, 2400)
-                    logger.debug(f"Set mode to {ssb_mode} for {band_name}")
+                    self.radio.set_mode(radio_mode, bandwidth)
+                    logger.debug(f"Set mode to {radio_mode} for {band_name}")
                 except Exception as e:
-                    logger.warning(f"Failed to set mode to {ssb_mode}: {e}")
+                    logger.warning(f"Failed to set mode to {radio_mode}: {e}")
 
                 freq = profile.freq_start
                 while freq <= profile.freq_end and self.running:
