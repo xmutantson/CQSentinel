@@ -123,7 +123,8 @@ BAND_6M = BandProfile(
     band_name="6m",
     freq_start=50.0e6,   # Full 6m band
     freq_end=54.0e6,
-    step_size=5000,      # 5kHz steps for FM
+    step_size=12500,     # 12.5kHz steps for FM (standard channel spacing)
+    mode="FM",
     dwell_with_voice=60.0,
     dwell_without_voice=3.0
 )
@@ -133,7 +134,8 @@ BAND_2M = BandProfile(
     band_name="2m",
     freq_start=144.0e6,  # Full 2m band
     freq_end=148.0e6,
-    step_size=5000,      # 5kHz steps for FM
+    step_size=12500,     # 12.5kHz steps for FM (standard channel spacing)
+    mode="FM",
     dwell_with_voice=60.0,
     dwell_without_voice=3.0
 )
@@ -144,7 +146,8 @@ BAND_70CM = BandProfile(
     band_name="70cm",
     freq_start=420.0e6,  # Full 70cm band
     freq_end=450.0e6,
-    step_size=5000,      # 5kHz steps for FM
+    step_size=12500,     # 12.5kHz steps for FM (standard channel spacing)
+    mode="FM",
     dwell_with_voice=60.0,
     dwell_without_voice=3.0
 )

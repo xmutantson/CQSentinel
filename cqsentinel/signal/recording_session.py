@@ -58,6 +58,7 @@ class RecordingSession:
         carrier_detector: CarrierDetector,
         transcript_analyzer: TranscriptAnalyzer,
         transcriber=None,  # SubprocessTranscriber
+        vad=None,  # VoiceActivityDetector for validation
         sample_rate: int = 16000,
         recording_duration: float = 90.0,  # 90 seconds
         detection_window: float = 2.0,  # 2 seconds for signal validation
@@ -71,6 +72,7 @@ class RecordingSession:
             carrier_detector: CarrierDetector instance
             transcript_analyzer: TranscriptAnalyzer instance
             transcriber: SubprocessTranscriber instance
+            vad: VoiceActivityDetector for validating speech before recording
             sample_rate: Audio sample rate
             recording_duration: How long to record (seconds)
             detection_window: Audio window for signal validation (seconds)
@@ -80,6 +82,7 @@ class RecordingSession:
         self.carrier_detector = carrier_detector
         self.transcript_analyzer = transcript_analyzer
         self.transcriber = transcriber
+        self.vad = vad
         self.sample_rate = sample_rate
         self.recording_duration = recording_duration
         self.detection_window = detection_window
@@ -107,9 +110,13 @@ class RecordingSession:
         # Transcription tracking
         self.pending_transcription_id = None
 
+        # VAD validation tracking
+        self.vad_check_failures = 0
+        self.max_vad_failures = 3  # Skip after 3 consecutive VAD failures
+
         logger.info(
             f"RecordingSession initialized: {recording_duration}s recording, "
-            f"{detection_window}s detection window"
+            f"{detection_window}s detection window, VAD={'enabled' if vad else 'disabled'}"
         )
 
     def _set_state(self, new_state: SessionState):
@@ -202,11 +209,31 @@ class RecordingSession:
             # Signal lost
             self._set_state(SessionState.IDLE)
             self.carrier_detector.reset()
+            self.vad_check_failures = 0  # Reset VAD failures
             return None
 
         if signal_state == SignalState.CENTERED:
-            # Signal is good, start recording!
-            self._start_recording()
+            # Signal is centered, but validate with VAD before recording
+            if self._validate_vad():
+                # VAD confirms voice, start recording!
+                self._start_recording()
+            else:
+                # VAD says no voice (likely FM carrier or noise)
+                self.vad_check_failures += 1
+                if self.vad_check_failures >= self.max_vad_failures:
+                    logger.warning(
+                        f"No voice detected after {self.max_vad_failures} VAD checks, "
+                        f"skipping this signal (likely carrier/noise)"
+                    )
+                    # Reset and move on
+                    self._set_state(SessionState.IDLE)
+                    self.carrier_detector.reset()
+                    self.vad_check_failures = 0
+                else:
+                    logger.debug(
+                        f"VAD check failed ({self.vad_check_failures}/{self.max_vad_failures}), "
+                        f"waiting for voice..."
+                    )
             return None
 
         # Still validating...
@@ -216,6 +243,36 @@ class RecordingSession:
             logger.debug(f"Tuning suggestion: {tuning_suggestion:+.0f} Hz")
 
         return None
+
+    def _validate_vad(self) -> bool:
+        """
+        Validate speech presence using Silero VAD.
+
+        Returns:
+            True if voice detected, False if carrier/noise only
+        """
+        if self.vad is None:
+            # No VAD available, skip validation
+            return True
+
+        try:
+            # Use VAD to check for actual speech in detection buffer
+            has_speech = self.vad.has_speech(self.detection_buffer, min_duration=0.3)
+            if has_speech:
+                # Double-check with speech ratio
+                speech_ratio = self.vad.get_speech_ratio(self.detection_buffer)
+                if speech_ratio >= 0.1:  # At least 10% speech
+                    logger.info(f"VAD confirmed voice: speech_ratio={speech_ratio:.2f}")
+                    return True
+                else:
+                    logger.debug(f"VAD speech ratio too low: {speech_ratio:.2f}")
+                    return False
+            else:
+                logger.debug("VAD detected no speech (likely carrier/noise)")
+                return False
+        except Exception as e:
+            logger.warning(f"VAD validation error: {e}, proceeding without validation")
+            return True  # Fail-open if VAD errors
 
     def _start_recording(self):
         """Begin 90-second recording."""

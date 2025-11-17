@@ -200,6 +200,7 @@ class BandScanner:
         self._scan_thread: Optional[threading.Thread] = None
         self._stop_requested = False
         self._pause_requested = False
+        self._skip_requested = False  # Human override to skip current frequency
         self._lock = threading.Lock()
 
         if use_s_meter_scan:
@@ -284,6 +285,12 @@ class BandScanner:
         with self._lock:
             self._stop_requested = True
             logger.info("Stop requested")
+
+    def skip_current(self):
+        """Skip current frequency (human override)."""
+        with self._lock:
+            self._skip_requested = True
+            logger.info("Skip current frequency requested")
 
     def pause_scan(self):
         """Pause scanning."""
@@ -395,6 +402,17 @@ class BandScanner:
             frequency: Frequency in Hz
         """
         try:
+            # Check for skip request (human override)
+            with self._lock:
+                if self._skip_requested:
+                    self._skip_requested = False
+                    logger.info(f"{frequency/1e6:.3f} MHz: Skipped by user request")
+                    return
+
+            # Log current frequency for visibility
+            progress_pct = (self.progress.frequencies_scanned / max(1, self.progress.total_frequencies)) * 100
+            logger.debug(f"Scanning {frequency/1e6:.3f} MHz ({progress_pct:.1f}%)")
+
             # Tune radio
             self.progress.state = ScanState.MOVING
             self.radio.set_frequency(int(frequency))
@@ -431,6 +449,13 @@ class BandScanner:
                 capture_duration=3.0
             )
 
+            # Check for skip after centering
+            with self._lock:
+                if self._skip_requested:
+                    self._skip_requested = False
+                    logger.info(f"{frequency/1e6:.3f} MHz: Skipped by user after centering")
+                    return
+
             if center_result.success:
                 centered_freq = center_result.final_frequency
                 logger.info(
@@ -440,6 +465,13 @@ class BandScanner:
             else:
                 centered_freq = frequency
                 logger.warning(f"Centering failed, using {frequency/1e6:.3f} MHz")
+
+            # Check for skip before long audio capture
+            with self._lock:
+                if self._skip_requested:
+                    self._skip_requested = False
+                    logger.info(f"{centered_freq/1e6:.3f} MHz: Skipped by user before audio capture")
+                    return
 
             # Capture full sample
             self.progress.state = ScanState.LISTENING

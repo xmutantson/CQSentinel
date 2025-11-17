@@ -871,17 +871,21 @@ class MainWindow(QMainWindow):
                 active_transcriber = self.openai_transcriber if self.openai_transcriber else self.subprocess_transcriber
                 transcriber_type = "OpenAI API" if self.openai_transcriber else "Local GPU/CPU"
 
+                # Get VAD from audio pipeline for speech validation
+                vad_instance = self.audio_pipeline.vad if self.audio_pipeline else None
+
                 self.signal_scanner = SignalScanner(
                     radio=self.radio,  # May be None until radio connects
                     transcriber=active_transcriber,
                     pitch_detector=None,  # PitchDetector for centering (optional)
+                    vad=vad_instance,  # VAD for validating speech before recording
                     band_maps=self.band_maps,
                     sample_rate=self.config.audio.sample_rate,
                     on_station_added=self._on_station_discovered,
                     on_session_state_change=self._on_session_state_changed
                 )
-                self.log(f"  Signal scanner ready (transcriber: {transcriber_type})")
-                logger.info(f"SignalScanner initialized with {transcriber_type} transcription")
+                self.log(f"  Signal scanner ready (transcriber: {transcriber_type}, VAD={'enabled' if vad_instance else 'disabled'})")
+                logger.info(f"SignalScanner initialized with {transcriber_type} transcription, VAD={'enabled' if vad_instance else 'disabled'}")
 
             self.use_full_scanner = True
             self.log("[OK] Advanced features initialized successfully!")
@@ -1445,6 +1449,13 @@ class MainWindow(QMainWindow):
         self.scan_btn.setEnabled(False)
         layout.addWidget(self.scan_btn)
 
+        # Skip/Bump button - allows human operator to skip current signal
+        self.skip_btn = QPushButton("Skip")
+        self.skip_btn.setToolTip("Skip current signal (useful for stuck carriers)")
+        self.skip_btn.clicked.connect(self.skip_current_signal)
+        self.skip_btn.setEnabled(False)
+        layout.addWidget(self.skip_btn)
+
         group.setLayout(layout)
         return group
 
@@ -1902,6 +1913,7 @@ class MainWindow(QMainWindow):
                 self.scan_thread.start()
 
             self.scan_btn.setText("Stop Scan")
+            self.skip_btn.setEnabled(True)  # Enable skip button during scan
             self.connect_btn.setEnabled(False)
             for cb in self.band_checkboxes.values():
                 cb.setEnabled(False)
@@ -1929,15 +1941,39 @@ class MainWindow(QMainWindow):
 
             self.update_scan_status("Idle", "gray")
             self.scan_btn.setText("Start Scan")
+            self.skip_btn.setEnabled(False)  # Disable skip button when not scanning
             self.connect_btn.setEnabled(True)
             for cb in self.band_checkboxes.values():
                 cb.setEnabled(True)
+
+    def skip_current_signal(self):
+        """Skip current signal and move to next frequency (human override)"""
+        self.log("[SKIP] User requested skip - moving to next frequency")
+        logger.info("User requested skip of current signal")
+
+        # Cancel any active recording session
+        if self.signal_scanner and self.signal_scanner.recording_session:
+            if self.signal_scanner.recording_session.is_active():
+                self.log("[SKIP] Cancelling active recording session")
+                self.signal_scanner.recording_session.cancel()
+            # Reset carrier detector state
+            self.signal_scanner.carrier_detector.reset()
+            logger.info("Recording session and carrier detector reset")
+
+        # Tell BandScanner to skip current frequency
+        if self.band_scanner:
+            self.band_scanner.skip_current()
+            self.log("[SKIP] BandScanner advancing to next frequency")
+            logger.info("BandScanner skip requested")
+
+        self.update_scan_status("Skipping...", "yellow")
 
     def on_scan_finished(self):
         """Called when scan completes"""
         self.log("Scan finished")
         self.update_scan_status("Scan complete", "green")
         self.scan_btn.setText("Start Scan")
+        self.skip_btn.setEnabled(False)  # Disable skip button when not scanning
         self.connect_btn.setEnabled(True)
         for cb in self.band_checkboxes.values():
             cb.setEnabled(True)
