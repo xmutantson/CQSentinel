@@ -217,7 +217,7 @@ class SSBAutoTuner:
             new_freq = current_freq + correction
 
             logger.info(
-                f"Adjusting: {current_freq/1e6:.4f} → {new_freq/1e6:.4f} MHz "
+                f"Adjusting: {current_freq/1e6:.4f} -> {new_freq/1e6:.4f} MHz "
                 f"(correction: {correction:+d} Hz)"
             )
 

@@ -1,7 +1,7 @@
 """
 Recording Session Manager
 
-Coordinates the signal detection → recording → transcription → analysis pipeline.
+Coordinates the signal detection -> recording -> transcription -> analysis pipeline.
 Records 90 seconds of contiguous audio once a valid signal is detected and centered.
 """
 
@@ -118,7 +118,7 @@ class RecordingSession:
         self.state = new_state
 
         if old_state != new_state:
-            logger.info(f"Session state: {old_state.value} → {new_state.value}")
+            logger.info(f"Session state: {old_state.value} -> {new_state.value}")
             if self.on_state_change:
                 self.on_state_change(old_state, new_state)
 
