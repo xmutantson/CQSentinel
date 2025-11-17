@@ -234,6 +234,7 @@ class BandScanner:
             try:
                 self.radio.set_mode(radio_mode, bandwidth)
                 logger.info(f"Set mode to {radio_mode} for {freq_start/1e6:.3f} MHz")
+                time.sleep(0.5)  # Give radio time to switch modes
             except Exception as e:
                 logger.warning(f"Failed to set mode to {radio_mode}: {e}")
 
