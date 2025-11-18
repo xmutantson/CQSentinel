@@ -6,6 +6,7 @@ Detects when speech is present in audio, ignoring silence and noise.
 
 import numpy as np
 import logging
+import threading
 from typing import List, Tuple, Optional, TYPE_CHECKING
 
 # Lazy import for torch - only load when actually needed (saves ~10-15 seconds at startup)
@@ -57,33 +58,44 @@ class VoiceActivityDetector:
         self.model = None
         self.utils = None
 
+        # Thread safety: Silero VAD model has internal state and is NOT thread-safe
+        # Multiple threads calling the model simultaneously causes heap corruption
+        # Use RLock (reentrant) to allow nested locking if needed
+        self._model_lock = threading.RLock()
+
         logger.info(f"VAD initialized: sr={sample_rate}, threshold={threshold}")
 
     def _load_model(self):
-        """Lazy-load Silero VAD model"""
+        """Lazy-load Silero VAD model (thread-safe)"""
         if self.model is not None:
             return
 
-        try:
-            logger.info("Loading Silero VAD model and PyTorch...")
-            torch = _get_torch()  # Lazy import torch here
+        # Lock during model loading to prevent multiple threads from loading simultaneously
+        with self._model_lock:
+            # Double-check after acquiring lock (another thread may have loaded it)
+            if self.model is not None:
+                return
 
-            # Load Silero VAD
-            model, utils = torch.hub.load(
-                repo_or_dir='snakers4/silero-vad',
-                model='silero_vad',
-                force_reload=False,
-                onnx=False
-            )
+            try:
+                logger.info("Loading Silero VAD model and PyTorch...")
+                torch = _get_torch()  # Lazy import torch here
 
-            self.model = model
-            self.utils = utils
+                # Load Silero VAD
+                model, utils = torch.hub.load(
+                    repo_or_dir='snakers4/silero-vad',
+                    model='silero_vad',
+                    force_reload=False,
+                    onnx=False
+                )
 
-            logger.info("[OK] Silero VAD model loaded")
+                self.model = model
+                self.utils = utils
 
-        except Exception as e:
-            logger.error(f"Failed to load VAD model: {e}")
-            raise
+                logger.info("[OK] Silero VAD model loaded")
+
+            except Exception as e:
+                logger.error(f"Failed to load VAD model: {e}")
+                raise
 
     def detect_speech(
         self,
@@ -111,17 +123,20 @@ class VoiceActivityDetector:
             # Convert to tensor
             audio_tensor = torch.from_numpy(audio).float()
 
-            # Get speech timestamps
-            speech_timestamps = self.utils[0](
-                audio_tensor,
-                self.model,
-                sampling_rate=self.sample_rate,
-                threshold=self.threshold,
-                min_speech_duration_ms=self.min_speech_duration_ms,
-                min_silence_duration_ms=self.min_silence_duration_ms
-            )
+            # CRITICAL: Lock access to the model because Silero VAD has internal state
+            # and is NOT thread-safe. Concurrent calls cause heap corruption.
+            with self._model_lock:
+                # Get speech timestamps
+                speech_timestamps = self.utils[0](
+                    audio_tensor,
+                    self.model,
+                    sampling_rate=self.sample_rate,
+                    threshold=self.threshold,
+                    min_speech_duration_ms=self.min_speech_duration_ms,
+                    min_silence_duration_ms=self.min_silence_duration_ms
+                )
 
-            # Convert to desired format
+            # Convert to desired format (outside lock - just data processing)
             segments = []
             for ts in speech_timestamps:
                 start = ts['start']
