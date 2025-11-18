@@ -175,6 +175,8 @@ class SignalScanner:
                 freq = self.radio.get_frequency()
                 if freq and freq > 0:
                     self.current_frequency = freq
+                    # Pass frequency to recording session for transcription tracking
+                    self.recording_session.current_frequency_hz = freq
             except Exception as e:
                 logger.debug(f"Failed to get frequency from radio: {e}")
 

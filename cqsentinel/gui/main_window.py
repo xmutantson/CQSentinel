@@ -1211,10 +1211,11 @@ class MainWindow(QMainWindow):
 
                     # Emit transcription signal (thread-safe)
                     if result.text.strip():
-                        # Emit with frequency=0.0 (no frequency info in subprocess mode)
-                        # Callsign is already embedded in the text by subprocess
-                        self.transcription_signal.emit(0.0, result.text.strip(), None)
-                        logger.info(f"Transcribed: {result.text.strip()}")
+                        # Use frequency from transcription result
+                        # Convert from Hz to MHz for display
+                        freq_mhz = result.frequency_hz / 1e6 if result.frequency_hz > 0 else 0.0
+                        self.transcription_signal.emit(freq_mhz, result.text.strip(), None)
+                        logger.info(f"Transcribed ({freq_mhz:.3f} MHz): {result.text.strip()}")
                 else:
                     # Transcription failed
                     logger.error(f"Transcription failed: {result.error}")
