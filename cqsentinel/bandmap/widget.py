@@ -183,11 +183,17 @@ class BandMapWidget(QWidget):
         """Update the display with current band map data."""
         # Update statistics
         stats = self.band_map.get_statistics()
-        self.stats_label.setText(
+        stats_text = (
             f"Stations: {stats['total_stations']} | "
             f"New: {stats['new_stations']} | "
             f"Worked: {stats['worked_stations']}"
         )
+
+        # Add noise frequency count if any are marked
+        if stats['noise_frequencies'] > 0:
+            stats_text += f" | Noise: {stats['noise_frequencies']}"
+
+        self.stats_label.setText(stats_text)
 
         # Trigger repaint
         self.update()
@@ -211,6 +217,9 @@ class BandMapWidget(QWidget):
 
         # Draw frequency grid
         self._draw_frequency_grid(painter, width, height)
+
+        # Draw noise frequency indicators
+        self._draw_noise_indicators(painter, width, height)
 
         # Draw stations
         self._draw_stations(painter, width, height)
@@ -282,6 +291,50 @@ class BandMapWidget(QWidget):
 
             freq += step
             grid_index += 1
+
+    def _draw_noise_indicators(self, painter: QPainter, width: int, height: int):
+        """
+        Draw visual indicators for noise frequencies.
+
+        Args:
+            painter: QPainter instance
+            width: Widget width
+            height: Widget height
+        """
+        if not self.band_map.noise_frequencies:
+            return
+
+        # Get visible frequency range
+        freq_min_visible, freq_max_visible = self.get_visible_freq_range()
+
+        for freq_hz in self.band_map.noise_frequencies.keys():
+            # Skip if outside visible range
+            if freq_hz < freq_min_visible or freq_hz > freq_max_visible:
+                continue
+
+            # Calculate x position
+            x = self._freq_to_x(freq_hz, width)
+
+            # Draw red vertical bar to indicate noise
+            pen = QPen(QColor(255, 0, 0, 100), 4)  # Red with transparency
+            painter.setPen(pen)
+            painter.drawLine(x, 0, x, height)
+
+            # Draw "X" symbol at top
+            x_size = 8
+            y_pos = 25
+            pen = QPen(QColor(255, 0, 0), 2)  # Solid red
+            painter.setPen(pen)
+            painter.drawLine(x - x_size, y_pos - x_size, x + x_size, y_pos + x_size)
+            painter.drawLine(x - x_size, y_pos + x_size, x + x_size, y_pos - x_size)
+
+            # Draw "NOISE" label
+            font = QFont("Monospace", 7, QFont.Weight.Bold)
+            painter.setFont(font)
+            painter.setPen(QColor(255, 0, 0))
+            label = "NOISE"
+            text_width = painter.fontMetrics().horizontalAdvance(label)
+            painter.drawText(x - text_width // 2, y_pos + x_size + 12, label)
 
     def _draw_stations(self, painter: QPainter, width: int, height: int):
         """
@@ -610,6 +663,19 @@ class BandMapWidget(QWidget):
 
             menu.addSeparator()
 
+            # Noise frequency management
+            noise_count = len(self.band_map.noise_frequencies)
+            if noise_count > 0:
+                noise_info_action = QAction(f"View noise frequencies ({noise_count})", self)
+                noise_info_action.triggered.connect(self._show_noise_frequencies)
+                menu.addAction(noise_info_action)
+
+                clear_noise_action = QAction("Clear all noise markings", self)
+                clear_noise_action.triggered.connect(self._clear_all_noise)
+                menu.addAction(clear_noise_action)
+
+                menu.addSeparator()
+
             # Toggle callsign labels
             toggle_callsigns_action = QAction("Toggle callsign labels", self)
             toggle_callsigns_action.triggered.connect(self.toggle_callsigns)
@@ -797,3 +863,33 @@ class BandMapWidget(QWidget):
             text_x = triangle_x + triangle_width + 4  # Text to the right
             painter.drawText(triangle_x, 15, "▼")
             painter.drawText(text_x, 15, freq_text)
+
+    def _show_noise_frequencies(self):
+        """Show dialog with noise frequency management."""
+        from cqsentinel.bandmap.noise_dialog import NoiseFrequencyDialog
+        dialog = NoiseFrequencyDialog(self.band_map, parent=self)
+        if dialog.exec_():
+            # Dialog was accepted - refresh display
+            self.update_display()
+
+    def _clear_all_noise(self):
+        """Clear all noise frequency markings."""
+        from PyQt5.QtWidgets import QMessageBox
+
+        noise_count = len(self.band_map.noise_frequencies)
+        if noise_count == 0:
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Clear Noise Markings",
+            f"Clear all {noise_count} noise frequency markings?\n\n"
+            "These frequencies will no longer be skipped during scanning.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            self.band_map.clear_all_noise_frequencies()
+            logger.info(f"Cleared {noise_count} noise frequency markings")
+            self.update_display()
