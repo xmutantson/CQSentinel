@@ -137,6 +137,7 @@ class BandScanner:
         dwell_without_voice_sec: float = 3.0,
         quick_check_duration: float = 2.0,
         min_contestness_score: float = 40.0,
+        noise_skip_threshold: int = 3,  # Skip frequencies marked as noise
         # Callbacks
         on_station_detected: Optional[Callable] = None,
         on_progress_update: Optional[Callable] = None
@@ -163,6 +164,7 @@ class BandScanner:
             dwell_without_voice_sec: Dwell time when no voice
             quick_check_duration: Quick voice check duration
             min_contestness_score: Minimum contestness to process
+            noise_skip_threshold: Skip frequencies marked as noise (0=disabled)
             on_station_detected: Callback when station detected
             on_progress_update: Callback for progress updates
         """
@@ -187,6 +189,7 @@ class BandScanner:
         self.dwell_without_voice = dwell_without_voice_sec
         self.quick_check_duration = quick_check_duration
         self.min_contestness = min_contestness_score
+        self.noise_skip_threshold = noise_skip_threshold
 
         # Calculate delay between steps based on scan speed
         self.step_delay = 1.0 / max(0.2, min(5.0, scan_speed_steps_per_sec))
@@ -407,6 +410,13 @@ class BandScanner:
                 if self._skip_requested:
                     self._skip_requested = False
                     logger.info(f"{frequency/1e6:.3f} MHz: Skipped by user request")
+                    return
+
+            # Check if frequency is marked as local noise
+            if self.band_map and self.noise_skip_threshold > 0:
+                if self.band_map.is_noise_frequency(frequency, self.noise_skip_threshold):
+                    logger.debug(f"{frequency/1e6:.3f} MHz: Skipping (marked as local noise)")
+                    time.sleep(self.step_delay)  # Maintain scan timing
                     return
 
             # Log current frequency for visibility

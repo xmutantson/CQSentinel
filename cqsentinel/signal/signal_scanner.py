@@ -89,6 +89,7 @@ class SignalScanner:
         vad=None,  # VoiceActivityDetector for speech validation
         band_maps: Optional[Dict[str, BandMapState]] = None,
         sample_rate: int = 16000,
+        noise_skip_threshold: int = 3,  # Mark as noise after N stuck occurrences
         on_station_added: Optional[Callable] = None,
         on_session_state_change: Optional[Callable] = None,
     ):
@@ -102,6 +103,7 @@ class SignalScanner:
             vad: VoiceActivityDetector for validating speech before recording
             band_maps: Dictionary of band name -> BandMapState
             sample_rate: Audio sample rate
+            noise_skip_threshold: Mark frequency as noise after N stuck occurrences (0=disabled)
             on_station_added: Callback when station is added to band map
             on_session_state_change: Callback when recording session state changes
         """
@@ -110,6 +112,7 @@ class SignalScanner:
         self.vad = vad
         self.sample_rate = sample_rate
         self.band_maps = band_maps or {}
+        self.noise_skip_threshold = noise_skip_threshold
 
         # Callbacks
         self.on_station_added = on_station_added
@@ -132,7 +135,8 @@ class SignalScanner:
             sample_rate=sample_rate,
             recording_duration=90.0,  # 90 second recordings
             on_state_change=self._on_session_state_change,
-            on_result=self._on_session_result
+            on_result=self._on_session_result,
+            on_stuck=self._on_stuck  # Handle stuck events for noise tracking
         )
 
         # Statistics
@@ -144,7 +148,7 @@ class SignalScanner:
         self.current_frequency = 0.0
         self.is_active = False
 
-        logger.info("SignalScanner initialized")
+        logger.info(f"SignalScanner initialized (noise_skip_threshold={noise_skip_threshold})")
 
     def start(self):
         """Start the signal scanner."""
@@ -189,6 +193,47 @@ class SignalScanner:
 
         if self.on_session_state_change:
             self.on_session_state_change(old_state, new_state)
+
+    def _on_stuck(self, frequency_hz: float):
+        """
+        Handle stuck event (signal detected but no voice after VAD validation).
+
+        This marks the frequency as a potential local noise source.
+
+        Args:
+            frequency_hz: Frequency where we got stuck
+        """
+        if self.noise_skip_threshold <= 0:
+            return  # Feature disabled
+
+        # Determine which band this frequency belongs to
+        band_name = frequency_to_band(frequency_hz)
+        if not band_name:
+            logger.debug(f"Stuck frequency {frequency_hz/1e6:.3f} MHz not in any known band")
+            return
+
+        # Get the band map for this band
+        if band_name not in self.band_maps:
+            logger.debug(f"No band map for {band_name} to track stuck frequency")
+            return
+
+        band_map = self.band_maps[band_name]
+
+        # Mark noise occurrence
+        count = band_map.mark_noise_occurrence(frequency_hz)
+
+        # Log if threshold reached
+        if count >= self.noise_skip_threshold:
+            logger.warning(
+                f"Frequency {frequency_hz/1e6:.3f} MHz marked as LOCAL NOISE "
+                f"({count} occurrences, threshold={self.noise_skip_threshold}) - "
+                f"will skip during scanning"
+            )
+        else:
+            logger.info(
+                f"Noise occurrence at {frequency_hz/1e6:.3f} MHz "
+                f"({count}/{self.noise_skip_threshold})"
+            )
 
     def _on_session_result(self, result: SessionResult):
         """

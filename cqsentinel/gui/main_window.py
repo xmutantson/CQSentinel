@@ -882,6 +882,7 @@ class MainWindow(QMainWindow):
                     vad=vad_instance,  # VAD for validating speech before recording
                     band_maps=self.band_maps,
                     sample_rate=self.config.audio.sample_rate,
+                    noise_skip_threshold=self.config.scan.noise_skip_threshold,
                     on_station_added=self._on_station_discovered,
                     on_session_state_change=self._on_session_state_changed
                 )
