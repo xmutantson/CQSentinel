@@ -114,6 +114,9 @@ class RecordingSession:
         self.vad_check_failures = 0
         self.max_vad_failures = 3  # Skip after 3 consecutive VAD failures
 
+        # Frequency tracking (set by SignalScanner)
+        self.current_frequency_hz = 0.0
+
         logger.info(
             f"RecordingSession initialized: {recording_duration}s recording, "
             f"{detection_window}s detection window, VAD={'enabled' if vad else 'disabled'}"
@@ -283,13 +286,14 @@ class RecordingSession:
 
         self.current_result = SessionResult(
             session_id=self.session_id,
+            frequency_hz=self.current_frequency_hz,  # Save frequency for this recording
             signal_info=self.carrier_detector.last_signal_info
         )
 
         self._set_state(SessionState.RECORDING)
         logger.info(
             f"Started recording session {self.session_id} "
-            f"({self.recording_duration}s)"
+            f"at {self.current_frequency_hz/1e6:.3f} MHz ({self.recording_duration}s)"
         )
 
     def _handle_recording(self, audio: np.ndarray) -> Optional[SessionResult]:
@@ -334,11 +338,12 @@ class RecordingSession:
         try:
             self.pending_transcription_id = self.transcriber.transcribe_async(
                 audio=self.recording_buffer.copy(),
-                sample_rate=self.sample_rate
+                sample_rate=self.sample_rate,
+                frequency_hz=self.current_frequency_hz  # Pass frequency for tracking
             )
             logger.info(
                 f"Submitted {self.recording_duration}s audio for transcription "
-                f"(request_id={self.pending_transcription_id})"
+                f"(request_id={self.pending_transcription_id}, frequency={self.current_frequency_hz/1e6:.3f} MHz)"
             )
             self._set_state(SessionState.TRANSCRIBING)
 

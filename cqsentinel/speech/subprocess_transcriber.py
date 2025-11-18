@@ -23,6 +23,7 @@ class TranscriptionRequest:
     audio: np.ndarray
     sample_rate: int
     request_id: int
+    frequency_hz: float = 0.0  # Frequency where audio was captured (for tracking)
     worker_id: int = -1  # Assigned by pool
 
 
@@ -32,6 +33,7 @@ class TranscriptionResult:
     request_id: int
     text: str
     success: bool
+    frequency_hz: float = 0.0  # Frequency where audio was captured (for display)
     worker_id: int = -1
     error: Optional[str] = None
     # Speech detection info from Whisper
@@ -365,6 +367,7 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
                     request_id=request.request_id,
                     text=result_text,
                     success=True,
+                    frequency_hz=request.frequency_hz,  # Pass through frequency
                     worker_id=worker_id,
                     has_speech=has_speech,
                     speech_ratio=speech_ratio,
@@ -384,6 +387,7 @@ def transcription_worker(worker_id: int, input_queue: mp.Queue, output_queue: mp
                     request_id=request.request_id,
                     text="",
                     success=False,
+                    frequency_hz=request.frequency_hz,  # Pass through frequency even on error
                     worker_id=worker_id,
                     error=str(e)
                 ))
@@ -579,13 +583,14 @@ class SubprocessTranscriber:
             logger.error(traceback.format_exc())
             return False
 
-    def transcribe_async(self, audio: np.ndarray, sample_rate: int, voice_db=None) -> int:
+    def transcribe_async(self, audio: np.ndarray, sample_rate: int, frequency_hz: float = 0.0, voice_db=None) -> int:
         """
         Submit audio for transcription (non-blocking).
 
         Args:
             audio: Audio signal (mono, float32)
             sample_rate: Sample rate
+            frequency_hz: Frequency where audio was captured (for tracking/display)
             voice_db: Deprecated - ignored (kept for backward compatibility)
 
         Returns:
@@ -599,12 +604,13 @@ class SubprocessTranscriber:
         request = TranscriptionRequest(
             audio=audio.copy(),  # Copy to avoid shared memory issues
             sample_rate=sample_rate,
-            request_id=self.request_counter
+            request_id=self.request_counter,
+            frequency_hz=frequency_hz
         )
 
         # Send to pool (any available worker will pick it up)
         self.input_queue.put(request)
-        logger.debug(f"Submitted transcription request {request.request_id} to pool")
+        logger.debug(f"Submitted transcription request {request.request_id} to pool (frequency={frequency_hz/1e6:.3f} MHz)")
 
         return request.request_id
 
