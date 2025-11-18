@@ -251,6 +251,10 @@ class BandMapState:
         self.created_at = datetime.now()
         self.last_scan: Optional[datetime] = None
 
+        # Local noise tracking - frequencies with persistent non-voice signals
+        # Dict[int, int] mapping frequency (Hz) to stuck occurrence count
+        self.noise_frequencies: dict[int, int] = {}
+
         logger.info(f"BandMapState initialized (band: {band})")
 
     def add_or_update_station(
@@ -412,9 +416,101 @@ class BandMapState:
             'multipliers': len(self.get_multipliers()),
             'worked_stations': len(self.get_worked_stations()),
             'recent_stations': len(self.get_recent_stations()),
+            'noise_frequencies': len(self.noise_frequencies),
             'last_scan': self.last_scan,
             'band': self.band,
         }
+
+    def mark_noise_occurrence(self, frequency: float, tolerance_hz: float = 500) -> int:
+        """
+        Mark a noise occurrence at a frequency.
+
+        Args:
+            frequency: Frequency in Hz where noise was detected
+            tolerance_hz: Group frequencies within this tolerance
+
+        Returns:
+            Current occurrence count for this frequency
+        """
+        # Round frequency to nearest kHz for grouping
+        freq_key = int(round(frequency / 1000) * 1000)
+
+        # Increment occurrence count
+        if freq_key not in self.noise_frequencies:
+            self.noise_frequencies[freq_key] = 0
+
+        self.noise_frequencies[freq_key] += 1
+        count = self.noise_frequencies[freq_key]
+
+        logger.debug(
+            f"Noise occurrence at {freq_key/1e6:.3f} MHz (count: {count})"
+        )
+
+        return count
+
+    def is_noise_frequency(
+        self,
+        frequency: float,
+        threshold: int,
+        tolerance_hz: float = 500
+    ) -> bool:
+        """
+        Check if a frequency is marked as noise.
+
+        Args:
+            frequency: Frequency in Hz to check
+            threshold: Minimum occurrence count to consider as noise (0=disabled)
+            tolerance_hz: Check frequencies within this tolerance
+
+        Returns:
+            True if frequency should be skipped as noise
+        """
+        if threshold <= 0:
+            return False  # Feature disabled
+
+        # Round frequency to nearest kHz for lookup
+        freq_key = int(round(frequency / 1000) * 1000)
+
+        # Check if this frequency has enough occurrences
+        count = self.noise_frequencies.get(freq_key, 0)
+        return count >= threshold
+
+    def get_noise_frequencies(self, threshold: int = 0) -> List[float]:
+        """
+        Get list of frequencies marked as noise.
+
+        Args:
+            threshold: Minimum occurrence count (0=all)
+
+        Returns:
+            List of frequencies in Hz
+        """
+        if threshold <= 0:
+            return list(self.noise_frequencies.keys())
+        else:
+            return [
+                freq for freq, count in self.noise_frequencies.items()
+                if count >= threshold
+            ]
+
+    def clear_noise_frequency(self, frequency: float):
+        """
+        Clear noise marking for a specific frequency.
+
+        Args:
+            frequency: Frequency in Hz to clear
+        """
+        freq_key = int(round(frequency / 1000) * 1000)
+        if freq_key in self.noise_frequencies:
+            del self.noise_frequencies[freq_key]
+            logger.info(f"Cleared noise marking for {freq_key/1e6:.3f} MHz")
+
+    def clear_all_noise_frequencies(self):
+        """Clear all noise frequency markings."""
+        count = len(self.noise_frequencies)
+        self.noise_frequencies.clear()
+        if count > 0:
+            logger.info(f"Cleared {count} noise frequency markings")
 
     def __len__(self) -> int:
         """Return number of stations."""

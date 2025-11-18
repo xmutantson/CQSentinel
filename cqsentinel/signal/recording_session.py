@@ -64,6 +64,7 @@ class RecordingSession:
         detection_window: float = 2.0,  # 2 seconds for signal validation
         on_state_change: Optional[Callable] = None,
         on_result: Optional[Callable] = None,
+        on_stuck: Optional[Callable] = None,  # Called when stuck on noise
     ):
         """
         Initialize recording session manager.
@@ -78,6 +79,7 @@ class RecordingSession:
             detection_window: Audio window for signal validation (seconds)
             on_state_change: Callback when session state changes
             on_result: Callback when session completes
+            on_stuck: Callback(frequency_hz) when stuck on noise frequency
         """
         self.carrier_detector = carrier_detector
         self.transcript_analyzer = transcript_analyzer
@@ -90,6 +92,7 @@ class RecordingSession:
         # Callbacks
         self.on_state_change = on_state_change
         self.on_result = on_result
+        self.on_stuck = on_stuck
 
         # Session state
         self.state = SessionState.IDLE
@@ -226,8 +229,13 @@ class RecordingSession:
                 if self.vad_check_failures >= self.max_vad_failures:
                     logger.warning(
                         f"No voice detected after {self.max_vad_failures} VAD checks, "
-                        f"skipping this signal (likely carrier/noise)"
+                        f"skipping this signal (likely carrier/noise at {self.current_frequency_hz/1e6:.3f} MHz)"
                     )
+
+                    # Report stuck event for noise tracking
+                    if self.on_stuck and self.current_frequency_hz > 0:
+                        self.on_stuck(self.current_frequency_hz)
+
                     # Reset and move on
                     self._set_state(SessionState.IDLE)
                     self.carrier_detector.reset()

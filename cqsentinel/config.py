@@ -61,6 +61,9 @@ class ScanConfig:
     max_center_iterations: int = 3
     enabled_bands: list = field(default_factory=lambda: ["20m", "40m", "15m"])
 
+    # Local noise avoidance - skip frequencies with persistent non-voice signals
+    noise_skip_threshold: int = 3  # Mark as noise after N stuck occurrences (1-10, 0=disabled)
+
 
 @dataclass
 class AudioConfig:
