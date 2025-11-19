@@ -6,18 +6,27 @@ This directory contains the AI models used by CQSentinel for speech recognition,
 
 ### 1. Whisper (Speech-to-Text)
 
-**faster-whisper** models will be downloaded automatically on first run.
+**faster-whisper** models can be pre-downloaded using the download script to avoid downloads during use.
+
+Recommended download (uses same model as application):
+```bash
+python scripts/download_models.py
+```
 
 Manual download (optional):
 ```bash
-python -c "from faster_whisper import WhisperModel; WhisperModel('small', device='cpu', compute_type='int8')"
+python -c "from faster_whisper import WhisperModel; WhisperModel('medium.en', device='cpu', compute_type='int8')"
 ```
 
 Model sizes:
 - **tiny**: 39 MB, fastest, least accurate
+- **tiny.en**: 39 MB (English-only)
 - **base**: 74 MB
-- **small**: 244 MB (RECOMMENDED)
+- **base.en**: 74 MB (English-only)
+- **small**: 244 MB
+- **small.en**: 244 MB (English-only)
 - **medium**: 769 MB
+- **medium.en**: 769 MB (English-only, USED BY APPLICATION)
 - **large**: 1550 MB
 
 ### 2. Silero VAD (Voice Activity Detection)
@@ -69,7 +78,7 @@ After initial download, CQSentinel runs **100% offline**.
 
 print("Downloading Whisper model...")
 from faster_whisper import WhisperModel
-model = WhisperModel("small", device="cpu", compute_type="int8")
+model = WhisperModel("medium.en", device="cpu", compute_type="int8")
 print("✓ Whisper downloaded")
 
 print("Downloading Silero VAD...")
