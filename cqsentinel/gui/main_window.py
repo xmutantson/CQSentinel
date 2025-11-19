@@ -27,7 +27,7 @@ from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread, QObject, pyqtSlot
 from PyQt5.QtGui import QFont
 
 from cqsentinel.config import get_config, get_config_manager
-from cqsentinel.radio import HamlibController, RadioConnectionError, RigctldManager, find_serial_port, SSBAutoTuner
+from cqsentinel.radio import HamlibController, RadioConnectionError, RigctldManager, find_serial_port, SSBAutoTuner, FMAutoTuner
 from cqsentinel.audio import (
     AudioCapture, list_audio_devices, list_audio_output_devices,
     AudioBroadcaster, AudioMonitor, AudioLevelMeter,
@@ -636,7 +636,8 @@ class MainWindow(QMainWindow):
         # Phase 2-8: Advanced features (initialized on-demand)
         self.audio: AudioCapture = None
         self.audio_pipeline: AudioPipeline = None
-        self.auto_tuner: SSBAutoTuner = None
+        self.auto_tuner: SSBAutoTuner = None  # SSB/USB/LSB pitch-based auto-tuner
+        self.fm_tuner = None  # FM power-based auto-tuner
         self.transcriber: SpeechTranscriber = None
         self.subprocess_transcriber: SubprocessTranscriber = None  # Subprocess-based transcription for Windows
         self.openai_transcriber: OpenAITranscriber = None  # OpenAI API transcription (supersedes local)
@@ -772,6 +773,20 @@ class MainWindow(QMainWindow):
                 use_crepe = getattr(self.config.audio, 'use_crepe_pitch', False)
                 self.log(f"  Initializing SSB auto-tuner (CREPE={'enabled' if use_crepe else 'disabled'})...")
                 self.auto_tuner = SSBAutoTuner(use_crepe=use_crepe)
+
+            # FM Auto-tuner
+            if not self.fm_tuner:
+                self.log("  Initializing FM auto-tuner (power-based edge detection)...")
+                # Get FM settings from config
+                scan_range = getattr(self.config.scan, 'fm_scan_range_hz', 10000)
+                scan_step = getattr(self.config.scan, 'fm_scan_step_hz', 100)
+                power_threshold = getattr(self.config.scan, 'fm_power_threshold_db', -80.0)
+                self.fm_tuner = FMAutoTuner(
+                    sample_rate=self.config.audio.sample_rate,
+                    scan_range_hz=scan_range,
+                    scan_step_hz=scan_step,
+                    power_threshold_db=power_threshold
+                )
 
             # Speech transcription - check for OpenAI API key first
             # If API key provided, use cloud API; otherwise use local GPU/CPU
@@ -1890,6 +1905,7 @@ class MainWindow(QMainWindow):
                     audio_capture=self.audio,
                     audio_pipeline=self.audio_pipeline,
                     auto_tuner=self.auto_tuner,
+                    fm_tuner=self.fm_tuner,  # FM power-based edge detection
                     voice_database=None,  # Voice fingerprinting removed
                     callsign_extractor=self.callsign_extractor,
                     behavior_analyzer=self.behavior_analyzer,

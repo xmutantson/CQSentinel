@@ -122,6 +122,7 @@ class BandScanner:
         audio_capture,
         audio_pipeline,
         auto_tuner,
+        fm_tuner=None,  # FM power-based auto-tuner
         voice_database=None,  # Voice fingerprinting disabled, parameter kept for compatibility
         callsign_extractor=None,
         behavior_analyzer=None,
@@ -149,7 +150,8 @@ class BandScanner:
             radio_controller: HamlibController instance
             audio_capture: AudioCapture instance
             audio_pipeline: AudioPipeline instance
-            auto_tuner: SSBAutoTuner instance
+            auto_tuner: SSBAutoTuner instance (for USB/LSB)
+            fm_tuner: FMAutoTuner instance (for FM, optional)
             voice_database: VoiceDatabase instance
             callsign_extractor: CallsignExtractor instance
             behavior_analyzer: BehaviorAnalyzer instance
@@ -172,7 +174,8 @@ class BandScanner:
         self.radio = radio_controller
         self.audio_cap = audio_capture
         self.pipeline = audio_pipeline
-        self.tuner = auto_tuner
+        self.tuner = auto_tuner  # SSB tuner (pitch-based)
+        self.fm_tuner = fm_tuner  # FM tuner (power-based edge detection)
         self.voice_db = voice_database
         self.callsign_ext = callsign_extractor
         self.behavior = behavior_analyzer
@@ -450,14 +453,34 @@ class BandScanner:
                 if not self._check_voice_vad(frequency):
                     return
 
-            # Voice detected - auto-center
+            # Voice detected - auto-center using mode-appropriate tuner
             self.progress.state = ScanState.CENTERING
-            center_result = self.tuner.auto_center(
-                self.radio,
-                self.audio_cap.record,
-                frequency,
-                capture_duration=3.0
-            )
+
+            # Determine which tuner to use based on current mode
+            try:
+                mode, _ = self.radio.get_mode()
+                mode = mode.upper()
+            except Exception as e:
+                logger.warning(f"Could not get radio mode: {e}, assuming SSB")
+                mode = "USB"
+
+            if mode == "FM" and self.fm_tuner:
+                # Use FM power-based edge detection
+                logger.debug(f"Using FMAutoTuner for {mode} mode")
+                center_result = self.fm_tuner.auto_center(
+                    self.radio,
+                    self.audio_cap.record,
+                    frequency
+                )
+            else:
+                # Use SSB pitch-based centering
+                logger.debug(f"Using SSBAutoTuner for {mode} mode")
+                center_result = self.tuner.auto_center(
+                    self.radio,
+                    self.audio_cap.record,
+                    frequency,
+                    capture_duration=3.0
+                )
 
             # Check for skip after centering
             with self._lock:
