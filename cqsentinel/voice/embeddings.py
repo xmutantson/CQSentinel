@@ -68,7 +68,7 @@ class VoiceEmbedder:
 
                 logger.info("[EMBEDDER] Loading Resemblyzer model (may download ~60MB on first use)...")
                 self.encoder = VoiceEncoder()
-                logger.info("[EMBEDDER] ✓ Resemblyzer model loaded successfully")
+                logger.info("[EMBEDDER] [OK] Resemblyzer model loaded successfully")
             except ImportError:
                 logger.error(
                     "Resemblyzer not installed. Install with: pip install resemblyzer"

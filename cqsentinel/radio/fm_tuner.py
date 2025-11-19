@@ -156,9 +156,13 @@ class FMAutoTuner:
                     signal_end = freq
                     break
 
+            # Format edge frequencies (handle None values)
+            start_str = f"{signal_start/1e6:.4f}" if signal_start is not None else "None"
+            end_str = f"{signal_end/1e6:.4f}" if signal_end is not None else "None"
+
             logger.info(
-                f"Edge detection: start={signal_start/1e6:.4f if signal_start else None} MHz, "
-                f"end={signal_end/1e6:.4f if signal_end else None} MHz, "
+                f"Edge detection: start={start_str} MHz, "
+                f"end={end_str} MHz, "
                 f"peak={peak_power:.1f} dB"
             )
 

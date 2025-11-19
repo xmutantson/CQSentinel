@@ -1870,8 +1870,11 @@ class MainWindow(QMainWindow):
                 # Start SignalScanner for intelligent signal detection and band map population
                 if self.signal_scanner:
                     self.signal_scanner.start()
+                    # Suspend SignalScanner auto-centering to avoid conflicts with BandScanner
+                    self.signal_scanner.suspend_auto_centering()
                     self.log("  [OK] SignalScanner active - will detect signals and populate band maps")
-                    logger.info("SignalScanner started for band map population")
+                    self.log("  [INFO] SignalScanner auto-centering suspended (BandScanner controls frequency)")
+                    logger.info("SignalScanner started for band map population (auto-centering suspended)")
 
                 # Initialize BandScanner with transcription callback
                 def on_station_detected_callback(station):
@@ -1948,10 +1951,11 @@ class MainWindow(QMainWindow):
             self.enabled_bands_for_scan = []
             self.current_scan_band = None
 
-            # Stop SignalScanner
+            # Stop SignalScanner and resume auto-centering
             if self.signal_scanner:
                 self.signal_scanner.stop()
-                logger.info("SignalScanner stopped")
+                self.signal_scanner.resume_auto_centering()
+                logger.info("SignalScanner stopped and auto-centering resumed")
 
             if self.band_scanner:
                 self.band_scanner.stop_scan()

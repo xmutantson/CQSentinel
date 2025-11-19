@@ -373,14 +373,14 @@ class RecordingSession:
 
                     if result.success:
                         logger.info(
-                            f"[AUTO-CENTER] ✓ SSB auto-centered: {result.final_frequency/1e6:.4f} MHz "
+                            f"[AUTO-CENTER] [OK] SSB auto-centered: {result.final_frequency/1e6:.4f} MHz "
                             f"(offset: {result.final_offset:+d} Hz, {result.iterations} iterations)"
                         )
                         # Update our frequency tracking
                         self.current_frequency_hz = float(result.final_frequency)
                     else:
                         logger.warning(
-                            f"[AUTO-CENTER] ✗ SSB auto-centering failed after {result.iterations} iterations, "
+                            f"[AUTO-CENTER] [FAIL] SSB auto-centering failed after {result.iterations} iterations, "
                             f"final offset: {result.final_offset:+d} Hz"
                         )
                 else:
@@ -402,7 +402,7 @@ class RecordingSession:
 
                     if result.success:
                         logger.info(
-                            f"[AUTO-CENTER] ✓ FM auto-centered: {result.final_frequency/1e6:.4f} MHz "
+                            f"[AUTO-CENTER] [OK] FM auto-centered: {result.final_frequency/1e6:.4f} MHz "
                             f"(BW: {result.bandwidth_hz/1000:.1f} kHz, "
                             f"edges: {result.signal_start_hz/1e6:.4f} - {result.signal_end_hz/1e6:.4f} MHz)"
                         )
@@ -412,7 +412,7 @@ class RecordingSession:
                         logger.debug("[AUTO-CENTER] FM centered, forcing CarrierDetector to CENTERED state")
                         self.carrier_detector.state = SignalState.CENTERED
                     else:
-                        logger.warning("[AUTO-CENTER] ✗ FM auto-centering failed to detect signal edges")
+                        logger.warning("[AUTO-CENTER] [FAIL] FM auto-centering failed to detect signal edges")
                 else:
                     logger.warning("[AUTO-CENTER] No FMAutoTuner available for FM centering")
                     logger.debug(f"[AUTO-CENTER] self.fm_tuner = {self.fm_tuner}")
@@ -421,7 +421,7 @@ class RecordingSession:
                 logger.warning(f"[AUTO-CENTER] Auto-centering not supported for mode {mode}")
 
         except Exception as e:
-            logger.error(f"[AUTO-CENTER] ✗ Exception during auto-centering: {e}", exc_info=True)
+            logger.error(f"[AUTO-CENTER] [FAIL] Exception during auto-centering: {e}", exc_info=True)
 
         finally:
             self.centering_in_progress = False
