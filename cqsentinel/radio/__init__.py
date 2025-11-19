@@ -6,6 +6,7 @@ from cqsentinel.radio.hamlib_controller import HamlibController, RadioConnection
 from cqsentinel.radio.rigctld_manager import RigctldManager, find_serial_port
 from cqsentinel.radio.pitch import PitchDetector, PitchAnalysis
 from cqsentinel.radio.auto_tuner import SSBAutoTuner, CenteringResult
+from cqsentinel.radio.fm_tuner import FMAutoTuner, FMCenteringResult
 
 __all__ = [
     'HamlibController',
@@ -16,4 +17,6 @@ __all__ = [
     'PitchAnalysis',
     'SSBAutoTuner',
     'CenteringResult',
+    'FMAutoTuner',
+    'FMCenteringResult',
 ]

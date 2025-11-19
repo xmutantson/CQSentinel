@@ -20,6 +20,9 @@ from ..signal.transcript_analyzer import TranscriptAnalyzer
 from ..signal.recording_session import RecordingSession, SessionResult, SessionState
 from ..bandmap.station import BandMapState, BandMapStation, StationStatus, ActivityType
 from ..scanner.profiles import BAND_PROFILES
+from ..radio.auto_tuner import SSBAutoTuner
+from ..radio.fm_tuner import FMAutoTuner
+from ..radio.pitch import PitchDetector
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +93,7 @@ class SignalScanner:
         band_maps: Optional[Dict[str, BandMapState]] = None,
         sample_rate: int = 16000,
         noise_skip_threshold: int = 3,  # Mark as noise after N stuck occurrences
+        auto_center_enabled: bool = True,  # Enable auto-centering
         on_station_added: Optional[Callable] = None,
         on_session_state_change: Optional[Callable] = None,
     ):
@@ -104,6 +108,7 @@ class SignalScanner:
             band_maps: Dictionary of band name -> BandMapState
             sample_rate: Audio sample rate
             noise_skip_threshold: Mark frequency as noise after N stuck occurrences (0=disabled)
+            auto_center_enabled: Enable automatic signal centering
             on_station_added: Callback when station is added to band map
             on_session_state_change: Callback when recording session state changes
         """
@@ -113,10 +118,23 @@ class SignalScanner:
         self.sample_rate = sample_rate
         self.band_maps = band_maps or {}
         self.noise_skip_threshold = noise_skip_threshold
+        self.auto_center_enabled = auto_center_enabled
 
         # Callbacks
         self.on_station_added = on_station_added
         self.on_session_state_change = on_session_state_change
+
+        # Initialize pitch detector if not provided
+        if pitch_detector is None and auto_center_enabled:
+            logger.info("Creating PitchDetector for auto-centering")
+            # Try to get CREPE setting from config
+            try:
+                from ..config import get_config
+                config = get_config()
+                use_crepe = config.audio.use_crepe_pitch
+            except:
+                use_crepe = False
+            pitch_detector = PitchDetector(sample_rate=sample_rate, use_crepe=use_crepe)
 
         # Initialize components
         self.carrier_detector = CarrierDetector(
@@ -127,13 +145,62 @@ class SignalScanner:
 
         self.transcript_analyzer = TranscriptAnalyzer()
 
+        # Create auto-tuners for different modes
+        ssb_auto_tuner = None
+        fm_auto_tuner = None
+
+        if auto_center_enabled and radio:
+            # SSB auto-tuner (USB/LSB)
+            if pitch_detector:
+                logger.info("Creating SSBAutoTuner for USB/LSB auto-centering")
+                # Try to get CREPE setting from config
+                try:
+                    from ..config import get_config
+                    config = get_config()
+                    use_crepe = config.audio.use_crepe_pitch
+                except:
+                    use_crepe = False
+
+                ssb_auto_tuner = SSBAutoTuner(
+                    sample_rate=sample_rate,
+                    max_iterations=3,
+                    tolerance_hz=50,
+                    sideband="USB",  # Will be set dynamically
+                    use_crepe=use_crepe
+                )
+
+            # FM auto-tuner
+            logger.info("Creating FMAutoTuner for FM auto-centering")
+            # Try to get FM settings from config
+            try:
+                from ..config import get_config
+                config = get_config()
+                scan_range = config.scan.fm_scan_range_hz
+                scan_step = config.scan.fm_scan_step_hz
+                power_threshold = config.scan.fm_power_threshold_db
+            except:
+                scan_range = 10000
+                scan_step = 100
+                power_threshold = -80.0
+
+            fm_auto_tuner = FMAutoTuner(
+                sample_rate=sample_rate,
+                scan_range_hz=scan_range,
+                scan_step_hz=scan_step,
+                power_threshold_db=power_threshold
+            )
+
         self.recording_session = RecordingSession(
             carrier_detector=self.carrier_detector,
             transcript_analyzer=self.transcript_analyzer,
             transcriber=transcriber,
             vad=vad,  # Pass VAD for speech validation
+            radio=radio,  # Pass radio for auto-centering
+            auto_tuner=ssb_auto_tuner,  # SSB auto-tuner
+            fm_tuner=fm_auto_tuner,  # FM auto-tuner
             sample_rate=sample_rate,
             recording_duration=90.0,  # 90 second recordings
+            auto_center_enabled=auto_center_enabled,
             on_state_change=self._on_session_state_change,
             on_result=self._on_session_result,
             on_stuck=self._on_stuck  # Handle stuck events for noise tracking

@@ -878,11 +878,12 @@ class MainWindow(QMainWindow):
                 self.signal_scanner = SignalScanner(
                     radio=self.radio,  # May be None until radio connects
                     transcriber=active_transcriber,
-                    pitch_detector=None,  # PitchDetector for centering (optional)
+                    pitch_detector=None,  # PitchDetector for centering (optional, auto-created if needed)
                     vad=vad_instance,  # VAD for validating speech before recording
                     band_maps=self.band_maps,
                     sample_rate=self.config.audio.sample_rate,
                     noise_skip_threshold=self.config.scan.noise_skip_threshold,
+                    auto_center_enabled=self.config.scan.auto_center_enabled,  # Enable auto-centering
                     on_station_added=self._on_station_discovered,
                     on_session_state_change=self._on_session_state_changed
                 )

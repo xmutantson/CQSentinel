@@ -292,19 +292,38 @@ class CarrierDetector:
             info.speech_band_ratio >= self.speech_band_ratio_threshold
         )
 
-        # 7. Centering check (pitch in natural range)
+        # 7. Centering check (pitch in natural range) - MODE AWARE
         if pitch_valid and info.is_voice_present:
+            # Get current radio mode to determine correction direction
+            mode = "USB"  # Default assumption
+            if self.radio:
+                try:
+                    mode, _ = self.radio.get_mode()
+                    mode = mode.upper()
+                except Exception as e:
+                    logger.debug(f"Could not get radio mode: {e}")
+
             if self.pitch_min_hz <= pitch <= self.pitch_max_hz:
                 info.is_centered = True
                 info.tuning_correction_hz = 0.0
             elif pitch < self.pitch_min_hz:
-                # Voice too low = frequency too high, tune UP
+                # Voice too low - correction depends on sideband
+                # USB: low pitch = tune UP (signal too high in passband)
+                # LSB: low pitch = tune DOWN (signal too low in passband, reversed!)
                 info.is_centered = False
-                info.tuning_correction_hz = +50.0  # Tune up 50 Hz
-            else:
-                # Voice too high = frequency too low, tune DOWN
+                if mode == "LSB":
+                    info.tuning_correction_hz = -50.0  # LSB: low pitch → tune DOWN
+                else:
+                    info.tuning_correction_hz = +50.0  # USB: low pitch → tune UP
+            else:  # pitch > self.pitch_max_hz
+                # Voice too high - correction depends on sideband
+                # USB: high pitch = tune DOWN (signal too low in passband)
+                # LSB: high pitch = tune UP (signal too high in passband, reversed!)
                 info.is_centered = False
-                info.tuning_correction_hz = -50.0  # Tune down 50 Hz
+                if mode == "LSB":
+                    info.tuning_correction_hz = +50.0  # LSB: high pitch → tune UP
+                else:
+                    info.tuning_correction_hz = -50.0  # USB: high pitch → tune DOWN
         else:
             info.is_centered = False
 

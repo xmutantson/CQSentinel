@@ -18,6 +18,7 @@ from cqsentinel.bandmap.station import (
 )
 from cqsentinel.bandmap.widget import BandMapWidget
 from cqsentinel.bandmap.detail_panel import StationDetailPanel
+from cqsentinel.bandmap.noise_dialog import NoiseFrequencyDialog
 
 __all__ = [
     'BandMapStation',
@@ -26,4 +27,5 @@ __all__ = [
     'ActivityType',
     'BandMapWidget',
     'StationDetailPanel',
+    'NoiseFrequencyDialog',
 ]

@@ -371,6 +371,22 @@ class SettingsDialog(QDialog):
         )
         scan_layout.addRow("S-Meter Threshold:", self.s_meter_threshold_spin)
 
+        # Local noise avoidance
+        self.noise_skip_threshold_spin = QSpinBox()
+        self.noise_skip_threshold_spin.setRange(0, 10)
+        self.noise_skip_threshold_spin.setValue(3)
+        self.noise_skip_threshold_spin.setSpecialValueText("Disabled")
+        self.noise_skip_threshold_spin.setToolTip(
+            "Mark frequencies as local noise after getting stuck N times.\n"
+            "0 = Disabled (never skip frequencies)\n"
+            "1 = Skip after first stuck occurrence\n"
+            "3 = Skip after 3 stuck occurrences (default)\n"
+            "10 = Skip after 10 stuck occurrences\n\n"
+            "Marked frequencies are automatically skipped during scanning.\n"
+            "Prevents repeatedly recording local RFI (computers, power supplies, etc.)"
+        )
+        scan_layout.addRow("Noise Skip Threshold:", self.noise_skip_threshold_spin)
+
         scan_group.setLayout(scan_layout)
         layout.addWidget(scan_group)
 
@@ -587,6 +603,11 @@ class SettingsDialog(QDialog):
         else:
             self.s_meter_threshold_spin.setValue(3)
 
+        if hasattr(self.config.scan, 'noise_skip_threshold'):
+            self.noise_skip_threshold_spin.setValue(self.config.scan.noise_skip_threshold)
+        else:
+            self.noise_skip_threshold_spin.setValue(3)
+
         # Advanced settings
         # GPU settings
         if hasattr(self.config.audio, 'use_gpu'):
@@ -670,8 +691,10 @@ class SettingsDialog(QDialog):
         self.config.scan.scan_speed_steps_per_sec = self.scan_speed_spin.value()
         self.config.scan.use_s_meter_scan = self.use_s_meter_check.isChecked()
         self.config.scan.s_meter_threshold = self.s_meter_threshold_spin.value()
+        self.config.scan.noise_skip_threshold = self.noise_skip_threshold_spin.value()
         logger.info(f"Scan settings: speed={self.config.scan.scan_speed_steps_per_sec} steps/sec, "
-                   f"S-meter={self.config.scan.use_s_meter_scan}, threshold=S{self.config.scan.s_meter_threshold}")
+                   f"S-meter={self.config.scan.use_s_meter_scan}, threshold=S{self.config.scan.s_meter_threshold}, "
+                   f"noise_skip={self.config.scan.noise_skip_threshold}")
 
         # Advanced settings - GPU and transcription
         self.config.audio.use_gpu = self.use_gpu_check.isChecked()
