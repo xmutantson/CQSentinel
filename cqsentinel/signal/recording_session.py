@@ -271,16 +271,34 @@ class RecordingSession:
                     )
             return None
 
-        # Auto-center if voice present but not yet centered
-        if signal_state == SignalState.VOICE_PRESENT:
+        # For FM mode: auto-center immediately on SIGNAL_DETECTED (skip voice check)
+        # For SSB mode: wait for VOICE_PRESENT (speech band energy check)
+        should_auto_center = False
+        if signal_state == SignalState.SIGNAL_DETECTED:
+            # Check if this is FM mode
+            if self.radio:
+                try:
+                    mode, _ = self.radio.get_mode()
+                    mode = mode.upper()
+                    if mode == "FM":
+                        # FM detected - auto-center immediately without voice check
+                        logger.debug("FM mode: auto-centering on signal detection (skipping voice energy check)")
+                        should_auto_center = True
+                except Exception as e:
+                    logger.debug(f"Could not get radio mode: {e}")
+
+        # Auto-center if voice present (SSB) or signal detected (FM)
+        if signal_state == SignalState.VOICE_PRESENT or should_auto_center:
             if self.auto_center_enabled and not self.centering_attempted:
-                logger.info("Voice detected, attempting auto-centering...")
+                if signal_state == SignalState.VOICE_PRESENT:
+                    logger.info("Voice detected, attempting auto-centering...")
                 self._attempt_auto_center()
             else:
-                # Just log tuning suggestion
-                tuning_suggestion = self.carrier_detector.get_tuning_suggestion()
-                if abs(tuning_suggestion) > 0:
-                    logger.debug(f"Tuning suggestion: {tuning_suggestion:+.0f} Hz")
+                # Just log tuning suggestion (SSB only)
+                if signal_state == SignalState.VOICE_PRESENT:
+                    tuning_suggestion = self.carrier_detector.get_tuning_suggestion()
+                    if abs(tuning_suggestion) > 0:
+                        logger.debug(f"Tuning suggestion: {tuning_suggestion:+.0f} Hz")
 
         return None
 
@@ -390,6 +408,9 @@ class RecordingSession:
                         )
                         # Update our frequency tracking
                         self.current_frequency_hz = float(result.final_frequency)
+                        # For FM, force carrier_detector to CENTERED state (no pitch-based detection needed)
+                        logger.debug("[AUTO-CENTER] FM centered, forcing CarrierDetector to CENTERED state")
+                        self.carrier_detector.state = SignalState.CENTERED
                     else:
                         logger.warning("[AUTO-CENTER] ✗ FM auto-centering failed to detect signal edges")
                 else:

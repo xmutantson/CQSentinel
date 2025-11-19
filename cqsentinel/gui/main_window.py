@@ -1784,7 +1784,9 @@ class MainWindow(QMainWindow):
                 self.signal_scanner.radio = self.radio
                 self.signal_scanner.carrier_detector.radio = self.radio
                 self.signal_scanner.recording_session.radio = self.radio  # Enable auto-centering in RecordingSession
-                logger.info("Updated SignalScanner with connected radio")
+                # Initialize auto-tuners now that radio is available
+                self.signal_scanner.initialize_auto_tuners()
+                logger.info("Updated SignalScanner with connected radio and initialized auto-tuners")
 
             # Update UI
             self.connect_btn.setText("Disconnect Radio")
