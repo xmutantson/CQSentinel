@@ -59,9 +59,13 @@ class RecordingSession:
         transcript_analyzer: TranscriptAnalyzer,
         transcriber=None,  # SubprocessTranscriber
         vad=None,  # VoiceActivityDetector for validation
+        radio=None,  # Radio controller for auto-centering
+        auto_tuner=None,  # SSBAutoTuner for USB/LSB
+        fm_tuner=None,  # FMAutoTuner for FM
         sample_rate: int = 16000,
         recording_duration: float = 90.0,  # 90 seconds
         detection_window: float = 2.0,  # 2 seconds for signal validation
+        auto_center_enabled: bool = True,  # Enable auto-centering
         on_state_change: Optional[Callable] = None,
         on_result: Optional[Callable] = None,
         on_stuck: Optional[Callable] = None,  # Called when stuck on noise
@@ -74,9 +78,13 @@ class RecordingSession:
             transcript_analyzer: TranscriptAnalyzer instance
             transcriber: SubprocessTranscriber instance
             vad: VoiceActivityDetector for validating speech before recording
+            radio: Radio controller for auto-centering
+            auto_tuner: SSBAutoTuner for USB/LSB auto-centering
+            fm_tuner: FMAutoTuner for FM auto-centering
             sample_rate: Audio sample rate
             recording_duration: How long to record (seconds)
             detection_window: Audio window for signal validation (seconds)
+            auto_center_enabled: Enable automatic signal centering
             on_state_change: Callback when session state changes
             on_result: Callback when session completes
             on_stuck: Callback(frequency_hz) when stuck on noise frequency
@@ -85,9 +93,13 @@ class RecordingSession:
         self.transcript_analyzer = transcript_analyzer
         self.transcriber = transcriber
         self.vad = vad
+        self.radio = radio
+        self.auto_tuner = auto_tuner
+        self.fm_tuner = fm_tuner
         self.sample_rate = sample_rate
         self.recording_duration = recording_duration
         self.detection_window = detection_window
+        self.auto_center_enabled = auto_center_enabled
 
         # Callbacks
         self.on_state_change = on_state_change
@@ -117,12 +129,16 @@ class RecordingSession:
         self.vad_check_failures = 0
         self.max_vad_failures = 3  # Skip after 3 consecutive VAD failures
 
+        # Auto-centering tracking
+        self.centering_attempted = False
+
         # Frequency tracking (set by SignalScanner)
         self.current_frequency_hz = 0.0
 
         logger.info(
             f"RecordingSession initialized: {recording_duration}s recording, "
-            f"{detection_window}s detection window, VAD={'enabled' if vad else 'disabled'}"
+            f"{detection_window}s detection window, VAD={'enabled' if vad else 'disabled'}, "
+            f"auto_center={'enabled' if auto_center_enabled else 'disabled'}"
         )
 
     def _set_state(self, new_state: SessionState):
@@ -216,6 +232,7 @@ class RecordingSession:
             self._set_state(SessionState.IDLE)
             self.carrier_detector.reset()
             self.vad_check_failures = 0  # Reset VAD failures
+            self.centering_attempted = False  # Reset centering for next signal
             return None
 
         if signal_state == SignalState.CENTERED:
@@ -240,6 +257,7 @@ class RecordingSession:
                     self._set_state(SessionState.IDLE)
                     self.carrier_detector.reset()
                     self.vad_check_failures = 0
+                    self.centering_attempted = False  # Reset centering for next signal
                 else:
                     logger.debug(
                         f"VAD check failed ({self.vad_check_failures}/{self.max_vad_failures}), "
@@ -247,11 +265,16 @@ class RecordingSession:
                     )
             return None
 
-        # Still validating...
-        # TODO: Could auto-tune here based on tuning_correction_hz
-        tuning_suggestion = self.carrier_detector.get_tuning_suggestion()
-        if abs(tuning_suggestion) > 0:
-            logger.debug(f"Tuning suggestion: {tuning_suggestion:+.0f} Hz")
+        # Auto-center if voice present but not yet centered
+        if signal_state == SignalState.VOICE_PRESENT:
+            if self.auto_center_enabled and not self.centering_attempted:
+                logger.info("Voice detected, attempting auto-centering...")
+                self._attempt_auto_center()
+            else:
+                # Just log tuning suggestion
+                tuning_suggestion = self.carrier_detector.get_tuning_suggestion()
+                if abs(tuning_suggestion) > 0:
+                    logger.debug(f"Tuning suggestion: {tuning_suggestion:+.0f} Hz")
 
         return None
 
@@ -284,6 +307,109 @@ class RecordingSession:
         except Exception as e:
             logger.warning(f"VAD validation error: {e}, proceeding without validation")
             return True  # Fail-open if VAD errors
+
+    def _attempt_auto_center(self):
+        """Attempt to auto-center signal using mode-specific algorithm."""
+        if not self.radio:
+            logger.debug("No radio controller available for auto-centering")
+            self.centering_attempted = True
+            return
+
+        try:
+            # Get current mode
+            mode, bandwidth = self.radio.get_mode()
+            mode = mode.upper()
+
+            logger.info(f"Auto-centering for mode {mode} at {self.current_frequency_hz/1e6:.4f} MHz")
+
+            if mode in ["USB", "LSB"]:
+                # SSB auto-centering using pitch detection
+                if self.auto_tuner:
+                    self.auto_tuner.set_sideband(mode)
+
+                    result = self.auto_tuner.auto_center(
+                        radio_controller=self.radio,
+                        audio_capture_func=self._capture_audio_for_centering,
+                        initial_frequency=int(self.current_frequency_hz),
+                        capture_duration=2.0  # 2 seconds per iteration
+                    )
+
+                    if result.success:
+                        logger.info(
+                            f"[OK] Auto-centered on {mode}: {result.final_frequency/1e6:.4f} MHz "
+                            f"(offset: {result.final_offset:+d} Hz, {result.iterations} iterations)"
+                        )
+                        # Update our frequency tracking
+                        self.current_frequency_hz = float(result.final_frequency)
+                    else:
+                        logger.warning(
+                            f"Auto-centering failed after {result.iterations} iterations, "
+                            f"final offset: {result.final_offset:+d} Hz"
+                        )
+                else:
+                    logger.debug("No SSBAutoTuner available")
+
+            elif mode == "FM":
+                # FM auto-centering using power-based edge detection
+                if self.fm_tuner:
+                    result = self.fm_tuner.auto_center(
+                        radio_controller=self.radio,
+                        audio_capture_func=self._capture_audio_for_centering,
+                        initial_frequency=int(self.current_frequency_hz)
+                    )
+
+                    if result.success:
+                        logger.info(
+                            f"[OK] FM auto-centered: {result.final_frequency/1e6:.4f} MHz "
+                            f"(BW: {result.bandwidth_hz/1000:.1f} kHz, "
+                            f"edges: {result.signal_start_hz/1e6:.4f} - {result.signal_end_hz/1e6:.4f} MHz)"
+                        )
+                        # Update our frequency tracking
+                        self.current_frequency_hz = float(result.final_frequency)
+                    else:
+                        logger.warning("FM auto-centering failed to detect signal edges")
+                else:
+                    logger.debug("No FMAutoTuner available")
+
+            else:
+                logger.debug(f"Auto-centering not supported for mode {mode}")
+
+        except Exception as e:
+            logger.error(f"Auto-centering failed: {e}", exc_info=True)
+
+        finally:
+            self.centering_attempted = True
+
+    def _capture_audio_for_centering(self, duration: float = 2.0) -> np.ndarray:
+        """
+        Capture audio for auto-centering purposes.
+
+        This is a helper method passed to auto-tuners that need to capture
+        fresh audio samples during the centering process.
+
+        Args:
+            duration: Duration to capture in seconds
+
+        Returns:
+            Audio samples (float32)
+        """
+        # Import here to avoid circular dependency
+        import sounddevice as sd
+
+        try:
+            samples = int(duration * self.sample_rate)
+            logger.debug(f"Capturing {duration}s of audio for centering ({samples} samples)")
+
+            # Capture audio directly from sounddevice
+            audio = sd.rec(samples, samplerate=self.sample_rate, channels=1, dtype='float32')
+            sd.wait()  # Wait for recording to complete
+
+            return audio.flatten()
+
+        except Exception as e:
+            logger.error(f"Audio capture failed: {e}")
+            # Return silence on error
+            return np.zeros(int(duration * self.sample_rate), dtype=np.float32)
 
     def _start_recording(self):
         """Begin 90-second recording."""
@@ -419,6 +545,7 @@ class RecordingSession:
         self.current_result = None
         self.recording_position = 0
         self.pending_transcription_id = None
+        self.centering_attempted = False  # Reset for next signal
         self.carrier_detector.reset()
         logger.debug("Session reset, ready for next signal")
 

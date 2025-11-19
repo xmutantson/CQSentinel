@@ -64,6 +64,12 @@ class ScanConfig:
     # Local noise avoidance - skip frequencies with persistent non-voice signals
     noise_skip_threshold: int = 3  # Mark as noise after N stuck occurrences (1-10, 0=disabled)
 
+    # FM-specific auto-centering configuration
+    fm_auto_center_enabled: bool = True  # Enable FM power-based centering
+    fm_scan_range_hz: int = 10000  # ±10 kHz scan range for edge detection
+    fm_scan_step_hz: int = 100     # 100 Hz steps for edge scanning
+    fm_power_threshold_db: float = -80.0  # Power threshold for signal detection
+
 
 @dataclass
 class AudioConfig:
