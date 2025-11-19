@@ -217,6 +217,63 @@ class SignalScanner:
 
         logger.info(f"SignalScanner initialized (noise_skip_threshold={noise_skip_threshold})")
 
+    def initialize_auto_tuners(self):
+        """
+        Initialize or re-initialize auto-tuners when radio becomes available.
+
+        This should be called when the radio connects after SignalScanner initialization.
+        """
+        if not self.radio or not self.auto_center_enabled:
+            logger.debug("Skipping auto-tuner initialization (radio or auto_center not available)")
+            return
+
+        logger.info("Initializing auto-tuners with connected radio...")
+
+        # Create SSB auto-tuner (USB/LSB)
+        pitch_detector = self.carrier_detector.pitch_detector
+        if pitch_detector:
+            logger.info("Creating SSBAutoTuner for USB/LSB auto-centering")
+            # Try to get CREPE setting from config
+            try:
+                from ..config import get_config
+                config = get_config()
+                use_crepe = config.audio.use_crepe_pitch
+            except:
+                use_crepe = False
+
+            ssb_auto_tuner = SSBAutoTuner(
+                sample_rate=self.sample_rate,
+                max_iterations=3,
+                tolerance_hz=50,
+                sideband="USB",  # Will be set dynamically
+                use_crepe=use_crepe
+            )
+            self.recording_session.auto_tuner = ssb_auto_tuner
+            logger.info("SSBAutoTuner created and assigned to RecordingSession")
+
+        # Create FM auto-tuner
+        logger.info("Creating FMAutoTuner for FM auto-centering")
+        # Try to get FM settings from config
+        try:
+            from ..config import get_config
+            config = get_config()
+            scan_range = config.scan.fm_scan_range_hz
+            scan_step = config.scan.fm_scan_step_hz
+            power_threshold = config.scan.fm_power_threshold_db
+        except:
+            scan_range = 10000
+            scan_step = 100
+            power_threshold = -80.0
+
+        fm_auto_tuner = FMAutoTuner(
+            sample_rate=self.sample_rate,
+            scan_range_hz=scan_range,
+            scan_step_hz=scan_step,
+            power_threshold_db=power_threshold
+        )
+        self.recording_session.fm_tuner = fm_auto_tuner
+        logger.info("FMAutoTuner created and assigned to RecordingSession")
+
     def start(self):
         """Start the signal scanner."""
         self.is_active = True
