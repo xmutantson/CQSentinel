@@ -80,7 +80,7 @@ class SpeechTranscriber:
                 download_root=None  # Use default cache
             )
 
-            logger.info(f"[TRANSCRIBER] ✓ Whisper {self.model_size} model loaded successfully")
+            logger.info(f"[TRANSCRIBER] [OK] Whisper {self.model_size} model loaded successfully")
 
         except ImportError:
             logger.error("faster-whisper not installed. Install with: pip install faster-whisper")

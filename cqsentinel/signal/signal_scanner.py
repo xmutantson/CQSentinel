@@ -214,6 +214,7 @@ class SignalScanner:
         # Current state
         self.current_frequency = 0.0
         self.is_active = False
+        self._auto_centering_suspended = False  # Can be suspended during BandScanner operation
 
         logger.info(f"SignalScanner initialized (noise_skip_threshold={noise_skip_threshold})")
 
@@ -273,6 +274,22 @@ class SignalScanner:
         )
         self.recording_session.fm_tuner = fm_auto_tuner
         logger.info("FMAutoTuner created and assigned to RecordingSession")
+
+    def suspend_auto_centering(self):
+        """
+        Temporarily suspend auto-centering.
+
+        Use this when BandScanner is active to prevent conflicts.
+        """
+        self._auto_centering_suspended = True
+        self.recording_session.auto_center_enabled = False
+        logger.debug("SignalScanner auto-centering suspended (BandScanner active)")
+
+    def resume_auto_centering(self):
+        """Resume auto-centering."""
+        self._auto_centering_suspended = False
+        self.recording_session.auto_center_enabled = self.auto_center_enabled
+        logger.debug("SignalScanner auto-centering resumed")
 
     def start(self):
         """Start the signal scanner."""
