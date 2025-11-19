@@ -24,7 +24,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def download_whisper(model_size: str = "small"):
+def download_whisper(model_size: str = "medium.en"):
     """Download Whisper model"""
     logger.info(f"Downloading Whisper {model_size} model...")
 
@@ -32,6 +32,7 @@ def download_whisper(model_size: str = "small"):
         from faster_whisper import WhisperModel
 
         # This will download the model if not already cached
+        # Note: Use int8 for download compatibility, app will use float32 as needed
         model = WhisperModel(
             model_size,
             device="cpu",
@@ -123,9 +124,9 @@ def main():
     )
     parser.add_argument(
         '--model-size',
-        choices=['tiny', 'base', 'small', 'medium', 'large'],
-        default='small',
-        help='Whisper model size (default: small)'
+        choices=['tiny', 'tiny.en', 'base', 'base.en', 'small', 'small.en', 'medium', 'medium.en', 'large'],
+        default='medium.en',
+        help='Whisper model size (default: medium.en - matches application)'
     )
     parser.add_argument(
         '--skip-whisper',
