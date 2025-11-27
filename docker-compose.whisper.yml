@@ -1,0 +1,62 @@
+version: '3.8'
+
+services:
+  whisper-server:
+    image: fedirz/faster-whisper-server:latest-cuda
+    container_name: cqsentinel-whisper
+    ports:
+      - "8000:8000"
+    environment:
+      # Whisper model configuration
+      - WHISPER_MODEL=medium.en
+      - WHISPER_DEVICE=cuda
+      - WHISPER_COMPUTE_TYPE=float16
+
+      # Server configuration
+      - WHISPER_HOST=0.0.0.0
+      - WHISPER_PORT=8000
+
+      # Optional: Beam size for better accuracy
+      - WHISPER_BEAM_SIZE=5
+
+    # GPU support (NVIDIA)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+    restart: unless-stopped
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+# For CPU-only version, use this service instead:
+# Uncomment and use: docker-compose -f docker-compose.whisper.yml up whisper-server-cpu
+
+  # whisper-server-cpu:
+  #   image: fedirz/faster-whisper-server:latest-cpu
+  #   container_name: cqsentinel-whisper-cpu
+  #   ports:
+  #     - "8000:8000"
+  #   environment:
+  #     - WHISPER_MODEL=medium.en
+  #     - WHISPER_DEVICE=cpu
+  #     - WHISPER_COMPUTE_TYPE=float32
+  #     - WHISPER_HOST=0.0.0.0
+  #     - WHISPER_PORT=8000
+  #     - WHISPER_BEAM_SIZE=5
+  #   restart: unless-stopped
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 3
+  #     start_period: 60s

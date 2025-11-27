@@ -89,6 +89,13 @@ class AudioConfig:
     openai_api_key: str = ""  # Empty = use local Whisper, set key = use OpenAI API
     openai_whisper_model: str = "whisper-1"  # OpenAI Whisper model
 
+    # Network Whisper Server (self-hosted, supersedes local when enabled)
+    # Priority: network > OpenAI API > local subprocess
+    network_whisper_enabled: bool = False  # Enable network-based transcription
+    network_whisper_url: str = "http://localhost:8000"  # Whisper server URL
+    network_whisper_model: str = "medium.en"  # Model loaded on server
+    network_whisper_timeout: float = 30.0  # Request timeout in seconds
+
     # Pitch detection (for SSB auto-centering)
     use_crepe_pitch: bool = False  # GPU-accelerated pitch detection
     pitch_fmin: int = 50  # Hz

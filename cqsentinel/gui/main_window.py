@@ -39,6 +39,7 @@ from cqsentinel.audio.vad import VoiceActivityDetector
 from cqsentinel.speech.transcription import SpeechTranscriber
 from cqsentinel.speech.subprocess_transcriber import SubprocessTranscriber
 from cqsentinel.speech.openai_transcriber import OpenAITranscriber
+from cqsentinel.speech.network_transcriber import NetworkTranscriber
 from cqsentinel.speech.gpu_utils import select_device_and_workers, estimate_transcription_speed
 from cqsentinel.contest import CallsignExtractor, BehaviorAnalyzer
 from cqsentinel.bandmap.station import BandMapState
@@ -641,6 +642,7 @@ class MainWindow(QMainWindow):
         self.transcriber: SpeechTranscriber = None
         self.subprocess_transcriber: SubprocessTranscriber = None  # Subprocess-based transcription for Windows
         self.openai_transcriber: OpenAITranscriber = None  # OpenAI API transcription (supersedes local)
+        self.network_transcriber: NetworkTranscriber = None  # Network Whisper server (supersedes OpenAI and local)
         self.callsign_extractor: CallsignExtractor = None
         self.behavior_analyzer: BehaviorAnalyzer = None
         self.band_map: BandMapState = None
@@ -788,11 +790,52 @@ class MainWindow(QMainWindow):
                     power_threshold_db=power_threshold
                 )
 
-            # Speech transcription - check for OpenAI API key first
-            # If API key provided, use cloud API; otherwise use local GPU/CPU
+            # Speech transcription - priority order:
+            # 1. Network Whisper server (self-hosted)
+            # 2. OpenAI API (cloud)
+            # 3. Local subprocess (GPU/CPU)
+
+            # Check for network Whisper server first
+            network_enabled = getattr(self.config.audio, 'network_whisper_enabled', False)
+
+            if network_enabled and not self.network_transcriber:
+                # Network Whisper server (self-hosted, supersedes cloud and local)
+                self.log("  Initializing Network Whisper server connection...")
+                try:
+                    server_url = getattr(self.config.audio, 'network_whisper_url', 'http://localhost:8000')
+                    server_model = getattr(self.config.audio, 'network_whisper_model', 'medium.en')
+                    server_timeout = getattr(self.config.audio, 'network_whisper_timeout', 30.0)
+
+                    self.network_transcriber = NetworkTranscriber(
+                        server_url=server_url,
+                        model=server_model,
+                        timeout=server_timeout
+                    )
+
+                    # Test connection
+                    if self.network_transcriber.start():
+                        self.log(f"  Network Whisper server ready ({server_url}, model={server_model})")
+                        self.log("  [INFO] Using network transcription - local GPU/CPU not used")
+                        logger.info(f"Network Whisper server initialized: {server_url}")
+
+                        # Single worker for network (requests are sequential)
+                        self._max_concurrent_transcriptions = 1
+                    else:
+                        self.log(f"  WARNING: Cannot connect to Whisper server at {server_url}")
+                        self.log("  Falling back to OpenAI API or local transcription...")
+                        logger.warning(f"Network Whisper server unreachable: {server_url}")
+                        self.network_transcriber = None
+
+                except Exception as e:
+                    self.log(f"  WARNING: Network Whisper init failed: {e}")
+                    self.log("  Falling back to OpenAI API or local transcription...")
+                    logger.warning(f"Network Whisper init failed: {e}")
+                    self.network_transcriber = None
+
+            # OpenAI API transcription (if network not available)
             openai_api_key = getattr(self.config.audio, 'openai_api_key', '')
 
-            if openai_api_key and not self.openai_transcriber:
+            if openai_api_key and not self.openai_transcriber and not self.network_transcriber:
                 # OpenAI API transcription (cloud-based, supersedes local)
                 self.log("  Initializing OpenAI Whisper API (cloud transcription)...")
                 try:
@@ -814,8 +857,8 @@ class MainWindow(QMainWindow):
                     logger.warning(f"OpenAI API init failed, using local: {e}")
                     self.openai_transcriber = None
 
-            # Local transcription (GPU/CPU) - only if no OpenAI API
-            if not self.openai_transcriber and not self.subprocess_transcriber:
+            # Local transcription (GPU/CPU) - only if no network or OpenAI API
+            if not self.network_transcriber and not self.openai_transcriber and not self.subprocess_transcriber:
                 self.log("  Starting local transcription (may download AI model)...")
 
                 # Detect GPU and calculate optimal worker count
@@ -862,10 +905,11 @@ class MainWindow(QMainWindow):
                     self.log("  ERROR: Failed to start transcription subprocess")
                     logger.error("Failed to start transcription subprocess")
 
-            # Keep old transcriber for backward compatibility (not used with subprocess approach)
+            # Old SpeechTranscriber removed - it uses faster-whisper which downloads models at runtime
+            # All transcription now handled by SubprocessTranscriber (openai-whisper, pre-downloaded)
+            # or OpenAI API transcriber
             if not self.transcriber:
-                self.log("  Initializing speech transcriber (may download AI model)...")
-                self.transcriber = SpeechTranscriber()
+                self.transcriber = None  # No longer used, kept for compatibility
 
             # Contest logic
             if not self.callsign_extractor:
@@ -884,8 +928,16 @@ class MainWindow(QMainWindow):
             if not self.signal_scanner:
                 self.log("  Initializing signal scanner pipeline...")
                 # Use whichever transcriber is available (OpenAI takes priority)
-                active_transcriber = self.openai_transcriber if self.openai_transcriber else self.subprocess_transcriber
-                transcriber_type = "OpenAI API" if self.openai_transcriber else "Local GPU/CPU"
+                # Priority: network > OpenAI API > local subprocess
+                if self.network_transcriber:
+                    active_transcriber = self.network_transcriber
+                    transcriber_type = "Network Whisper"
+                elif self.openai_transcriber:
+                    active_transcriber = self.openai_transcriber
+                    transcriber_type = "OpenAI API"
+                else:
+                    active_transcriber = self.subprocess_transcriber
+                    transcriber_type = "Local GPU/CPU"
 
                 # Get VAD from audio pipeline for speech validation
                 vad_instance = self.audio_pipeline.vad if self.audio_pipeline else None
@@ -1306,9 +1358,11 @@ class MainWindow(QMainWindow):
                 # Create band map state for this band
                 band_map_state = BandMapState(band=band_name)
                 self.band_maps[band_name] = band_map_state
+                logger.info(f"Created BandMapState for {band_name}: id={id(band_map_state):x}")
 
                 # Create band map widget
                 band_map_widget = BandMapWidget(band_map_state)
+                logger.info(f"Created BandMapWidget for {band_name}: widget.band_map id={id(band_map_widget.band_map):x}")
                 band_map_widget.set_frequency_range(profile.freq_start, profile.freq_end)
                 band_map_widget.station_clicked.connect(self.on_station_clicked)
                 band_map_widget.station_selected.connect(self.on_station_selected)
@@ -1501,13 +1555,20 @@ class MainWindow(QMainWindow):
         freq_layout = QHBoxLayout()
         freq_layout.addWidget(QLabel("Frequency:"))
 
-        self.freq_label = QLabel("0.000 MHz")
+        # Editable frequency display - user can type and press Enter to tune
+        from PyQt5.QtWidgets import QLineEdit
+        self.freq_input = QLineEdit("0.000")
         freq_font = QFont()
         freq_font.setPointSize(24)
         freq_font.setBold(True)
-        self.freq_label.setFont(freq_font)
-        self.freq_label.setMinimumWidth(250)  # Prevent label from resizing
-        freq_layout.addWidget(self.freq_label)
+        self.freq_input.setFont(freq_font)
+        self.freq_input.setMinimumWidth(200)
+        self.freq_input.setMaximumWidth(250)
+        self.freq_input.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self.freq_input.returnPressed.connect(self._on_freq_input_enter)
+        freq_layout.addWidget(self.freq_input)
+
+        freq_layout.addWidget(QLabel("MHz"))
         freq_layout.addStretch()
         layout.addLayout(freq_layout)
 
@@ -1542,6 +1603,64 @@ class MainWindow(QMainWindow):
         self.audio_meter.setValue(0)
         audio_layout.addWidget(self.audio_meter)
         layout.addLayout(audio_layout)
+
+        # RF Controls section (collapsed by default for clean UI)
+        from PyQt5.QtWidgets import QSlider, QPushButton
+        rf_controls_group = QGroupBox("Receiver Controls")
+        rf_controls_group.setCheckable(True)
+        rf_controls_group.setChecked(False)  # Collapsed by default
+        rf_controls_layout = QVBoxLayout()
+
+        # RF Gain slider
+        rf_gain_layout = QHBoxLayout()
+        rf_gain_layout.addWidget(QLabel("RF Gain:"))
+        self.rf_gain_slider = QSlider(Qt.Orientation.Horizontal)
+        self.rf_gain_slider.setMinimum(0)
+        self.rf_gain_slider.setMaximum(100)  # 0-100% for receiver-agnostic control
+        self.rf_gain_slider.setValue(100)  # Default to max gain
+        self.rf_gain_slider.setToolTip("Adjust receiver RF gain (reduces sensitivity to prevent overload)")
+        self.rf_gain_slider.valueChanged.connect(self._on_rf_gain_changed)
+        rf_gain_layout.addWidget(self.rf_gain_slider)
+        self.rf_gain_value_label = QLabel("100%")
+        self.rf_gain_value_label.setMinimumWidth(50)
+        rf_gain_layout.addWidget(self.rf_gain_value_label)
+        rf_controls_layout.addLayout(rf_gain_layout)
+
+        # Preamp control
+        preamp_layout = QHBoxLayout()
+        preamp_layout.addWidget(QLabel("Preamp:"))
+        self.preamp_combo = QComboBox()
+        self.preamp_combo.setToolTip("Preamplifier boosts weak signals")
+        # Will be populated dynamically based on radio manufacturer in _refresh_rf_controls()
+        # Icom radios use index values (0, 1, 2), others use dB values (0, 10, 20)
+        self.preamp_combo.currentIndexChanged.connect(self._on_preamp_changed)
+        preamp_layout.addWidget(self.preamp_combo)
+        preamp_layout.addStretch()
+        rf_controls_layout.addLayout(preamp_layout)
+
+        # Attenuator control
+        att_layout = QHBoxLayout()
+        att_layout.addWidget(QLabel("Attenuator:"))
+        self.att_combo = QComboBox()
+        self.att_combo.setToolTip("Attenuator reduces strong signals to prevent overload")
+        # Will be populated dynamically based on radio manufacturer in _refresh_rf_controls()
+        # Icom radios use index values (0, 1, 2, 3), others use dB values (0, 6, 12, 18, 20)
+        self.att_combo.currentIndexChanged.connect(self._on_attenuator_changed)
+        att_layout.addWidget(self.att_combo)
+        att_layout.addStretch()
+        rf_controls_layout.addLayout(att_layout)
+
+        # Refresh button to query current radio settings
+        refresh_btn_layout = QHBoxLayout()
+        self.rf_controls_refresh_btn = QPushButton("Refresh from Radio")
+        self.rf_controls_refresh_btn.setToolTip("Query current RF control settings from radio")
+        self.rf_controls_refresh_btn.clicked.connect(self._refresh_rf_controls)
+        refresh_btn_layout.addWidget(self.rf_controls_refresh_btn)
+        refresh_btn_layout.addStretch()
+        rf_controls_layout.addLayout(refresh_btn_layout)
+
+        rf_controls_group.setLayout(rf_controls_layout)
+        layout.addWidget(rf_controls_group)
 
         group.setLayout(layout)
         return group
@@ -1651,25 +1770,34 @@ class MainWindow(QMainWindow):
         scan_status_layout.addStretch()
         layout.addLayout(scan_status_layout)
 
-        # Signal detection session status
+        # Signal detection session status (hidden - only used by old SignalScanner, not Band Scanner)
         session_status_layout = QHBoxLayout()
         session_status_layout.addWidget(QLabel("Session State:"))
-        self.session_state_label = QLabel("IDLE")
+        self.session_state_label = QLabel("N/A")
         self.session_state_label.setStyleSheet("color: gray; font-weight: bold;")
+        self.session_state_label.setVisible(False)  # Hidden - not used by BandScanner
         session_status_layout.addWidget(self.session_state_label)
         session_status_layout.addStretch()
-        layout.addLayout(session_status_layout)
+        # Hide the entire session status layout
+        session_status_widget = QWidget()
+        session_status_widget.setLayout(session_status_layout)
+        session_status_widget.setVisible(False)  # Hidden - not used by BandScanner
+        layout.addWidget(session_status_widget)
 
-        # Recording progress bar (visible only during recording)
+        # Recording progress bar (hidden - only used by old SignalScanner, not Band Scanner)
         recording_progress_layout = QHBoxLayout()
         recording_progress_layout.addWidget(QLabel("Recording:"))
         self.recording_progress_bar = QProgressBar()
         self.recording_progress_bar.setRange(0, 100)
         self.recording_progress_bar.setValue(0)
         self.recording_progress_bar.setFormat("%p% (90s)")
-        self.recording_progress_bar.setVisible(False)  # Hidden until recording starts
+        self.recording_progress_bar.setVisible(False)
         recording_progress_layout.addWidget(self.recording_progress_bar)
-        layout.addLayout(recording_progress_layout)
+        # Hide the entire recording progress layout
+        recording_progress_widget = QWidget()
+        recording_progress_widget.setLayout(recording_progress_layout)
+        recording_progress_widget.setVisible(False)  # Hidden - not used by BandScanner
+        layout.addWidget(recording_progress_widget)
 
         group.setLayout(layout)
         return group
@@ -1781,7 +1909,8 @@ class MainWindow(QMainWindow):
             # Create Hamlib controller
             self.radio = HamlibController(
                 host=self.config.radio.rigctld_host,
-                port=self.config.radio.rigctld_port
+                port=self.config.radio.rigctld_port,
+                model_id=self.config.radio.model_id
             )
 
             # Connect
@@ -1802,6 +1931,9 @@ class MainWindow(QMainWindow):
                 # Initialize auto-tuners now that radio is available
                 self.signal_scanner.initialize_auto_tuners()
                 logger.info("Updated SignalScanner with connected radio and initialized auto-tuners")
+
+            # Refresh RF controls from radio (receiver-agnostic)
+            self._refresh_rf_controls()
 
             # Update UI
             self.connect_btn.setText("Disconnect Radio")
@@ -1841,7 +1973,7 @@ class MainWindow(QMainWindow):
             self.radio_timer.stop()
 
             # Reset displays
-            self.freq_label.setText("0.000 MHz")
+            self.freq_input.setText("0.000")
             self.mode_label.setText("--")
             self.smeter_label.setText("S0")
 
@@ -1900,19 +2032,35 @@ class MainWindow(QMainWindow):
                     # Emit signal for thread-safe GUI update
                     self.progress_update_signal.emit(prog)
 
+                # Debug: Log what we're passing to BandScanner
+                logger.info(f"DEBUG: Creating BandScanner with:")
+                logger.info(f"  fm_tuner={self.fm_tuner} (type={type(self.fm_tuner).__name__})")
+                logger.info(f"  transcriber={self.subprocess_transcriber} (type={type(self.subprocess_transcriber).__name__ if self.subprocess_transcriber else 'None'})")
+                logger.info(f"  auto_tuner={self.auto_tuner} (type={type(self.auto_tuner).__name__})")
+
+                # Determine first band to scan (lowest frequency = last in reversed list)
+                # This BandScanner will be immediately replaced by _start_next_band_scan(),
+                # but we need a valid band_map to avoid None warnings
+                first_band = list(reversed(enabled_bands))[0] if enabled_bands else "20m"
+                initial_band_map = self.band_maps.get(first_band)
+                logger.info(f"  band_map={initial_band_map} (first band: {first_band})")
+                logger.info(f"  band_map id={id(initial_band_map):x} (first band: {first_band})")
+
                 self.band_scanner = BandScanner(
                     radio_controller=self.radio,
                     audio_capture=self.audio,
                     audio_pipeline=self.audio_pipeline,
                     auto_tuner=self.auto_tuner,
                     fm_tuner=self.fm_tuner,  # FM power-based edge detection
+                    transcriber=self.subprocess_transcriber,  # SubprocessTranscriber for speech-to-text
                     voice_database=None,  # Voice fingerprinting removed
                     callsign_extractor=self.callsign_extractor,
                     behavior_analyzer=self.behavior_analyzer,
-                    band_map=self.band_map,
+                    band_map=initial_band_map,
                     scan_speed_steps_per_sec=getattr(self.config.scan, 'scan_speed_steps_per_sec', 1.0),
                     s_meter_threshold=getattr(self.config.scan, 's_meter_threshold', 3),
                     use_s_meter_scan=getattr(self.config.scan, 'use_s_meter_scan', True),
+                    noise_skip_threshold=getattr(self.config.scan, 'noise_skip_threshold', 3),
                     on_station_detected=on_station_detected_callback,
                     on_progress_update=on_progress_update_callback
                 )
@@ -1936,6 +2084,10 @@ class MainWindow(QMainWindow):
                 # Start scanning first band (lowest frequency)
                 if self.scan_queue:
                     self._start_next_band_scan()
+
+                # Update band map widgets to show yellow scanning cursor
+                for widget in self.band_map_widgets.values():
+                    widget.set_scanning_active(True)
             else:
                 # Use simple Phase 1 scanner (frequency stepping only)
                 self.log("Using BASIC SCANNER (frequency stepping only)")
@@ -1952,9 +2104,14 @@ class MainWindow(QMainWindow):
                 self.scan_thread.finished.connect(self.on_scan_finished)
                 self.scan_thread.start()
 
+                # Update band map widgets to show yellow scanning cursor
+                for widget in self.band_map_widgets.values():
+                    widget.set_scanning_active(True)
+
             self.scan_btn.setText("Stop Scan")
             self.skip_btn.setEnabled(True)  # Enable skip button during scan
             self.connect_btn.setEnabled(False)
+            self.freq_input.setEnabled(False)  # Disable manual tuning during scan
             for cb in self.band_checkboxes.values():
                 cb.setEnabled(False)
         else:
@@ -1984,8 +2141,13 @@ class MainWindow(QMainWindow):
             self.scan_btn.setText("Start Scan")
             self.skip_btn.setEnabled(False)  # Disable skip button when not scanning
             self.connect_btn.setEnabled(True)
+            self.freq_input.setEnabled(True)  # Re-enable manual tuning when not scanning
             for cb in self.band_checkboxes.values():
                 cb.setEnabled(True)
+
+            # Update band map widgets to show green standby cursor
+            for widget in self.band_map_widgets.values():
+                widget.set_scanning_active(False)
 
     def skip_current_signal(self):
         """Skip current signal and move to next frequency (human override)"""
@@ -2046,7 +2208,7 @@ class MainWindow(QMainWindow):
         try:
             # Get frequency
             freq = self.radio.get_frequency()
-            self.freq_label.setText(f"{freq/1e6:.4f} MHz")
+            self.freq_input.setText(f"{freq/1e6:.4f}")
 
             # Update tuning indicators on all band maps
             self._update_tuning_indicators(freq)
@@ -2208,9 +2370,250 @@ class MainWindow(QMainWindow):
 
     def update_freq_display(self, freq_hz: int):
         """Update frequency display from scan thread (prevents race condition)"""
-        self.freq_label.setText(f"{freq_hz/1e6:.4f} MHz")
+        self.freq_input.setText(f"{freq_hz/1e6:.4f}")
         # Update tuning indicators
         self._update_tuning_indicators(freq_hz)
+
+    def _on_freq_input_enter(self):
+        """Handle user entering a frequency and pressing Enter"""
+        try:
+            # Block tuning during active scan
+            if self.scan_btn.text() == "Stop Scan":
+                self.log("ERROR: Manual tuning blocked during active scan")
+                return
+
+            # Parse frequency from input (in MHz)
+            freq_str = self.freq_input.text().strip()
+            freq_mhz = float(freq_str)
+            freq_hz = int(freq_mhz * 1e6)
+
+            # Validate frequency range (1 MHz to 10 GHz)
+            if freq_hz < 1e6 or freq_hz > 10e9:
+                self.log(f"ERROR: Frequency {freq_mhz:.4f} MHz out of range (1-10000 MHz)")
+                return
+
+            # Tune radio if connected
+            if self.radio and self.radio.is_connected:
+                self.radio.set_frequency(freq_hz)
+                self.log(f"Tuned to {freq_mhz:.4f} MHz")
+            else:
+                self.log("ERROR: Radio not connected")
+        except ValueError:
+            self.log(f"ERROR: Invalid frequency format: {self.freq_input.text()}")
+        except Exception as e:
+            self.log(f"ERROR: Failed to tune: {e}")
+
+    def _on_rf_gain_changed(self, value: int):
+        """Handle RF gain slider change (receiver-agnostic)"""
+        try:
+            # Check if control is enabled (supported by radio)
+            if not self.rf_gain_slider.isEnabled():
+                return
+
+            if not self.radio or not self.radio.is_connected:
+                return
+
+            # Update label
+            self.rf_gain_value_label.setText(f"{value}%")
+
+            # Convert 0-100% to 0.0-1.0 normalized for hamlib
+            normalized_value = value / 100.0
+
+            # Try to set RF gain
+            if self.radio.set_rf_gain(normalized_value):
+                logger.debug(f"RF gain set to {value}% ({normalized_value:.2f})")
+            else:
+                logger.warning("RF gain control not supported on this radio")
+        except Exception as e:
+            logger.error(f"Failed to set RF gain: {e}")
+
+    def _on_preamp_changed(self, index: int):
+        """Handle preamp combobox change (receiver-agnostic)"""
+        try:
+            # Check if control is enabled (supported by radio)
+            if not self.preamp_combo.isEnabled():
+                return
+
+            if not self.radio or not self.radio.is_connected:
+                return
+
+            # Get preamp value from combobox data
+            preamp_value = self.preamp_combo.currentData()
+
+            # Try to set preamp
+            if self.radio.set_preamp(preamp_value):
+                logger.info(f"Preamp set to {preamp_value} dB")
+                self.log(f"Preamp: {self.preamp_combo.currentText()}")
+            else:
+                logger.warning("Preamp control not supported on this radio")
+        except Exception as e:
+            logger.error(f"Failed to set preamp: {e}")
+
+    def _on_attenuator_changed(self, index: int):
+        """Handle attenuator combobox change (receiver-agnostic)"""
+        try:
+            # Check if control is enabled (supported by radio)
+            if not self.att_combo.isEnabled():
+                return
+
+            if not self.radio or not self.radio.is_connected:
+                return
+
+            # Get attenuator value from combobox data
+            att_value = self.att_combo.currentData()
+
+            # Try to set attenuator
+            if self.radio.set_attenuator(att_value):
+                logger.info(f"Attenuator set to {att_value} dB")
+                self.log(f"Attenuator: {self.att_combo.currentText()}")
+            else:
+                logger.warning("Attenuator control not supported on this radio")
+        except Exception as e:
+            logger.error(f"Failed to set attenuator: {e}")
+
+    def _refresh_rf_controls(self):
+        """Query and update RF control settings from radio (receiver-agnostic)"""
+        try:
+            if not self.radio or not self.radio.is_connected:
+                # Disable all controls when not connected
+                self.rf_gain_slider.setEnabled(False)
+                self.rf_gain_slider.setToolTip("Radio not connected")
+                self.preamp_combo.setEnabled(False)
+                self.preamp_combo.setToolTip("Radio not connected")
+                self.att_combo.setEnabled(False)
+                self.att_combo.setToolTip("Radio not connected")
+                return
+
+            # Populate dropdowns based on manufacturer
+            # Values based on hamlib source code (rigs/icom/ic7300.c, rigs/yaesu/newcat.c)
+            manufacturer = self.radio._get_manufacturer_from_model_id()
+            logger.debug(f"Populating RF controls for manufacturer: {manufacturer}")
+
+            # Populate preamp dropdown based on manufacturer
+            self.preamp_combo.blockSignals(True)
+            self.preamp_combo.clear()
+            if manufacturer == 'icom':
+                # Icom radios use index values: 0=off, 1=preamp1, 2=preamp2
+                # Hardware: P.AMP1=~13dB, P.AMP2=~18dB (IC-705)
+                # But hamlib expects indices, not dB values
+                self.preamp_combo.addItem("Off", 0)
+                self.preamp_combo.addItem("Preamp 1", 1)
+                self.preamp_combo.addItem("Preamp 2", 2)
+                logger.debug("Populated Icom preamp values (indices 0, 1, 2)")
+            else:
+                # Yaesu, Kenwood use dB values
+                self.preamp_combo.addItem("Off", 0)
+                self.preamp_combo.addItem("+10 dB", 10)
+                self.preamp_combo.addItem("+20 dB", 20)
+                logger.debug("Populated non-Icom preamp values (dB 0, 10, 20)")
+            self.preamp_combo.blockSignals(False)
+
+            # Populate attenuator dropdown based on manufacturer
+            self.att_combo.blockSignals(True)
+            self.att_combo.clear()
+            if manufacturer == 'icom':
+                # Most Icom radios: single 20dB attenuator (IC-705, IC-7300)
+                # Hamlib expects value 20, not an index
+                self.att_combo.addItem("Off", 0)
+                self.att_combo.addItem("20 dB", 20)
+                logger.debug("Populated Icom attenuator values (0, 20 dB)")
+            elif manufacturer == 'yaesu':
+                # Yaesu FT-710: 6, 12, 18 dB attenuators
+                # Other Yaesu may vary
+                self.att_combo.addItem("Off", 0)
+                self.att_combo.addItem("6 dB", 6)
+                self.att_combo.addItem("12 dB", 12)
+                self.att_combo.addItem("18 dB", 18)
+                logger.debug("Populated Yaesu attenuator values (0, 6, 12, 18 dB)")
+            else:
+                # Kenwood and others: common values
+                self.att_combo.addItem("Off", 0)
+                self.att_combo.addItem("6 dB", 6)
+                self.att_combo.addItem("12 dB", 12)
+                self.att_combo.addItem("18 dB", 18)
+                self.att_combo.addItem("20 dB", 20)
+                logger.debug("Populated generic attenuator values (0, 6, 12, 18, 20 dB)")
+            self.att_combo.blockSignals(False)
+
+            supported_count = 0
+
+            # Query RF gain
+            rf_gain = self.radio.get_rf_gain()
+            if rf_gain is not None:
+                # Supported - enable and update
+                self.rf_gain_slider.setEnabled(True)
+                self.rf_gain_slider.setToolTip("Adjust receiver RF gain (reduces sensitivity to prevent overload)")
+
+                # Convert normalized 0.0-1.0 to 0-100%
+                gain_percent = int(rf_gain * 100)
+                self.rf_gain_slider.blockSignals(True)
+                self.rf_gain_slider.setValue(gain_percent)
+                self.rf_gain_slider.blockSignals(False)
+                self.rf_gain_value_label.setText(f"{gain_percent}%")
+                logger.info(f"RF gain read from radio: {gain_percent}%")
+                supported_count += 1
+            else:
+                # Not supported - disable with explanation
+                self.rf_gain_slider.setEnabled(False)
+                self.rf_gain_slider.setToolTip("RF gain control not supported on this radio model")
+                self.rf_gain_value_label.setText("N/A")
+                logger.debug("RF gain not supported on this radio")
+
+            # Query preamp
+            preamp = self.radio.get_preamp()
+            if preamp is not None:
+                # Supported - enable and update
+                self.preamp_combo.setEnabled(True)
+                self.preamp_combo.setToolTip("Preamplifier boosts weak signals")
+
+                # Find matching value in combobox
+                self.preamp_combo.blockSignals(True)
+                for i in range(self.preamp_combo.count()):
+                    if self.preamp_combo.itemData(i) == preamp:
+                        self.preamp_combo.setCurrentIndex(i)
+                        break
+                self.preamp_combo.blockSignals(False)
+                logger.info(f"Preamp read from radio: {preamp} dB")
+                supported_count += 1
+            else:
+                # Not supported - disable with explanation
+                self.preamp_combo.setEnabled(False)
+                self.preamp_combo.setToolTip("Preamp control not supported on this radio model")
+                logger.debug("Preamp not supported on this radio")
+
+            # Query attenuator
+            att = self.radio.get_attenuator()
+            if att is not None:
+                # Supported - enable and update
+                self.att_combo.setEnabled(True)
+                self.att_combo.setToolTip("Attenuator reduces strong signals to prevent overload")
+
+                # Find matching value in combobox
+                self.att_combo.blockSignals(True)
+                for i in range(self.att_combo.count()):
+                    if self.att_combo.itemData(i) == att:
+                        self.att_combo.setCurrentIndex(i)
+                        break
+                self.att_combo.blockSignals(False)
+                logger.info(f"Attenuator read from radio: {att} dB")
+                supported_count += 1
+            else:
+                # Not supported - disable with explanation
+                self.att_combo.setEnabled(False)
+                self.att_combo.setToolTip("Attenuator control not supported on this radio model")
+                logger.debug("Attenuator not supported on this radio")
+
+            # Log summary
+            if supported_count == 0:
+                self.log("RF controls: None supported on this radio")
+            elif supported_count == 3:
+                self.log("RF controls refreshed from radio (all supported)")
+            else:
+                self.log(f"RF controls refreshed from radio ({supported_count}/3 supported)")
+
+        except Exception as e:
+            logger.error(f"Failed to refresh RF controls: {e}")
+            self.log(f"ERROR: Failed to refresh RF controls: {e}")
 
     def _update_tuning_indicators(self, freq_hz: float):
         """
@@ -2237,6 +2640,25 @@ class MainWindow(QMainWindow):
         """Handle station detected signal (thread-safe GUI update)"""
         try:
             self.log(f"STATION on {self.current_scan_band}: {station.callsign if hasattr(station, 'callsign') else station}")
+
+            # Refresh the band map widget to show the new station
+            if self.current_scan_band and self.current_scan_band in self.band_map_widgets:
+                widget = self.band_map_widgets[self.current_scan_band]
+                logger.info(f"Refreshing {self.current_scan_band} band map widget after station detection")
+                logger.info(f"  Widget band_map id={id(widget.band_map):x}")
+                logger.info(f"  Widget sees: {len(widget.band_map.stations)} stations, {len(widget.band_map.noise_sources)} noise")
+                widget.update_display()
+                logger.info(f"  Refresh complete")
+
+            # Update station count in status bar
+            if self.band_maps:
+                total_stations = sum(len(bm.stations) for bm in self.band_maps.values())
+                total_noise = sum(len(bm.noise_sources) for bm in self.band_maps.values())
+                status_msg = f"Stations: {total_stations}"
+                if total_noise > 0:
+                    status_msg += f" | Noise: {total_noise}"
+                self.status_bar.showMessage(status_msg)
+
             # If station has transcripts, display them
             if hasattr(station, 'transcripts') and station.transcripts:
                 for transcript in station.transcripts[-3:]:  # Last 3
@@ -2251,8 +2673,15 @@ class MainWindow(QMainWindow):
         try:
             status_text = f"Scanning {self.current_scan_band}: {prog.progress_percent:.1f}% ({prog.current_frequency/1e6:.3f} MHz)"
             self.update_scan_status(status_text, "green")
-            if int(prog.progress_percent) % 10 == 0 and prog.progress_percent > 0:  # Log every 10%
-                self.log(f"{self.current_scan_band}: {prog.progress_percent:.1f}%")
+            # Don't spam activity log with scan % - status bar shows it already
+
+            # Refresh band map widget every 5% to show new stations/noise sources
+            # This is important because noise sources don't trigger station_detected callback
+            if int(prog.progress_percent) % 5 == 0 and prog.progress_percent > 0:
+                if self.current_scan_band and self.current_scan_band in self.band_map_widgets:
+                    widget = self.band_map_widgets[self.current_scan_band]
+                    logger.info(f"Periodic refresh ({prog.progress_percent:.0f}%): widget.band_map id={id(widget.band_map):x}, {len(widget.band_map.stations)} stations, {len(widget.band_map.noise_sources)} noise")
+                    widget.update_display()
         except Exception as e:
             logger.error(f"Error handling progress update: {e}", exc_info=True)
 
@@ -2300,6 +2729,11 @@ class MainWindow(QMainWindow):
 
     def on_station_clicked(self, frequency_hz: float):
         """Handle band map station click - tune radio to frequency"""
+        # Block tuning during active scan (belt-and-suspenders check)
+        if self.scan_btn.text() == "Stop Scan":
+            self.log("Manual tuning blocked during active scan")
+            return
+
         if self.radio and self.radio.is_connected:
             try:
                 self.radio.set_frequency(int(frequency_hz))
@@ -2469,6 +2903,10 @@ class MainWindow(QMainWindow):
 
         # Get the band map for this specific band
         current_band_map = self.band_maps.get(self.current_scan_band)
+        logger.info(f"_start_next_band_scan: {self.current_scan_band} band_map id={id(current_band_map):x}")
+        # Use "is not None" to avoid truthiness bug with __len__
+        logger.info(f"  Stations in band_map: {len(current_band_map.stations) if current_band_map is not None else 'N/A'}")
+        logger.info(f"  Noise in band_map: {len(current_band_map.noise_sources) if current_band_map is not None else 'N/A'}")
 
         # Create callbacks with transcription support (using signals for thread safety)
         def on_station_detected_callback(station):
@@ -2485,6 +2923,8 @@ class MainWindow(QMainWindow):
             audio_capture=self.audio,
             audio_pipeline=self.audio_pipeline,
             auto_tuner=self.auto_tuner,
+            fm_tuner=self.fm_tuner,  # FM power-based edge detection
+            transcriber=self.subprocess_transcriber,  # SubprocessTranscriber for speech-to-text
             voice_database=None,  # Voice fingerprinting removed
             callsign_extractor=self.callsign_extractor,
             behavior_analyzer=self.behavior_analyzer,
@@ -2492,6 +2932,7 @@ class MainWindow(QMainWindow):
             scan_speed_steps_per_sec=getattr(self.config.scan, 'scan_speed_steps_per_sec', 1.0),
             s_meter_threshold=getattr(self.config.scan, 's_meter_threshold', 3),
             use_s_meter_scan=getattr(self.config.scan, 'use_s_meter_scan', True),
+            noise_skip_threshold=getattr(self.config.scan, 'noise_skip_threshold', 3),
             on_station_detected=on_station_detected_callback,
             on_progress_update=on_progress_update_callback
         )
@@ -2540,12 +2981,175 @@ class MainWindow(QMainWindow):
 
     def show_settings(self):
         """Show settings dialog"""
+        # Save current settings to detect changes
+        old_sample_rate = self.config.audio.sample_rate
+        old_use_crepe = getattr(self.config.audio, 'use_crepe_pitch', False)
+        old_use_gpu = self.config.audio.use_gpu
+        old_gpu_memory = self.config.audio.gpu_memory_fraction
+        old_fm_scan_range = getattr(self.config.scan, 'fm_scan_range_hz', 10000)
+        old_fm_scan_step = getattr(self.config.scan, 'fm_scan_step_hz', 100)
+        old_fm_power_threshold = getattr(self.config.scan, 'fm_power_threshold_db', -80.0)
+        old_audio_device = self.config.radio.audio_device_name
+        old_audio_output_device = getattr(self.config.audio, 'output_device_name', None)
+
         dialog = SettingsDialog(self)
         if dialog.exec():
             # Settings were saved, reload config
             self.config = get_config()
             self.log("Settings updated")
             logger.info("Settings updated by user")
+
+            # Check if audio devices changed - apply hot-swap
+            audio_devices_changed = False
+            if old_audio_device != self.config.radio.audio_device_name:
+                self.log(f"Audio input device changed: {old_audio_device or 'default'} -> {self.config.radio.audio_device_name or 'default'}")
+                audio_devices_changed = True
+            if old_audio_output_device != getattr(self.config.audio, 'output_device_name', None):
+                self.log(f"Audio output device changed: {old_audio_output_device or 'default'} -> {getattr(self.config.audio, 'output_device_name', None) or 'default'}")
+                audio_devices_changed = True
+
+            if audio_devices_changed:
+                # Check if scan is active - warn user to stop scan first
+                if self.scan_btn.text() == "Stop Scan":
+                    QMessageBox.warning(
+                        self,
+                        "Scan Active",
+                        "Audio device changes cannot be applied while scanning is active.\n\n"
+                        "Please stop the scan, then change audio devices in Settings again."
+                    )
+                    self.log("Audio device change blocked - stop scan first")
+                else:
+                    # Hot-swap audio devices without restart
+                    self._reinitialize_audio_devices()
+
+            # Check if settings that require restart were changed
+            restart_needed = []
+            if old_sample_rate != self.config.audio.sample_rate:
+                restart_needed.append(f"Sample rate ({old_sample_rate} -> {self.config.audio.sample_rate} Hz)")
+            if old_use_crepe != getattr(self.config.audio, 'use_crepe_pitch', False):
+                restart_needed.append(f"CREPE pitch detection ({'enabled' if getattr(self.config.audio, 'use_crepe_pitch', False) else 'disabled'})")
+            if old_use_gpu != self.config.audio.use_gpu:
+                restart_needed.append(f"GPU acceleration ({'enabled' if self.config.audio.use_gpu else 'disabled'})")
+            if old_gpu_memory != self.config.audio.gpu_memory_fraction:
+                restart_needed.append(f"GPU memory ({old_gpu_memory*100:.0f}% -> {self.config.audio.gpu_memory_fraction*100:.0f}%)")
+            if old_fm_scan_range != getattr(self.config.scan, 'fm_scan_range_hz', 10000):
+                restart_needed.append(f"FM scan range ({old_fm_scan_range/1000:.0f} -> {getattr(self.config.scan, 'fm_scan_range_hz', 10000)/1000:.0f} kHz)")
+            if old_fm_scan_step != getattr(self.config.scan, 'fm_scan_step_hz', 100):
+                restart_needed.append(f"FM scan step ({old_fm_scan_step} -> {getattr(self.config.scan, 'fm_scan_step_hz', 100)} Hz)")
+            if old_fm_power_threshold != getattr(self.config.scan, 'fm_power_threshold_db', -80.0):
+                restart_needed.append(f"FM power threshold ({old_fm_power_threshold} -> {getattr(self.config.scan, 'fm_power_threshold_db', -80.0)} dB)")
+
+            if restart_needed:
+                changes = "\n".join(f"  - {change}" for change in restart_needed)
+                QMessageBox.information(
+                    self,
+                    "Restart Required",
+                    f"The following settings were changed and require an application restart to take effect:\n\n{changes}\n\n"
+                    "Please restart CQSentinel for these changes to apply."
+                )
+                self.log("*** Settings changed - restart required for full effect ***")
+
+    def _reinitialize_audio_devices(self):
+        """Hot-swap audio devices without requiring application restart"""
+        try:
+            self.log("Reinitializing audio devices...")
+            logger.info("Hot-swapping audio devices")
+
+            # Stop current audio stream if active
+            was_monitoring = False
+            if self.audio:
+                if hasattr(self.audio, '_recording') and self.audio._recording:
+                    was_monitoring = True
+                    self.audio.stop_stream()
+                    logger.info("Stopped existing audio stream")
+
+            # Close old audio capture
+            if self.audio:
+                try:
+                    if hasattr(self.audio, 'close'):
+                        self.audio.close()
+                    logger.info("Closed old AudioCapture instance")
+                except Exception as e:
+                    logger.warning(f"Error closing old audio: {e}")
+
+            # Create new AudioCapture with updated device
+            audio_device_index = self._get_audio_device_index()
+            self.audio = AudioCapture(device=audio_device_index, sample_rate=self.config.audio.sample_rate)
+
+            if audio_device_index is not None:
+                self.log(f"Audio input switched to device index {audio_device_index}")
+                logger.info(f"Audio input reinitialized with device index {audio_device_index}")
+            else:
+                self.log("Audio input switched to default device")
+                logger.info("Audio input reinitialized with default device")
+
+            # Reconnect audio broadcaster and level meter
+            self.audio_broadcaster = AudioBroadcaster()
+            self.audio_level_meter = AudioLevelMeter()
+
+            # Re-register audio consumers with broadcaster
+            self.audio_broadcaster.register_consumer(self.audio_level_meter.process_chunk)
+            self.audio_broadcaster.register_consumer(self.audio_monitor.process_chunk)
+            logger.info("Audio consumers re-registered with broadcaster")
+
+            # Update AudioMonitor output device if it changed
+            output_device_name = getattr(self.config.audio, 'output_device_name', None)
+            if output_device_name:
+                output_device_index = self._get_audio_output_device_index(output_device_name)
+                if self.audio_monitor:
+                    self.audio_monitor.output_device = output_device_index
+                    self.log(f"Audio output switched to: {output_device_name}")
+                    logger.info(f"Audio output device updated to: {output_device_name}")
+
+            # Restart audio monitoring if it was active
+            if was_monitoring:
+                self.start_audio_monitoring()
+                self.log("Audio monitoring restarted with new devices")
+                logger.info("Audio monitoring restarted")
+
+            # Update audio pipeline if it exists
+            if self.audio_pipeline:
+                # Audio pipeline gets audio from broadcaster, doesn't need device
+                logger.info("Audio pipeline automatically reconnected via broadcaster")
+
+            self.log("Audio devices hot-swapped successfully!")
+            logger.info("Audio device hot-swap complete")
+
+        except Exception as e:
+            self.log(f"ERROR: Failed to reinitialize audio devices: {e}")
+            logger.error(f"Audio device hot-swap failed: {e}", exc_info=True)
+            QMessageBox.critical(
+                self,
+                "Audio Device Error",
+                f"Failed to switch audio devices:\n\n{e}\n\n"
+                "Please check your audio device settings and try again."
+            )
+
+    def _get_audio_output_device_index(self, device_name: str) -> Optional[int]:
+        """
+        Get output device index from name.
+
+        Args:
+            device_name: Output device name
+
+        Returns:
+            Device index or None for default
+        """
+        if not device_name:
+            return None
+
+        try:
+            devices = list_audio_output_devices()
+            for device in devices:
+                if device.name == device_name:
+                    logger.info(f"Found audio output device '{device_name}' at index {device.index}")
+                    return device.index
+
+            logger.warning(f"Output device '{device_name}' not found, using default")
+            return None
+        except Exception as e:
+            logger.error(f"Error finding output device: {e}")
+            return None
 
     def run_audio_diagnostics(self):
         """Run audio subsystem diagnostic tests"""
@@ -2627,10 +3231,18 @@ class MainWindow(QMainWindow):
         except:
             pass
 
-        # Stop transcription subprocess
+        # Stop transcription services
         if hasattr(self, 'subprocess_transcriber') and self.subprocess_transcriber:
             logger.debug("Stopping transcription subprocess")
             self.subprocess_transcriber.stop()
+
+        if hasattr(self, 'openai_transcriber') and self.openai_transcriber:
+            logger.debug("Stopping OpenAI transcriber")
+            self.openai_transcriber.stop()
+
+        if hasattr(self, 'network_transcriber') and self.network_transcriber:
+            logger.debug("Stopping network transcriber")
+            self.network_transcriber.stop()
 
         # Stop QueueListener for thread-safe logging
         if hasattr(self, '_queue_listener'):

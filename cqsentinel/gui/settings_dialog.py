@@ -17,7 +17,7 @@ from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
     QLabel, QPushButton, QComboBox, QSpinBox, QDoubleSpinBox,
     QLineEdit, QGroupBox, QTabWidget, QWidget,
-    QCheckBox, QMessageBox, QDialogButtonBox
+    QCheckBox, QMessageBox, QDialogButtonBox, QRadioButton, QButtonGroup
 )
 from PyQt5.QtCore import Qt
 
@@ -256,34 +256,127 @@ class SettingsDialog(QDialog):
         self.noise_reduction_combo.setCurrentText("Medium")
         proc_layout.addRow("Noise Reduction:", self.noise_reduction_combo)
 
-        # VAD sensitivity removed - Whisper handles speech detection internally
-        # using no_speech_threshold parameter
-
         proc_group.setLayout(proc_layout)
         layout.addWidget(proc_group)
 
-        # OpenAI API group (cloud transcription)
-        openai_group = QGroupBox("OpenAI Whisper API (Cloud Transcription)")
-        openai_layout = QFormLayout()
+        # Transcription method selection
+        transcription_group = QGroupBox("Speech Transcription Method")
+        transcription_layout = QVBoxLayout()
+
+        # Radio buttons for transcription method
+        method_layout = QHBoxLayout()
+        self.transcription_button_group = QButtonGroup()
+
+        self.transcription_local_radio = QRadioButton("Local Processing (GPU/CPU)")
+        self.transcription_network_radio = QRadioButton("Network Server")
+        self.transcription_api_radio = QRadioButton("OpenAI API")
+
+        self.transcription_button_group.addButton(self.transcription_local_radio, 0)
+        self.transcription_button_group.addButton(self.transcription_network_radio, 1)
+        self.transcription_button_group.addButton(self.transcription_api_radio, 2)
+
+        self.transcription_local_radio.setChecked(True)  # Default
+
+        method_layout.addWidget(self.transcription_local_radio)
+        method_layout.addWidget(self.transcription_network_radio)
+        method_layout.addWidget(self.transcription_api_radio)
+        method_layout.addStretch()
+
+        transcription_layout.addLayout(method_layout)
+
+        # Connect radio buttons to show/hide appropriate settings
+        self.transcription_local_radio.toggled.connect(self._on_transcription_method_changed)
+        self.transcription_network_radio.toggled.connect(self._on_transcription_method_changed)
+        self.transcription_api_radio.toggled.connect(self._on_transcription_method_changed)
+
+        # Local processing settings
+        self.local_settings_group = QGroupBox("Local Processing Settings")
+        local_layout = QFormLayout()
+
+        local_info = QLabel(
+            "Uses GPU or CPU on this machine. Free, but requires GPU for best performance.\n"
+            "Model: medium.en (automatic)"
+        )
+        local_info.setWordWrap(True)
+        local_info.setStyleSheet("color: gray; font-size: 10px;")
+        local_layout.addRow(local_info)
+
+        self.local_settings_group.setLayout(local_layout)
+        transcription_layout.addWidget(self.local_settings_group)
+
+        # Network server settings
+        self.network_settings_group = QGroupBox("Network Server Settings")
+        network_layout = QFormLayout()
+
+        self.network_url_edit = QLineEdit()
+        self.network_url_edit.setPlaceholderText("http://192.168.1.100:8000")
+        network_layout.addRow("Server URL:", self.network_url_edit)
+
+        self.network_model_combo = QComboBox()
+        self.network_model_combo.addItems(["tiny.en", "base.en", "small.en", "medium.en", "large-v3"])
+        self.network_model_combo.setCurrentText("medium.en")
+        network_layout.addRow("Model:", self.network_model_combo)
+
+        self.network_timeout_spin = QDoubleSpinBox()
+        self.network_timeout_spin.setRange(5.0, 120.0)
+        self.network_timeout_spin.setValue(30.0)
+        self.network_timeout_spin.setSuffix(" sec")
+        network_layout.addRow("Timeout:", self.network_timeout_spin)
+
+        network_info = QLabel(
+            "Offloads transcription to a remote Whisper server.\n"
+            "See docs/WHISPER_SERVER_SETUP.md for server setup instructions."
+        )
+        network_info.setWordWrap(True)
+        network_info.setStyleSheet("color: gray; font-size: 10px;")
+        network_layout.addRow(network_info)
+
+        self.network_settings_group.setLayout(network_layout)
+        transcription_layout.addWidget(self.network_settings_group)
+
+        # OpenAI API settings
+        self.api_settings_group = QGroupBox("OpenAI API Settings")
+        api_layout = QFormLayout()
 
         self.openai_api_key_edit = QLineEdit()
         self.openai_api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.openai_api_key_edit.setPlaceholderText("Leave empty to use local GPU/CPU")
-        openai_layout.addRow("API Key:", self.openai_api_key_edit)
+        self.openai_api_key_edit.setPlaceholderText("sk-...")
+        api_layout.addRow("API Key:", self.openai_api_key_edit)
 
-        openai_info = QLabel(
-            "If an API key is provided, cloud transcription will be used instead of local.\n"
-            "Cost: ~$0.006 per minute of audio. Leave empty for free local processing."
+        self.openai_model_combo = QComboBox()
+        self.openai_model_combo.addItems(["whisper-1"])
+        api_layout.addRow("Model:", self.openai_model_combo)
+
+        api_info = QLabel(
+            "Cloud transcription via OpenAI.\n"
+            "Cost: ~$0.006 per minute of audio."
         )
-        openai_info.setWordWrap(True)
-        openai_info.setStyleSheet("color: gray; font-size: 10px;")
-        openai_layout.addRow(openai_info)
+        api_info.setWordWrap(True)
+        api_info.setStyleSheet("color: gray; font-size: 10px;")
+        api_layout.addRow(api_info)
 
-        openai_group.setLayout(openai_layout)
-        layout.addWidget(openai_group)
+        self.api_settings_group.setLayout(api_layout)
+        transcription_layout.addWidget(self.api_settings_group)
+
+        transcription_group.setLayout(transcription_layout)
+        layout.addWidget(transcription_group)
+
+        # Initially hide network and API settings
+        self.network_settings_group.setVisible(False)
+        self.api_settings_group.setVisible(False)
 
         layout.addStretch()
         return widget
+
+    def _on_transcription_method_changed(self):
+        """Show/hide appropriate transcription settings based on selected method"""
+        is_local = self.transcription_local_radio.isChecked()
+        is_network = self.transcription_network_radio.isChecked()
+        is_api = self.transcription_api_radio.isChecked()
+
+        self.local_settings_group.setVisible(is_local)
+        self.network_settings_group.setVisible(is_network)
+        self.api_settings_group.setVisible(is_api)
 
     def create_contest_tab(self) -> QWidget:
         """Create contest configuration tab"""
@@ -577,9 +670,30 @@ class SettingsDialog(QDialog):
         self.noise_reduction_combo.setCurrentText(self.config.audio.noise_reduction_level.title())
         # VAD sensitivity removed - Whisper handles speech detection
 
-        # OpenAI API key (if configured)
-        if hasattr(self.config.audio, 'openai_api_key') and self.config.audio.openai_api_key:
-            self.openai_api_key_edit.setText(self.config.audio.openai_api_key)
+        # Transcription method - determine which radio button to select
+        network_enabled = getattr(self.config.audio, 'network_whisper_enabled', False)
+        openai_key = getattr(self.config.audio, 'openai_api_key', '')
+
+        if network_enabled:
+            self.transcription_network_radio.setChecked(True)
+        elif openai_key:
+            self.transcription_api_radio.setChecked(True)
+        else:
+            self.transcription_local_radio.setChecked(True)
+
+        # Network server settings
+        if hasattr(self.config.audio, 'network_whisper_url'):
+            self.network_url_edit.setText(self.config.audio.network_whisper_url)
+        if hasattr(self.config.audio, 'network_whisper_model'):
+            self.network_model_combo.setCurrentText(self.config.audio.network_whisper_model)
+        if hasattr(self.config.audio, 'network_whisper_timeout'):
+            self.network_timeout_spin.setValue(self.config.audio.network_whisper_timeout)
+
+        # OpenAI API settings
+        if openai_key:
+            self.openai_api_key_edit.setText(openai_key)
+        if hasattr(self.config.audio, 'openai_whisper_model'):
+            self.openai_model_combo.setCurrentText(self.config.audio.openai_whisper_model)
 
         # Contest settings
         self.contestness_spin.setValue(self.config.contest.contestness_threshold)
@@ -673,13 +787,33 @@ class SettingsDialog(QDialog):
         self.config.audio.noise_reduction_level = self.noise_reduction_combo.currentText().lower()
         # VAD sensitivity removed - Whisper handles speech detection
 
-        # OpenAI API key (cloud transcription)
-        openai_key = self.openai_api_key_edit.text().strip()
-        self.config.audio.openai_api_key = openai_key
-        if openai_key:
+        # Transcription method
+        is_local = self.transcription_local_radio.isChecked()
+        is_network = self.transcription_network_radio.isChecked()
+        is_api = self.transcription_api_radio.isChecked()
+
+        # Network server settings
+        if is_network:
+            self.config.audio.network_whisper_enabled = True
+            self.config.audio.network_whisper_url = self.network_url_edit.text().strip()
+            self.config.audio.network_whisper_model = self.network_model_combo.currentText()
+            self.config.audio.network_whisper_timeout = self.network_timeout_spin.value()
+            logger.info(f"Network transcription configured: {self.config.audio.network_whisper_url}")
+        else:
+            self.config.audio.network_whisper_enabled = False
+
+        # OpenAI API settings
+        if is_api:
+            openai_key = self.openai_api_key_edit.text().strip()
+            self.config.audio.openai_api_key = openai_key
+            self.config.audio.openai_whisper_model = self.openai_model_combo.currentText()
             logger.info("OpenAI API key configured - will use cloud transcription")
         else:
-            logger.info("No OpenAI API key - will use local GPU/CPU transcription")
+            self.config.audio.openai_api_key = ""
+
+        # Local processing
+        if is_local:
+            logger.info("Local transcription configured - will use GPU/CPU")
 
         # Contest settings
         self.config.contest.contestness_threshold = self.contestness_spin.value()

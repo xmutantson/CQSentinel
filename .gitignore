@@ -33,6 +33,7 @@ env/
 *.swo
 *~
 .DS_Store
+*.code-workspace
 
 # Testing
 .pytest_cache/
