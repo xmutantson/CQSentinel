@@ -14,6 +14,8 @@ from dataclasses import dataclass, asdict, field, fields
 from pathlib import Path
 import logging
 
+from cqsentinel.scanner.profiles import SUPPORTED_SCAN_BANDS
+
 logger = logging.getLogger(__name__)
 
 
@@ -198,8 +200,8 @@ def validate_config(config: AppConfig) -> None:
         raise ValueError("audio.noise_reduction_level is unsupported")
     if config.log_level not in ('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'):
         raise ValueError("log_level is unsupported")
-    bands = {item.name.removeprefix('band_') for item in fields(BandPlan)}
-    if any(type(band) is not str or band not in bands for band in config.scan.enabled_bands):
+    if any(type(band) is not str or band not in SUPPORTED_SCAN_BANDS
+           for band in config.scan.enabled_bands):
         raise ValueError("scan.enabled_bands must contain supported band names")
     for item in fields(BandPlan):
         edges = getattr(config.band_plan, item.name)
@@ -310,7 +312,7 @@ class ConfigManager:
 
     def get_bands_list(self) -> list:
         """Get list of available band names"""
-        return ["160m", "80m", "40m", "20m", "15m", "10m"]
+        return list(SUPPORTED_SCAN_BANDS)
 
     def freq_to_band(self, freq_hz: float) -> Optional[str]:
         """Convert frequency to band name"""

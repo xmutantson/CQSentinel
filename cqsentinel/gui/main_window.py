@@ -47,7 +47,7 @@ from cqsentinel.bandmap.station import BandMapState
 from cqsentinel.bandmap.widget import BandMapWidget
 from cqsentinel.bandmap.detail_panel import StationDetailPanel
 from cqsentinel.gui.settings_dialog import SettingsDialog
-from cqsentinel.scanner.profiles import BAND_PROFILES
+from cqsentinel.scanner.profiles import BAND_PROFILES, SUPPORTED_SCAN_BANDS
 from cqsentinel.scanner.engine import BandScanner, ScanProgress
 from cqsentinel.signal import SignalScanner, SessionState, SessionResult
 
@@ -1002,15 +1002,16 @@ class MainWindow(QMainWindow):
             logger.error(f"Error finding audio device: {e}")
             return None
 
-    def start_audio_monitoring(self):
-        """Start audio stream with broadcaster pattern for multiple consumers"""
+    def start_audio_monitoring(self) -> bool:
+        """Return confirmed stream startup success, retaining intent on failure."""
+        self._audio_monitoring_requested = True
         if not self.audio:
-            return
+            return False
 
         # Check if already recording
         if hasattr(self.audio, '_recording') and self.audio._recording:
             logger.debug("Audio monitoring already active")
-            return
+            return True
 
         try:
             import time
@@ -1061,10 +1062,14 @@ class MainWindow(QMainWindow):
                 except Exception as e:
                     logger.error(f"Audio callback error: {e}", exc_info=True)
 
-            self.audio.start_stream(audio_callback)
+            if self.audio.start_stream(audio_callback) is not True:
+                logger.warning("Audio input stream did not start")
+                return False
             logger.info("Audio monitoring started (transcription triggered by signal detection during scan)")
+            return True
         except Exception as e:
             logger.warning(f"Failed to start audio monitoring: {e}")
+            return False
 
     def _start_transcription_worker(self, audio_data):
         """
@@ -1321,7 +1326,7 @@ class MainWindow(QMainWindow):
         bandmaps_layout.setContentsMargins(0, 0, 0, 0)
 
         # Create band map widgets for all bands (ordered from highest to lowest frequency)
-        for band_name in ["70cm", "2m", "6m", "10m", "15m", "20m", "40m", "80m", "160m"]:
+        for band_name in reversed(SUPPORTED_SCAN_BANDS):
             if band_name in BAND_PROFILES:
                 profile = BAND_PROFILES[band_name]
 
@@ -1436,7 +1441,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel("Bands:"))
 
         self.band_checkboxes = {}
-        for band in ["70cm", "2m", "6m", "10m", "15m", "20m", "40m", "80m", "160m"]:
+        for band in reversed(SUPPORTED_SCAN_BANDS):
             cb = QCheckBox(band)
             cb.setChecked(band in self.config.scan.enabled_bands)
             cb.stateChanged.connect(self.on_band_selection_changed)
@@ -3022,11 +3027,13 @@ class MainWindow(QMainWindow):
             self.log("Reinitializing audio devices...")
             logger.info("Hot-swapping audio devices")
 
-            # Stop current audio stream if active
-            was_monitoring = False
+            # Preserve requested monitoring across a failed replacement. The
+            # failed capture may be inactive when the same choice is retried.
+            was_monitoring = (getattr(self, '_audio_monitoring_requested', False)
+                              or bool(getattr(self.audio, '_recording', False)))
+            self._audio_monitoring_requested = was_monitoring
             if self.audio:
                 if hasattr(self.audio, '_recording') and self.audio._recording:
-                    was_monitoring = True
                     self.audio.stop_stream()
                     logger.info("Stopped existing audio stream")
 
@@ -3070,7 +3077,8 @@ class MainWindow(QMainWindow):
 
             # Restart audio monitoring if it was active
             if was_monitoring:
-                self.start_audio_monitoring()
+                if not self.start_audio_monitoring():
+                    raise RuntimeError("Audio input stream did not start; device change is pending")
                 self.log("Audio monitoring restarted with new devices")
                 logger.info("Audio monitoring restarted")
 
