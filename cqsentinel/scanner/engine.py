@@ -41,7 +41,10 @@ class _ScanRadio:
             # FM centering restores the original mode in finally, including on stop.
             if name != "set_mode":
                 self.scanner._check_cancelled()
-            return attribute(*args, **kwargs)
+            result = attribute(*args, **kwargs)
+            if name in ("set_frequency", "set_mode") and result is False:
+                raise RuntimeError(f"Radio rejected {name}")
+            return result
         return guarded
 
 
@@ -556,10 +559,7 @@ class BandScanner:
 
             if center_result.success:
                 centered_freq = center_result.final_frequency
-                logger.info(
-                    f"Centered: {centered_freq/1e6:.3f} MHz "
-                    f"({center_result.iterations} iterations)"
-                )
+                logger.info(f"Centered: {centered_freq/1e6:.3f} MHz")
             else:
                 centered_freq = center_result.final_frequency
                 logger.warning(f"Centering failed, listening at {centered_freq/1e6:.3f} MHz")
@@ -570,6 +570,15 @@ class BandScanner:
                     self._skip_requested = False
                     logger.info(f"{centered_freq/1e6:.3f} MHz: Skipped by user before audio capture")
                     return
+
+            # Re-establish the reported frequency, including failed centering fallbacks.
+            # A failed CAT command or mismatched readback must never label old audio.
+            actual_frequency = _ScanRadio(self).get_frequency()
+            if actual_frequency != centered_freq:
+                _ScanRadio(self).set_frequency(int(centered_freq))
+                actual_frequency = _ScanRadio(self).get_frequency()
+            if actual_frequency != centered_freq:
+                raise RuntimeError("Radio frequency readback does not match capture frequency")
 
             # Capture full sample
             self.progress.state = ScanState.LISTENING
@@ -594,12 +603,12 @@ class BandScanner:
             self._check_cancelled()
             if not result.has_speech:
                 return
+            deadline = time.monotonic() + self.transcription_timeout
             request_id = self.transcriber.transcribe_async(
                 audio=result.clean_audio,
                 sample_rate=self.audio_cap.sample_rate,
                 frequency_hz=centered_freq,
             )
-            deadline = time.monotonic() + self.transcription_timeout
             try:
                 while True:
                     self._check_cancelled()

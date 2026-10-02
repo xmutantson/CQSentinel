@@ -5,6 +5,7 @@ Handles loading, saving, and validating configuration settings.
 """
 
 import os
+import math
 import yaml
 import tempfile
 from copy import deepcopy
@@ -138,6 +139,75 @@ class AppConfig:
     log_level: str = "INFO"
 
 
+def validate_config(config: AppConfig) -> None:
+    """Validate known values before publishing or writing; never coerce YAML types.
+
+    Unknown keys are retained separately for forward compatibility. Error messages
+    identify fields, not their values (which can include credentials).
+    """
+    def validate_types(value, config_type, prefix=""):
+        if not isinstance(value, config_type):
+            raise ValueError(f"{prefix or 'config'} has an invalid section type")
+        for item in fields(config_type):
+            name = f"{prefix}.{item.name}" if prefix else item.name
+            current = getattr(value, item.name)
+            expected = item.type
+            if hasattr(expected, '__dataclass_fields__'):
+                validate_types(current, expected, name)
+            elif expected is float:
+                if type(current) not in (int, float) or not math.isfinite(current):
+                    raise ValueError(f"{name} must be a finite number")
+            elif type(current) is not expected:
+                raise ValueError(f"{name} must be {expected.__name__}")
+
+    validate_types(config, AppConfig)
+
+    def bounded(section, field_name, low, high=None):
+        value = getattr(getattr(config, section), field_name)
+        if value < low or (high is not None and value > high):
+            raise ValueError(f"{section}.{field_name} is outside its supported range")
+
+    bounds = {
+        'radio': {'model_id': (1, None), 'baud_rate': (1, None),
+                  'rigctld_port': (1, 65535), 'cat_poll_interval_ms': (100, 5000)},
+        'scan': {'step_size_hz': (1, None), 'scan_speed_steps_per_sec': (.2, 5),
+                 's_meter_threshold': (0, 9), 'dwell_with_voice_sec': (1, None),
+                 'dwell_without_voice_sec': (1, None), 'center_tolerance_hz': (1, None),
+                 'max_center_iterations': (1, None), 'noise_skip_threshold': (0, 10),
+                 'fm_scan_range_hz': (1, None), 'fm_scan_step_hz': (1, None),
+                 'fm_power_threshold_db': (-120, 0)},
+        'audio': {'gpu_memory_fraction': (.5, .95), 'whisper_beam_size': (1, 10),
+                  'whisper_temperature': (0, 1), 'whisper_no_speech_threshold': (0, 1),
+                  'network_whisper_timeout': (5, 120), 'pitch_fmin': (1, None),
+                  'pitch_fmax': (1, None)},
+        'contest': {'contestness_threshold': (0, 100), 'n3fjp_port': (1, 65535)},
+        'voice_db': {'similarity_threshold': (.5, .95), 'auto_reset_days': (0, None),
+                     'warn_age_days': (0, None)},
+    }
+    for section, limits in bounds.items():
+        for field_name, (low, high) in limits.items():
+            bounded(section, field_name, low, high)
+    for section, name in (('audio', 'sample_rate'), ('radio', 'audio_sample_rate')):
+        if getattr(getattr(config, section), name) not in (8000, 16000, 22050, 44100, 48000):
+            raise ValueError(f"{section}.{name} is unsupported")
+    if not config.audio.pitch_fmin < config.audio.pitch_fmax < config.audio.sample_rate / 2:
+        raise ValueError("audio pitch limits must increase and remain below Nyquist")
+    if config.scan.fm_scan_step_hz > 2 * config.scan.fm_scan_range_hz:
+        raise ValueError("scan.fm_scan_step_hz exceeds the FM sweep span")
+    if config.audio.noise_reduction_level not in ('off', 'low', 'medium', 'high'):
+        raise ValueError("audio.noise_reduction_level is unsupported")
+    if config.log_level not in ('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'):
+        raise ValueError("log_level is unsupported")
+    bands = {item.name.removeprefix('band_') for item in fields(BandPlan)}
+    if any(type(band) is not str or band not in bands for band in config.scan.enabled_bands):
+        raise ValueError("scan.enabled_bands must contain supported band names")
+    for item in fields(BandPlan):
+        edges = getattr(config.band_plan, item.name)
+        if (len(edges) != 2 or any(type(edge) is not int for edge in edges)
+                or not 0 < edges[0] < edges[1]):
+            raise ValueError(f"band_plan.{item.name} must contain two increasing positive integer endpoints")
+
+
 class ConfigManager:
     """Manages application configuration"""
 
@@ -180,11 +250,13 @@ class ConfigManager:
                     raise ValueError(f"Configuration section {name} must be a mapping")
                 known = {item.name for item in fields(config_type)}
                 values[name] = config_type(**{key: value for key, value in section.items() if key in known})
-            self.config = AppConfig(
+            candidate = AppConfig(
                 **values,
                 config_dir=data.get('config_dir', str(Path.home() / '.cqsentinel')),
                 log_level=data.get('log_level', 'INFO'),
             )
+            validate_config(candidate)
+            self.config = candidate
             self._extra_data = deepcopy(data)  # Preserve fields from newer versions.
             self._load_failed = False
             logger.info(f"Configuration loaded from {self.config_file}")
@@ -203,6 +275,7 @@ class ConfigManager:
         if self._load_failed:
             raise ValueError("Cannot overwrite configuration that failed to load")
         candidate = config if config is not None else self.config
+        validate_config(candidate)
         data = deepcopy(self._extra_data)
         for key, value in asdict(candidate).items():
             if isinstance(value, dict):

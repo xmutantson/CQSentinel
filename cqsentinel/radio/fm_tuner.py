@@ -104,7 +104,8 @@ class FMAutoTuner:
         try:
             # Switch to CW with narrow filter for edge detection
             logger.info("Switching to CW narrow filter for FM edge detection")
-            radio_controller.set_mode("CW", bandwidth=500)
+            if radio_controller.set_mode("CW", bandwidth=500) is False:
+                raise RuntimeError("Radio rejected tuning command")
             time.sleep(0.2)  # Let filter settle
 
             # Scan power across frequency range
@@ -119,7 +120,8 @@ class FMAutoTuner:
             current_freq = start_freq
             while current_freq <= end_freq:
                 # Tune to frequency
-                radio_controller.set_frequency(current_freq)
+                if radio_controller.set_frequency(current_freq) is False:
+                    raise RuntimeError("Radio rejected tuning command")
                 time.sleep(0.05)  # Brief settle time
 
                 # Capture audio and measure power
@@ -175,11 +177,9 @@ class FMAutoTuner:
         finally:
             # Restore original mode
             logger.info(f"Restoring mode {original_mode}")
-            try:
-                radio_controller.set_mode(original_mode, original_bw)
-                time.sleep(0.2)
-            except Exception as e:
-                logger.error(f"Failed to restore mode: {e}")
+            if radio_controller.set_mode(original_mode, original_bw) is False:
+                raise RuntimeError("Could not restore receiver mode")
+            time.sleep(0.2)
 
     def auto_center(
         self,
@@ -209,6 +209,8 @@ class FMAutoTuner:
 
         if start_hz is None or end_hz is None:
             logger.warning("Could not detect FM signal edges")
+            if radio_controller.set_frequency(initial_frequency) is False:
+                raise RuntimeError("Could not restore FM fallback frequency")
             return FMCenteringResult(
                 success=False,
                 final_frequency=initial_frequency,
@@ -230,7 +232,8 @@ class FMAutoTuner:
         # Tune to calculated center
         logger.info(f"Centering on {center_hz/1e6:.4f} MHz")
         try:
-            radio_controller.set_frequency(center_hz)
+            if radio_controller.set_frequency(center_hz) is False:
+                raise RuntimeError("Radio rejected tuning command")
             time.sleep(0.5)  # Let radio settle and capture effect lock
 
             return FMCenteringResult(
@@ -244,6 +247,8 @@ class FMAutoTuner:
 
         except Exception as e:
             logger.error(f"Failed to set center frequency: {e}")
+            if radio_controller.set_frequency(initial_frequency) is False:
+                raise RuntimeError("Could not restore FM fallback frequency")
             return FMCenteringResult(
                 success=False,
                 final_frequency=initial_frequency,

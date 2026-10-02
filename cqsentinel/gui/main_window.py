@@ -622,6 +622,7 @@ class MainWindow(QMainWindow):
     audio_levels_signal = pyqtSignal(float, float)  # rms_level, peak_level
     voice_detection_signal = pyqtSignal(bool, float)  # has_speech, speech_ratio
     log_signal = pyqtSignal(str)  # Log messages (thread-safe)
+    basic_scan_finished_signal = pyqtSignal(object)
     band_scan_finished_signal = pyqtSignal(object)
     scan_finished_signal = pyqtSignal()  # Scan finished (thread-safe)
     station_discovered_signal = pyqtSignal(object, str, object)  # station, band_name, session_result
@@ -726,6 +727,7 @@ class MainWindow(QMainWindow):
         self.setup_timers()
 
         # Connect signals for thread-safe GUI updates from scanner callbacks
+        self.basic_scan_finished_signal.connect(self.on_scan_finished)
         self.band_scan_finished_signal.connect(self._on_band_scan_complete)
         self.station_detected_signal.connect(self._handle_station_detected)
         self.progress_update_signal.connect(self._handle_progress_update)
@@ -2027,7 +2029,9 @@ class MainWindow(QMainWindow):
                 )
                 self.scan_thread.log_signal.connect(self.log)
                 self.scan_thread.freq_update_signal.connect(self.update_freq_display)
-                self.scan_thread.finished.connect(self.on_scan_finished)
+                worker = self.scan_thread
+                worker.finished.connect(lambda owner=worker: self.basic_scan_finished_signal.emit(owner))
+                self._scan_stopping = False
                 self.scan_thread.start()
 
                 # Update band map widgets to show yellow scanning cursor
@@ -2063,8 +2067,11 @@ class MainWindow(QMainWindow):
                 self.band_scanner.stop_scan()
                 return  # Completion signal restores controls after the worker exits.
             if self.scan_thread:
+                self._scan_stopping = True
+                self.scan_btn.setEnabled(False)
+                self.skip_btn.setEnabled(False)
                 self.scan_thread.stop()
-                self.scan_thread.wait(3000)
+                return  # Keep tuning/connection ownership until the finished signal.
 
             self.update_scan_status("Idle", "gray")
             self.scan_btn.setText("Start Scan")
@@ -2118,8 +2125,14 @@ class MainWindow(QMainWindow):
             self.log(f"Step size: {step_size/1000:.1f} kHz")
             logger.info(f"Step size override set to {step_size} Hz")
 
-    def on_scan_finished(self):
-        """Called when scan completes"""
+    def on_scan_finished(self, worker=None):
+        """Release controls only for the worker that still owns the basic scan."""
+        if worker is not None:
+            if worker is not self.scan_thread:
+                return
+        elif self.scan_thread is not None:
+            return  # An unowned/stale completion must not release a basic worker.
+        self._scan_stopping = False
         self.log("Scan finished")
         self.update_scan_status("Scan complete", "green")
         self.scan_btn.setText("Start Scan")
@@ -2128,6 +2141,12 @@ class MainWindow(QMainWindow):
         for cb in self.band_checkboxes.values():
             cb.setEnabled(True)
         self.scan_thread = None
+        self.scan_btn.setEnabled(True)
+        self.freq_input.setEnabled(True)
+        for widget in self.band_map_widgets.values():
+            widget.set_scanning_active(False)
+        if worker is not None and getattr(self, '_close_after_scan', False):
+            self.close()
 
     def update_radio_status(self):
         """Update radio status display"""
@@ -2926,8 +2945,13 @@ class MainWindow(QMainWindow):
         old_fm_scan_range = getattr(self.config.scan, 'fm_scan_range_hz', 10000)
         old_fm_scan_step = getattr(self.config.scan, 'fm_scan_step_hz', 100)
         old_fm_power_threshold = getattr(self.config.scan, 'fm_power_threshold_db', -80.0)
-        old_audio_device = self.config.radio.audio_device_name
-        old_audio_output_device = getattr(self.config.audio, 'output_device_name', None)
+        # Persist the runtime baseline separately from saved desired settings.
+        # Blocked or failed Apply must remain retryable with the same selection.
+        if not hasattr(self, '_applied_audio_devices'):
+            self._applied_audio_devices = (
+                self.config.radio.audio_device_name,
+                getattr(self.config.audio, 'output_device_name', None))
+        old_audio_device, old_audio_output_device = self._applied_audio_devices
 
         dialog = SettingsDialog(self)
         accepted = dialog.exec()
@@ -2953,12 +2977,15 @@ class MainWindow(QMainWindow):
                         self,
                         "Scan Active",
                         "Audio device changes cannot be applied while scanning is active.\n\n"
-                        "Please stop the scan, then change audio devices in Settings again."
+                        "Please stop the scan, then reopen Settings and click Apply to retry."
                     )
                     self.log("Audio device change blocked - stop scan first")
                 else:
                     # Hot-swap audio devices without restart
-                    self._reinitialize_audio_devices()
+                    if self._reinitialize_audio_devices() is True:
+                        self._applied_audio_devices = (
+                            self.config.radio.audio_device_name,
+                            getattr(self.config.audio, 'output_device_name', None))
 
             # Check if settings that require restart were changed
             restart_needed = []
@@ -3054,6 +3081,7 @@ class MainWindow(QMainWindow):
 
             self.log("Audio devices hot-swapped successfully!")
             logger.info("Audio device hot-swap complete")
+            return True
 
         except Exception as e:
             self.log(f"ERROR: Failed to reinitialize audio devices: {e}")
@@ -3064,6 +3092,8 @@ class MainWindow(QMainWindow):
                 f"Failed to switch audio devices:\n\n{e}\n\n"
                 "Please check your audio device settings and try again."
             )
+
+            return False
 
     def _get_audio_output_device_index(self, device_name: str) -> Optional[int]:
         """
@@ -3158,9 +3188,12 @@ class MainWindow(QMainWindow):
                 self.toggle_scan()
             event.ignore()
             return
-        if self.scan_thread and self.scan_thread.isRunning():
-            self.scan_thread.stop()
-            self.scan_thread.wait()
+        if self.scan_thread:
+            self._close_after_scan = True
+            if not self._scan_stopping:
+                self.toggle_scan()
+            event.ignore()
+            return
         # Stop transcription polling timer FIRST to prevent warning spam during shutdown
         if hasattr(self, 'transcription_poll_timer'):
             logger.debug("Stopping transcription poll timer")

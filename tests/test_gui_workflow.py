@@ -224,6 +224,15 @@ class SettingsWorkflowTests(unittest.TestCase):
         self.dialog.noise_reduction_combo.label = 'medium'
         self.dialog.audio_device_combo.label = '(Auto-detect)'
         self.dialog.log_level_combo.label = 'INFO'
+        # Match valid loaded UI defaults; real spin boxes cannot return the
+        # zero values formerly supplied by these unrestricted test controls.
+        for name, value in {
+            'rigctld_port_spin': 4532, 'poll_interval_spin': 1000,
+            'n3fjp_port_spin': 1100, 'scan_speed_spin': 1.0,
+            'gpu_memory_spin': 85, 'beam_size_spin': 5,
+            'voice_threshold_spin': 75,
+        }.items():
+            getattr(self.dialog, name).number = value
 
     def test_failed_ok_keeps_dialog_open_and_saved_settings_unchanged(self):
         original = self.path.read_bytes()

@@ -59,6 +59,9 @@ setup(
             'openai>=1.0.0',
         ],
         'dev': [
+            'fastapi>=0.100',
+            'httpx>=0.24',
+            'python-multipart>=0.0.9',
             'pytest>=7.4.0',
             'pytest-qt>=4.2.0',
             'pytest-cov>=4.1.0',

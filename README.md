@@ -56,6 +56,8 @@ Run the offline regression suite from the repository root:
 python -B -m unittest discover -s tests -v
 ```
 
+The HTTP tests require `fastapi`, `httpx`, and `python-multipart`, included in the `dev` extra. Check the skip count: a suite run without these dependencies does not verify HTTP binding. To run only the in-process HTTP tests in an environment that has them, use `python -B -m unittest discover -s tests -p test_whisper_http.py -v`.
+
 The suite uses synthetic audio and fake service/hardware boundaries. It does not establish radio compatibility, recognition accuracy, or packaged executable support. Scripts under `scripts/test/`, `scripts/test_hamlib.py`, and audio diagnostics may contact hardware; they are manual checks, not part of the offline suite.
 
 Before distributing a build, validate it on a clean Windows machine, exercise Start/Stop/Skip and two-band scanning with the intended radio, and measure callsign precision and false detections on representative recordings. Model speed and auto-centering accuracy depend on the hardware and signal conditions; the repository does not establish universal performance guarantees.
