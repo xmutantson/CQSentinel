@@ -1,264 +1,78 @@
 # CQSentinel
 
-**The First SSB Contest Band Scanner with AI Voice Recognition**
+CQSentinel is a Windows-focused ham radio application for scanning phone-band segments, transcribing received audio, and displaying candidate stations on a band map.
 
-[![License: TBD](https://img.shields.io/badge/License-TBD-blue.svg)](LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![Status: Beta](https://img.shields.io/badge/status-beta-green.svg)](PROJECT_PLAN.md)
+**Status: development preview.** The repository contains working components and offline regression tests, but a complete hardware and packaged-release acceptance run is still required. Callsigns and contest classifications are suggestions for an operator to verify.
 
-## What is CQSentinel?
+Contest scores are heuristics, not calibrated probabilities. With voice identification disabled, scores are normalized over the available transcript evidence; missing speaker data does not count as evidence against contest activity. Adjust the threshold using representative recordings, and do not infer a running/searching operator role from an unavailable voice model.
 
-CQSentinel is a Windows application that automatically scans SSB phone segments during ham radio contests, uses AI to identify contest activity, fingerprints operator voices, and integrates with N3FJP logging software.
+## Current scope
 
-Think **"CW Skimmer for SSB"** - the tool contesters have wanted for 15+ years, now finally feasible with modern AI.
+- Radio CAT control through Hamlib/rigctld, with configurable band scans.
+- Audio capture, noise reduction, speech detection, and speech transcription.
+- Local Whisper, a self-hosted network Whisper endpoint, or an explicitly configured OpenAI transcription backend.
+- Callsign extraction, contest classification, station transcripts, and per-band maps.
+- Experimental SSB/FM auto-centering and contest profiles.
 
-## Key Features
+Voice fingerprinting is disabled: the previous Resemblyzer implementation was removed from the supported workflow. N3FJP integration modules exist, but automatic dupe/multiplier behavior requires separate end-to-end validation and is not a guaranteed feature of the scanning workflow. See [future voice work](docs/future/FUTURE_WORK_VOICE_ID.md).
 
-- **Universal Radio Support**: Works with 200+ radios via Hamlib (primary target: Icom IC-705)
-- **Intelligent SSB Auto-Centering**: Uses speech F0 detection to accurately tune signals (not naive fixed-frequency assumptions)
-- **Voice Fingerprinting**: Tracks operators by voice across frequencies, not just by frequency
-- **Offline AI Processing**: All speech recognition runs locally - no cloud dependencies
-- **Contest-Aware**: Pre-configured profiles for Field Day, Winter Field Day, CQWW, CQWPX, WA Salmon Run
-- **N3FJP Integration**: Real-time dupe checking and multiplier highlighting
-- **Waterfall Band Map**: Visual representation of contest activity across the band
+## Installation
 
-## How It Works
+Start with [INSTALL.md](INSTALL.md). Use Python 3.10 in an isolated environment. From the repository root on Windows:
 
-```
-Radio (IC-705) → CAT Control + Audio
-    ↓
-Scan Phone Segments (configurable bands)
-    ↓
-AI Auto-Center Signal (F0 pitch detection)
-    ↓
-Noise Reduction (RNNoise) → Voice Detection (Silero VAD)
-    ↓
-Speech-to-Text (Whisper offline) + Voice ID (Resemblyzer)
-    ↓
-Contest Behavior Detection (contestness scoring)
-    ↓
-N3FJP Dupe Check → Band Map Display
+```powershell
+py -3.10 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m cqsentinel.main
 ```
 
-## Technology Stack
+`setup.py` defines the pip dependencies, including **PyQt5**. `requirements.txt` installs that package with development and build tools. Optional CREPE/TensorFlow pitch detection is a separate extra.
 
-- **Python 3.10+** with PyQt6 GUI
-- **Hamlib** for CAT control
-- **faster-whisper** for offline speech recognition
-- **Resemblyzer** for voice fingerprinting (256-dim embeddings)
-- **librosa pYIN** for F0-based SSB centering
-- **RNNoise** for audio cleanup
-- **PyHamTools** for callsign validation
+For the optional OpenAI backend, also install `python -m pip install -e ".[cloud]"` in the active environment before configuring it.
 
-**100% offline** - all models bundled, no internet required.
+There is no validated portable release bundled with this checkout. Do not assume that a ZIP or installer is available from GitHub Releases. Building one is a separate workflow described in [BUILD.md](BUILD.md); use `python scripts/build_windows.py` so the build includes Hamlib.
 
-## The Innovation: Voice-Independent SSB Auto-Centering
+## First session
 
-Previous attempts at SSB auto-tuning assumed a fixed audio center frequency (e.g., 1500 Hz). **This is wrong** because different voices have different fundamental frequencies:
+1. Configure the radio model, serial connection, and audio input in Settings.
+2. Choose the transcription backend. A network server must already be available; cloud transcription requires an explicit API key.
+3. Connect the radio and check that the frequency and incoming audio are correct.
+4. Select bands and start scanning. Verify candidate callsigns against the transcript and received audio.
+5. Stop scanning before changing the radio connection or audio devices. Apply any settings marked as requiring a restart by restarting the application.
 
-- Male: 80-180 Hz
-- Female: 165-255 Hz
-- Children: 250-450 Hz
+A scan tunes the connected receiver. Use a separate receiver or stop the scan when you need manual control of that radio.
 
-**CQSentinel uses speech F0 (pitch) detection** to determine if the signal is properly tuned:
-1. Extract fundamental frequency using **pYIN** algorithm
-2. Check if F0 is in normal human speech range (75-400 Hz)
-3. If not, calculate offset and retune
-4. Validate with spectral energy distribution
+## Models, network use, and data
 
-**Result**: Accurate auto-centering for any voice, any accent, USB or LSB.
+Local speech recognition can operate without a network after the required models are present. **Models are not included in the source checkout**; initial setup may download a large model. Network transcription sends audio to the configured server. OpenAI transcription sends audio to that service and can incur usage charges. These are distinct, explicitly selected backends, not an unconditional offline guarantee.
 
-## Why This Matters
+Settings are stored in `~/.cqsentinel/config.yaml`. Keep this file private: a configured OpenAI API key is currently stored with the settings. Do not attach it to bug reports. Report the backend type and a redacted error message instead.
 
-### For Contesters
+## Development and validation
 
-- **Find new stations faster**: Automated band scanning reveals contest activity you'd miss manually
-- **Never work the same op twice**: Voice fingerprinting tracks operators even if they QSY
-- **Maximize multipliers**: Visual band map highlights new sections/zones/DXCCs
-- **Save time**: Let the computer scan while you make QSOs
+Run the offline regression suite from the repository root:
 
-### For the Ham Radio Community
-
-- **First practical SSB Skimmer**: Fills a gap that's existed since CW Skimmer in 2009
-- **Open source**: Community can contribute, extend, improve
-- **Privacy-focused**: No cloud, no tracking, runs entirely on your PC
-- **Educational**: Demonstrates modern AI applied to ham radio
-
-## Project Status
-
-**Current Phase**: Beta Testing (as of January 2025)
-
-All 10 development phases are COMPLETE! CQSentinel is now feature-complete and ready for beta testing.
-
-✅ Phase 1: Core Infrastructure
-✅ Phase 2: Audio Intelligence
-✅ Phase 3: SSB Auto-Centering
-✅ Phase 4: Voice Fingerprinting
-✅ Phase 5: Contest Logic
-✅ Phase 6: Band Map & Visualization
-✅ Phase 7: N3FJP Integration
-✅ Phase 8: Band Scanning Engine
-✅ Phase 9: Contest Profiles
-✅ Phase 10: Polish & Distribution
-
-See [PROJECT_PLAN.md](PROJECT_PLAN.md) for complete technical specification.
-
-## Development Roadmap
-
-1. **Phase 1**: Core Infrastructure (CAT + audio + basic GUI)
-2. **Phase 2**: Audio Intelligence (noise reduction, VAD, ASR)
-3. **Phase 3**: SSB Auto-Centering (F0 detection)
-4. **Phase 4**: Voice Fingerprinting (speaker diarization)
-5. **Phase 5**: Contest Logic (behavior detection, exchange parsing)
-6. **Phase 6**: Band Map GUI (visualization)
-7. **Phase 7**: N3FJP Integration (dupe checking)
-8. **Phase 8**: Band Scanning Engine (automated sweeping)
-9. **Phase 9**: Contest Profiles (FD, WFD, CQWW, CQWPX, Salmon Run)
-10. **Phase 10**: Polish & Distribution (packaging, docs, testing)
-
-## Quick Start
-
-### Installation
-
-```bash
-# Clone repository
-git clone https://github.com/xmutantson/CQSentinel.git
-cd CQSentinel
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Run CQSentinel
-python -m cqsentinel.main
+```powershell
+python -B -m unittest discover -s tests -v
 ```
 
-### Building Windows Executable
+The HTTP tests require `fastapi`, `httpx`, and `python-multipart`, included in the `dev` extra. Check the skip count: a suite run without these dependencies does not verify HTTP binding. To run only the in-process HTTP tests in an environment that has them, use `python -B -m unittest discover -s tests -p test_whisper_http.py -v`.
 
-```bash
-# Build standalone executable (PyInstaller)
-python -m PyInstaller cqsentinel.spec
+The suite uses synthetic audio and fake service/hardware boundaries. It does not establish radio compatibility, recognition accuracy, or packaged executable support. Scripts under `scripts/test/`, `scripts/test_hamlib.py`, and audio diagnostics may contact hardware; they are manual checks, not part of the offline suite.
 
-# Executable will be in dist/CQSentinel/CQSentinel.exe
-```
-
-### First Run Setup
-
-1. Start rigctld for your radio:
-   ```bash
-   rigctld -m 3085 -r COM3  # Example for IC-705
-   ```
-
-2. Launch CQSentinel:
-   ```bash
-   python -m cqsentinel.main
-   ```
-
-3. Configure settings:
-   - Radio: Set rigctld connection (default: localhost:4532)
-   - Audio: Select audio device
-   - Contest: Choose contest profile (Field Day, CQWW, etc.)
-   - N3FJP: Enable and configure if using N3FJP logging
-
-4. Start scanning!
-   - Select band profile (e.g., "Field Day 20m")
-   - Click "Start Scan"
-   - Watch the band map populate with stations
+Before distributing a build, validate it on a clean Windows machine, exercise Start/Stop/Skip and two-band scanning with the intended radio, and measure callsign precision and false detections on representative recordings. Model speed and auto-centering accuracy depend on the hardware and signal conditions; the repository does not establish universal performance guarantees.
 
 ## Documentation
 
-- **[PROJECT_PLAN.md](PROJECT_PLAN.md)** - Complete technical specification
-- **[PHASE1.md](PHASE1.md) - [PHASE10.md](PHASE10.md)** - Implementation documentation for all phases
-- **[BUILD.md](BUILD.md)** - Windows build instructions
-- **User Guide** - See phase documentation for detailed usage
-- **Configuration** - Settings stored in `~/.cqsentinel/config.yaml`
+- [Installation](INSTALL.md)
+- [Quick start](docs/QUICKSTART.md)
+- [Windows builds](BUILD.md)
+- [Network transcription](docs/NETWORK_TRANSCRIPTION.md)
+- [Documentation index](docs/README.md)
+- [Original project plan](docs/PROJECT_PLAN.md) and [historical phase notes](docs/legacy/phases/)
 
-## Hardware Requirements
-
-**Minimum**:
-- Windows 10/11 (64-bit)
-- Intel i5 8th gen or equivalent
-- 4 GB RAM
-- USB port for radio connection
-- Hamlib-compatible radio (200+ models supported)
-
-**Recommended**:
-- Intel i7 or AMD Ryzen 7
-- 8 GB RAM
-- GPU (optional, for CREPE high-accuracy pitch detection)
-- Icom IC-705 or similar modern transceiver
-
-## Software Requirements
-
-- **Python 3.10+**
-- **Hamlib** (rigctld)
-- **N3FJP Logging Software** (optional, for dupe checking)
-
-All AI models are bundled with the application (~800 MB total).
-
-## Contest Profiles Included
-
-1. **ARRL Field Day** - Class + Section
-2. **Winter Field Day** - Class + Section
-3. **CQ World Wide DX** - RST + CQ Zone
-4. **CQ WPX** - RST + Serial
-5. **Washington State Salmon Run** - RST + County/SPC
-
-More profiles can be added by the community.
-
-## Research & Prior Art
-
-Our research confirmed that **no SSB skimmer currently exists**:
-
-- CW Skimmer (VE3NEA) revolutionized CW contesting in 2009
-- Digital skimmers exist for PSK, RTTY, FT8
-- SSB Skimmer has been discussed as "conceptual" since 2010
-- No turnkey product has shipped as of 2025
-
-**CQSentinel is the first practical implementation.**
-
-Key academic references:
-- YIN/pYIN pitch detection algorithms (De Cheveigné 2002, Mauch 2014)
-- CREPE neural pitch tracking (Kim 2018)
-- Whisper speech recognition (Radford 2022)
-- Resemblyzer speaker embeddings (Wan 2018)
-- SSB AFC patents (US4625331A)
-
-## Contributing
-
-**Project is in planning phase.** Contributions will be welcome once Phase 1 begins.
-
-Areas where help will be needed:
-- Testing with various radio models
-- Contest profile development
-- GUI/UX design
-- Documentation
-- Translation (future)
+Historical phase and research documents describe earlier designs; they are not release acceptance records. Contributions are welcome, especially reproducible offline tests, radio compatibility reports, and labeled contest recordings that you have permission to share.
 
 ## License
 
-TBD (likely MIT or GPL v3)
-
-## Acknowledgments
-
-- **VE3NEA** for pioneering CW Skimmer, inspiring this project
-- **OpenAI** for Whisper speech recognition
-- **Resemble.AI** for Resemblyzer voice encoder
-- **Hamlib team** for universal radio control
-- **N3FJP** for excellent logging software and open API
-- The entire **ham radio contesting community** for feedback and inspiration
-
-## Contact
-
-- **Project Repository**: https://github.com/xmutantson/CQSentinel
-- **Issues**: https://github.com/xmutantson/CQSentinel/issues
-- **Discussions**: https://github.com/xmutantson/CQSentinel/discussions
-
-## Disclaimer
-
-This software is for **receive-only monitoring** and must be operated by a licensed amateur radio operator in compliance with local regulations. It does not transmit, does not auto-post to DX clusters, and does not violate assisted/unassisted contest rules when used properly.
-
-**73 de CQSentinel Team**
-
----
-
-*"Bringing AI to SSB Contesting - One QSO at a Time"*
+A license has not yet been selected. Choosing and adding one remains a maintainer decision.

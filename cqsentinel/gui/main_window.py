@@ -40,13 +40,14 @@ from cqsentinel.speech.transcription import SpeechTranscriber
 from cqsentinel.speech.subprocess_transcriber import SubprocessTranscriber
 from cqsentinel.speech.openai_transcriber import OpenAITranscriber
 from cqsentinel.speech.network_transcriber import NetworkTranscriber
+from cqsentinel.speech.router import TranscriptionRouter
 from cqsentinel.speech.gpu_utils import select_device_and_workers, estimate_transcription_speed
 from cqsentinel.contest import CallsignExtractor, BehaviorAnalyzer
 from cqsentinel.bandmap.station import BandMapState
 from cqsentinel.bandmap.widget import BandMapWidget
 from cqsentinel.bandmap.detail_panel import StationDetailPanel
 from cqsentinel.gui.settings_dialog import SettingsDialog
-from cqsentinel.scanner.profiles import BAND_PROFILES
+from cqsentinel.scanner.profiles import BAND_PROFILES, SUPPORTED_SCAN_BANDS
 from cqsentinel.scanner.engine import BandScanner, ScanProgress
 from cqsentinel.signal import SignalScanner, SessionState, SessionResult
 
@@ -621,6 +622,8 @@ class MainWindow(QMainWindow):
     audio_levels_signal = pyqtSignal(float, float)  # rms_level, peak_level
     voice_detection_signal = pyqtSignal(bool, float)  # has_speech, speech_ratio
     log_signal = pyqtSignal(str)  # Log messages (thread-safe)
+    basic_scan_finished_signal = pyqtSignal(object)
+    band_scan_finished_signal = pyqtSignal(object)
     scan_finished_signal = pyqtSignal()  # Scan finished (thread-safe)
     station_discovered_signal = pyqtSignal(object, str, object)  # station, band_name, session_result
     session_state_changed_signal = pyqtSignal(object, object)  # old_state, new_state
@@ -643,6 +646,9 @@ class MainWindow(QMainWindow):
         self.subprocess_transcriber: SubprocessTranscriber = None  # Subprocess-based transcription for Windows
         self.openai_transcriber: OpenAITranscriber = None  # OpenAI API transcription (supersedes local)
         self.network_transcriber: NetworkTranscriber = None  # Network Whisper server (supersedes OpenAI and local)
+        self.transcription_router = None
+        self._scan_stopping = False
+        self._close_after_scan = False
         self.callsign_extractor: CallsignExtractor = None
         self.behavior_analyzer: BehaviorAnalyzer = None
         self.band_map: BandMapState = None
@@ -721,6 +727,8 @@ class MainWindow(QMainWindow):
         self.setup_timers()
 
         # Connect signals for thread-safe GUI updates from scanner callbacks
+        self.basic_scan_finished_signal.connect(self.on_scan_finished)
+        self.band_scan_finished_signal.connect(self._on_band_scan_complete)
         self.station_detected_signal.connect(self._handle_station_detected)
         self.progress_update_signal.connect(self._handle_progress_update)
         self.transcription_signal.connect(self._handle_transcription)
@@ -767,7 +775,8 @@ class MainWindow(QMainWindow):
                     denoise_level=self.config.audio.noise_reduction_level,
                     vad_threshold=0.5,  # Not used - Whisper handles speech detection internally
                     whisper_model="medium.en",  # Not used - SubprocessTranscriber handles transcription
-                    enable_voice_id=False  # Voice ID disabled (Resemblyzer removed)
+                    enable_voice_id=False,  # Voice ID disabled (Resemblyzer removed)
+                    enable_transcription=False  # Selected backend owns all full-scan transcription
                 )
 
             # SSB Auto-tuner
@@ -821,16 +830,10 @@ class MainWindow(QMainWindow):
                         # Single worker for network (requests are sequential)
                         self._max_concurrent_transcriptions = 1
                     else:
-                        self.log(f"  WARNING: Cannot connect to Whisper server at {server_url}")
-                        self.log("  Falling back to OpenAI API or local transcription...")
-                        logger.warning(f"Network Whisper server unreachable: {server_url}")
-                        self.network_transcriber = None
-
-                except Exception as e:
-                    self.log(f"  WARNING: Network Whisper init failed: {e}")
-                    self.log("  Falling back to OpenAI API or local transcription...")
-                    logger.warning(f"Network Whisper init failed: {e}")
+                        raise RuntimeError(f"Cannot connect to selected Whisper server: {server_url}")
+                except Exception:
                     self.network_transcriber = None
+                    raise
 
             # OpenAI API transcription (if network not available)
             openai_api_key = getattr(self.config.audio, 'openai_api_key', '')
@@ -851,11 +854,9 @@ class MainWindow(QMainWindow):
                     # Single worker for API (no parallel requests for now)
                     self._max_concurrent_transcriptions = 1
 
-                except Exception as e:
-                    self.log(f"  WARNING: OpenAI API init failed: {e}")
-                    self.log("  Falling back to local transcription...")
-                    logger.warning(f"OpenAI API init failed, using local: {e}")
+                except Exception:
                     self.openai_transcriber = None
+                    raise
 
             # Local transcription (GPU/CPU) - only if no network or OpenAI API
             if not self.network_transcriber and not self.openai_transcriber and not self.subprocess_transcriber:
@@ -903,7 +904,9 @@ class MainWindow(QMainWindow):
                     logger.info(f"Transcription workers initialized: {num_workers} {device} workers")
                 else:
                     self.log("  ERROR: Failed to start transcription subprocess")
-                    logger.error("Failed to start transcription subprocess")
+                    self.subprocess_transcriber.stop()
+                    self.subprocess_transcriber = None
+                    raise RuntimeError("Failed to start local transcription backend")
 
             # Old SpeechTranscriber removed - it uses faster-whisper which downloads models at runtime
             # All transcription now handled by SubprocessTranscriber (openai-whisper, pre-downloaded)
@@ -939,12 +942,14 @@ class MainWindow(QMainWindow):
                     active_transcriber = self.subprocess_transcriber
                     transcriber_type = "Local GPU/CPU"
 
+                self.transcription_router = TranscriptionRouter(active_transcriber)
+
                 # Get VAD from audio pipeline for speech validation
                 vad_instance = self.audio_pipeline.vad if self.audio_pipeline else None
 
                 self.signal_scanner = SignalScanner(
                     radio=self.radio,  # May be None until radio connects
-                    transcriber=active_transcriber,
+                    transcriber=self.transcription_router,
                     pitch_detector=None,  # PitchDetector for centering (optional, auto-created if needed)
                     vad=vad_instance,  # VAD for validating speech before recording
                     band_maps=self.band_maps,
@@ -959,8 +964,8 @@ class MainWindow(QMainWindow):
 
             self.use_full_scanner = True
             self.log("[OK] Advanced features initialized successfully!")
-            self.log("  Full scanner with audio processing, AI transcription, and voice ID enabled.")
-            logger.info("Advanced features initialized: audio pipeline, transcription, voice ID, contest logic")
+            self.log("  Full scanner with audio processing, transcription, and contest analysis enabled.")
+            logger.info("Advanced features initialized: audio pipeline, transcription, contest logic")
 
         except Exception as e:
             self.log(f"ERROR initializing advanced features: {e}")
@@ -997,15 +1002,16 @@ class MainWindow(QMainWindow):
             logger.error(f"Error finding audio device: {e}")
             return None
 
-    def start_audio_monitoring(self):
-        """Start audio stream with broadcaster pattern for multiple consumers"""
+    def start_audio_monitoring(self) -> bool:
+        """Return confirmed stream startup success, retaining intent on failure."""
+        self._audio_monitoring_requested = True
         if not self.audio:
-            return
+            return False
 
         # Check if already recording
         if hasattr(self.audio, '_recording') and self.audio._recording:
             logger.debug("Audio monitoring already active")
-            return
+            return True
 
         try:
             import time
@@ -1056,10 +1062,14 @@ class MainWindow(QMainWindow):
                 except Exception as e:
                     logger.error(f"Audio callback error: {e}", exc_info=True)
 
-            self.audio.start_stream(audio_callback)
+            if self.audio.start_stream(audio_callback) is not True:
+                logger.warning("Audio input stream did not start")
+                return False
             logger.info("Audio monitoring started (transcription triggered by signal detection during scan)")
+            return True
         except Exception as e:
             logger.warning(f"Failed to start audio monitoring: {e}")
+            return False
 
     def _start_transcription_worker(self, audio_data):
         """
@@ -1264,43 +1274,8 @@ class MainWindow(QMainWindow):
         if not self.subprocess_transcriber.is_alive():
             return
 
-        # Poll for results (non-blocking, timeout=0)
-        try:
-            result = self.subprocess_transcriber.get_result(timeout=0)
-            if result is not None:
-                # Got a result!
-                logger.debug(f"Received transcription result for request {result.request_id}")
-
-                if result.success:
-                    # Emit voice detection signal with speech info from Whisper
-                    # has_speech: True if any segment had speech
-                    # speech_ratio: Percentage of segments with speech (0.0-1.0)
-                    self.voice_detection_signal.emit(result.has_speech, result.speech_ratio)
-                    logger.debug(f"Voice detection: has_speech={result.has_speech}, speech_ratio={result.speech_ratio:.2f}")
-
-                    # Emit transcription signal (thread-safe)
-                    if result.text.strip():
-                        # Use frequency from transcription result
-                        # Convert from Hz to MHz for display
-                        freq_mhz = result.frequency_hz / 1e6 if result.frequency_hz > 0 else 0.0
-                        self.transcription_signal.emit(freq_mhz, result.text.strip(), None)
-                        logger.info(f"Transcribed ({freq_mhz:.3f} MHz): {result.text.strip()}")
-                else:
-                    # Transcription failed
-                    logger.error(f"Transcription failed: {result.error}")
-
-                # Remove from pending requests
-                if hasattr(self, '_pending_transcription_requests'):
-                    if result.request_id in self._pending_transcription_requests:
-                        self._pending_transcription_requests.remove(result.request_id)
-
-                # Decrement active count
-                with self._transcription_lock:
-                    self._active_transcriptions = max(0, self._active_transcriptions - 1)
-                    logger.debug(f"Transcription complete ({self._active_transcriptions}/{self._max_concurrent_transcriptions} active)")
-
-        except Exception as e:
-            logger.debug(f"Error polling transcription results: {e}")
+        # Results are owned by TranscriptionRouter and consumed by the scan/session
+        # that submitted them. This timer only monitors worker health.
 
     def _on_transcription_finished(self, thread, worker):
         """Clean up after transcription completes"""
@@ -1351,7 +1326,7 @@ class MainWindow(QMainWindow):
         bandmaps_layout.setContentsMargins(0, 0, 0, 0)
 
         # Create band map widgets for all bands (ordered from highest to lowest frequency)
-        for band_name in ["70cm", "2m", "6m", "10m", "15m", "20m", "40m", "80m", "160m"]:
+        for band_name in reversed(SUPPORTED_SCAN_BANDS):
             if band_name in BAND_PROFILES:
                 profile = BAND_PROFILES[band_name]
 
@@ -1466,7 +1441,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel("Bands:"))
 
         self.band_checkboxes = {}
-        for band in ["70cm", "2m", "6m", "10m", "15m", "20m", "40m", "80m", "160m"]:
+        for band in reversed(SUPPORTED_SCAN_BANDS):
             cb = QCheckBox(band)
             cb.setChecked(band in self.config.scan.enabled_bands)
             cb.stateChanged.connect(self.on_band_selection_changed)
@@ -2010,60 +1985,18 @@ class MainWindow(QMainWindow):
                 self.log("Using FULL SCANNER with AI features:")
                 self.log("  [OK] Audio processing (noise reduction + voice detection)")
                 self.log("  [OK] Speech transcription (Whisper AI)")
-                self.log("  [OK] Signal detection -> 90s recording -> band map population")
+                self.log("  [OK] Capture -> selected transcription backend -> band map")
                 self.log("  [OK] SSB auto-centering")
                 self.log("  [OK] Contest logic (callsign extraction)")
 
-                # Start SignalScanner for intelligent signal detection and band map population
+                if not self.transcription_router:
+                    QMessageBox.warning(self, "Transcription Unavailable", "Initialize a transcription backend before scanning.")
+                    return
+                # A band sweep owns tuning, capture and transcription. The independent
+                # signal recorder must not collect audio while the band sweep retunes.
                 if self.signal_scanner:
-                    self.signal_scanner.start()
-                    # Suspend SignalScanner auto-centering to avoid conflicts with BandScanner
-                    self.signal_scanner.suspend_auto_centering()
-                    self.log("  [OK] SignalScanner active - will detect signals and populate band maps")
-                    self.log("  [INFO] SignalScanner auto-centering suspended (BandScanner controls frequency)")
-                    logger.info("SignalScanner started for band map population (auto-centering suspended)")
-
-                # Initialize BandScanner with transcription callback
-                def on_station_detected_callback(station):
-                    # Emit signal for thread-safe GUI update
-                    self.station_detected_signal.emit(station)
-
-                def on_progress_update_callback(prog):
-                    # Emit signal for thread-safe GUI update
-                    self.progress_update_signal.emit(prog)
-
-                # Debug: Log what we're passing to BandScanner
-                logger.info(f"DEBUG: Creating BandScanner with:")
-                logger.info(f"  fm_tuner={self.fm_tuner} (type={type(self.fm_tuner).__name__})")
-                logger.info(f"  transcriber={self.subprocess_transcriber} (type={type(self.subprocess_transcriber).__name__ if self.subprocess_transcriber else 'None'})")
-                logger.info(f"  auto_tuner={self.auto_tuner} (type={type(self.auto_tuner).__name__})")
-
-                # Determine first band to scan (lowest frequency = last in reversed list)
-                # This BandScanner will be immediately replaced by _start_next_band_scan(),
-                # but we need a valid band_map to avoid None warnings
-                first_band = list(reversed(enabled_bands))[0] if enabled_bands else "20m"
-                initial_band_map = self.band_maps.get(first_band)
-                logger.info(f"  band_map={initial_band_map} (first band: {first_band})")
-                logger.info(f"  band_map id={id(initial_band_map):x} (first band: {first_band})")
-
-                self.band_scanner = BandScanner(
-                    radio_controller=self.radio,
-                    audio_capture=self.audio,
-                    audio_pipeline=self.audio_pipeline,
-                    auto_tuner=self.auto_tuner,
-                    fm_tuner=self.fm_tuner,  # FM power-based edge detection
-                    transcriber=self.subprocess_transcriber,  # SubprocessTranscriber for speech-to-text
-                    voice_database=None,  # Voice fingerprinting removed
-                    callsign_extractor=self.callsign_extractor,
-                    behavior_analyzer=self.behavior_analyzer,
-                    band_map=initial_band_map,
-                    scan_speed_steps_per_sec=getattr(self.config.scan, 'scan_speed_steps_per_sec', 1.0),
-                    s_meter_threshold=getattr(self.config.scan, 's_meter_threshold', 3),
-                    use_s_meter_scan=getattr(self.config.scan, 'use_s_meter_scan', True),
-                    noise_skip_threshold=getattr(self.config.scan, 'noise_skip_threshold', 3),
-                    on_station_detected=on_station_detected_callback,
-                    on_progress_update=on_progress_update_callback
-                )
+                    self.signal_scanner.stop()
+                self._scan_stopping = False
 
                 # Save enabled bands for continuous loop
                 self.enabled_bands_for_scan = enabled_bands.copy()
@@ -2101,7 +2034,9 @@ class MainWindow(QMainWindow):
                 )
                 self.scan_thread.log_signal.connect(self.log)
                 self.scan_thread.freq_update_signal.connect(self.update_freq_display)
-                self.scan_thread.finished.connect(self.on_scan_finished)
+                worker = self.scan_thread
+                worker.finished.connect(lambda owner=worker: self.basic_scan_finished_signal.emit(owner))
+                self._scan_stopping = False
                 self.scan_thread.start()
 
                 # Update band map widgets to show yellow scanning cursor
@@ -2130,12 +2065,18 @@ class MainWindow(QMainWindow):
                 self.signal_scanner.resume_auto_centering()
                 logger.info("SignalScanner stopped and auto-centering resumed")
 
-            if self.band_scanner:
+            if self.band_scanner and self.band_scanner.is_scanning():
+                self._scan_stopping = True
+                self.scan_btn.setEnabled(False)
+                self.skip_btn.setEnabled(False)
                 self.band_scanner.stop_scan()
-                self.band_scanner = None
+                return  # Completion signal restores controls after the worker exits.
             if self.scan_thread:
+                self._scan_stopping = True
+                self.scan_btn.setEnabled(False)
+                self.skip_btn.setEnabled(False)
                 self.scan_thread.stop()
-                self.scan_thread.wait(3000)  # Wait up to 3 seconds
+                return  # Keep tuning/connection ownership until the finished signal.
 
             self.update_scan_status("Idle", "gray")
             self.scan_btn.setText("Start Scan")
@@ -2189,8 +2130,14 @@ class MainWindow(QMainWindow):
             self.log(f"Step size: {step_size/1000:.1f} kHz")
             logger.info(f"Step size override set to {step_size} Hz")
 
-    def on_scan_finished(self):
-        """Called when scan completes"""
+    def on_scan_finished(self, worker=None):
+        """Release controls only for the worker that still owns the basic scan."""
+        if worker is not None:
+            if worker is not self.scan_thread:
+                return
+        elif self.scan_thread is not None:
+            return  # An unowned/stale completion must not release a basic worker.
+        self._scan_stopping = False
         self.log("Scan finished")
         self.update_scan_status("Scan complete", "green")
         self.scan_btn.setText("Start Scan")
@@ -2199,6 +2146,12 @@ class MainWindow(QMainWindow):
         for cb in self.band_checkboxes.values():
             cb.setEnabled(True)
         self.scan_thread = None
+        self.scan_btn.setEnabled(True)
+        self.freq_input.setEnabled(True)
+        for widget in self.band_map_widgets.values():
+            widget.set_scanning_active(False)
+        if worker is not None and getattr(self, '_close_after_scan', False):
+            self.close()
 
     def update_radio_status(self):
         """Update radio status display"""
@@ -2646,14 +2599,14 @@ class MainWindow(QMainWindow):
                 widget = self.band_map_widgets[self.current_scan_band]
                 logger.info(f"Refreshing {self.current_scan_band} band map widget after station detection")
                 logger.info(f"  Widget band_map id={id(widget.band_map):x}")
-                logger.info(f"  Widget sees: {len(widget.band_map.stations)} stations, {len(widget.band_map.noise_sources)} noise")
+                logger.info(f"  Widget sees: {len(widget.band_map.stations)} stations, {len(widget.band_map.noise_frequencies)} noise")
                 widget.update_display()
                 logger.info(f"  Refresh complete")
 
             # Update station count in status bar
             if self.band_maps:
                 total_stations = sum(len(bm.stations) for bm in self.band_maps.values())
-                total_noise = sum(len(bm.noise_sources) for bm in self.band_maps.values())
+                total_noise = sum(len(bm.noise_frequencies) for bm in self.band_maps.values())
                 status_msg = f"Stations: {total_stations}"
                 if total_noise > 0:
                     status_msg += f" | Noise: {total_noise}"
@@ -2680,7 +2633,7 @@ class MainWindow(QMainWindow):
             if int(prog.progress_percent) % 5 == 0 and prog.progress_percent > 0:
                 if self.current_scan_band and self.current_scan_band in self.band_map_widgets:
                     widget = self.band_map_widgets[self.current_scan_band]
-                    logger.info(f"Periodic refresh ({prog.progress_percent:.0f}%): widget.band_map id={id(widget.band_map):x}, {len(widget.band_map.stations)} stations, {len(widget.band_map.noise_sources)} noise")
+                    logger.info(f"Periodic refresh ({prog.progress_percent:.0f}%): widget.band_map id={id(widget.band_map):x}, {len(widget.band_map.stations)} stations, {len(widget.band_map.noise_frequencies)} noise")
                     widget.update_display()
         except Exception as e:
             logger.error(f"Error handling progress update: {e}", exc_info=True)
@@ -2906,7 +2859,7 @@ class MainWindow(QMainWindow):
         logger.info(f"_start_next_band_scan: {self.current_scan_band} band_map id={id(current_band_map):x}")
         # Use "is not None" to avoid truthiness bug with __len__
         logger.info(f"  Stations in band_map: {len(current_band_map.stations) if current_band_map is not None else 'N/A'}")
-        logger.info(f"  Noise in band_map: {len(current_band_map.noise_sources) if current_band_map is not None else 'N/A'}")
+        logger.info(f"  Noise in band_map: {len(current_band_map.noise_frequencies) if current_band_map is not None else 'N/A'}")
 
         # Create callbacks with transcription support (using signals for thread safety)
         def on_station_detected_callback(station):
@@ -2924,8 +2877,13 @@ class MainWindow(QMainWindow):
             audio_pipeline=self.audio_pipeline,
             auto_tuner=self.auto_tuner,
             fm_tuner=self.fm_tuner,  # FM power-based edge detection
-            transcriber=self.subprocess_transcriber,  # SubprocessTranscriber for speech-to-text
+            transcriber=self.transcription_router,
             voice_database=None,  # Voice fingerprinting removed
+            auto_center_enabled=self.config.scan.auto_center_enabled,
+            dwell_with_voice_sec=self.config.scan.dwell_with_voice_sec,
+            dwell_without_voice_sec=self.config.scan.dwell_without_voice_sec,
+            min_contestness_score=self.config.contest.contestness_threshold,
+            n3fjp_client=getattr(self, "n3fjp_client", None) if self.config.contest.n3fjp_enabled else None,
             callsign_extractor=self.callsign_extractor,
             behavior_analyzer=self.behavior_analyzer,
             band_map=current_band_map,
@@ -2951,30 +2909,30 @@ class MainWindow(QMainWindow):
         )
         self.log(f"  Step size: {step_size_to_use/1000:.1f} kHz")
 
-        # Monitor scan completion in background
-        # Use Qt signals to safely communicate from worker thread to GUI thread
-        import threading
-        import time
-
+        # Capture identity so a late completion cannot advance a newer scan.
+        scanner = self.band_scanner
         def monitor_scan():
-            while self.band_scanner and self.band_scanner.is_scanning():
-                time.sleep(1)
+            scanner.wait_stopped()
+            self.band_scan_finished_signal.emit(scanner)
 
-            # Scan finished - emit signal to safely call GUI methods on main thread
-            # Use QTimer.singleShot with 0ms delay to schedule on main thread
-            from PyQt5.QtCore import QMetaObject, Qt, Q_ARG
-            QMetaObject.invokeMethod(
-                self,
-                "_on_band_scan_complete",
-                Qt.QueuedConnection
-            )
+        threading.Thread(target=monitor_scan, daemon=True).start()
 
-        monitor_thread = threading.Thread(target=monitor_scan, daemon=True)
-        monitor_thread.start()
-
-    @pyqtSlot()
-    def _on_band_scan_complete(self):
-        """Called on main thread when band scan completes (thread-safe)"""
+    @pyqtSlot(object)
+    def _on_band_scan_complete(self, scanner):
+        """Finish only the scanner that still owns the current band sweep."""
+        if scanner is not self.band_scanner:
+            return
+        self.band_scanner = None
+        if self._scan_stopping or not self.enabled_bands_for_scan:
+            self._scan_stopping = False
+            self.on_scan_finished()
+            self.scan_btn.setEnabled(True)
+            self.freq_input.setEnabled(True)
+            for widget in self.band_map_widgets.values():
+                widget.set_scanning_active(False)
+            if self._close_after_scan:
+                self.close()
+            return
         if self.current_scan_band:
             self.log(f"Band {self.current_scan_band} complete")
         self._start_next_band_scan()
@@ -2982,6 +2940,9 @@ class MainWindow(QMainWindow):
     def show_settings(self):
         """Show settings dialog"""
         # Save current settings to detect changes
+        backend_fields = ("network_whisper_enabled", "network_whisper_url", "network_whisper_model",
+                          "network_whisper_timeout", "openai_api_key", "openai_whisper_model")
+        old_backend = tuple(getattr(self.config.audio, name) for name in backend_fields)
         old_sample_rate = self.config.audio.sample_rate
         old_use_crepe = getattr(self.config.audio, 'use_crepe_pitch', False)
         old_use_gpu = self.config.audio.use_gpu
@@ -2989,11 +2950,17 @@ class MainWindow(QMainWindow):
         old_fm_scan_range = getattr(self.config.scan, 'fm_scan_range_hz', 10000)
         old_fm_scan_step = getattr(self.config.scan, 'fm_scan_step_hz', 100)
         old_fm_power_threshold = getattr(self.config.scan, 'fm_power_threshold_db', -80.0)
-        old_audio_device = self.config.radio.audio_device_name
-        old_audio_output_device = getattr(self.config.audio, 'output_device_name', None)
+        # Persist the runtime baseline separately from saved desired settings.
+        # Blocked or failed Apply must remain retryable with the same selection.
+        if not hasattr(self, '_applied_audio_devices'):
+            self._applied_audio_devices = (
+                self.config.radio.audio_device_name,
+                getattr(self.config.audio, 'output_device_name', None))
+        old_audio_device, old_audio_output_device = self._applied_audio_devices
 
         dialog = SettingsDialog(self)
-        if dialog.exec():
+        accepted = dialog.exec()
+        if accepted or dialog.settings_applied:
             # Settings were saved, reload config
             self.config = get_config()
             self.log("Settings updated")
@@ -3008,22 +2975,29 @@ class MainWindow(QMainWindow):
                 self.log(f"Audio output device changed: {old_audio_output_device or 'default'} -> {getattr(self.config.audio, 'output_device_name', None) or 'default'}")
                 audio_devices_changed = True
 
-            if audio_devices_changed:
+            # The last successful device name is historical once replacement
+            # has stopped/closed it. Even selecting that same name needs recovery.
+            if audio_devices_changed or getattr(self, '_audio_devices_pending', False):
                 # Check if scan is active - warn user to stop scan first
                 if self.scan_btn.text() == "Stop Scan":
                     QMessageBox.warning(
                         self,
                         "Scan Active",
                         "Audio device changes cannot be applied while scanning is active.\n\n"
-                        "Please stop the scan, then change audio devices in Settings again."
+                        "Please stop the scan, then reopen Settings and click Apply to retry."
                     )
                     self.log("Audio device change blocked - stop scan first")
                 else:
                     # Hot-swap audio devices without restart
-                    self._reinitialize_audio_devices()
+                    if self._reinitialize_audio_devices() is True:
+                        self._applied_audio_devices = (
+                            self.config.radio.audio_device_name,
+                            getattr(self.config.audio, 'output_device_name', None))
 
             # Check if settings that require restart were changed
             restart_needed = []
+            if old_backend != tuple(getattr(self.config.audio, name) for name in backend_fields):
+                restart_needed.append("Transcription backend settings")
             if old_sample_rate != self.config.audio.sample_rate:
                 restart_needed.append(f"Sample rate ({old_sample_rate} -> {self.config.audio.sample_rate} Hz)")
             if old_use_crepe != getattr(self.config.audio, 'use_crepe_pitch', False):
@@ -3050,16 +3024,21 @@ class MainWindow(QMainWindow):
                 self.log("*** Settings changed - restart required for full effect ***")
 
     def _reinitialize_audio_devices(self):
-        """Hot-swap audio devices without requiring application restart"""
+        """Hot-swap audio devices without requiring application restart."""
+        # Invalidate the runtime before any destructive step. Only a completed
+        # replacement can clear this; changing selection or cancelling cannot.
+        self._audio_devices_pending = True
         try:
             self.log("Reinitializing audio devices...")
             logger.info("Hot-swapping audio devices")
 
-            # Stop current audio stream if active
-            was_monitoring = False
+            # Preserve requested monitoring across a failed replacement. The
+            # failed capture may be inactive when the same choice is retried.
+            was_monitoring = (getattr(self, '_audio_monitoring_requested', False)
+                              or bool(getattr(self.audio, '_recording', False)))
+            self._audio_monitoring_requested = was_monitoring
             if self.audio:
                 if hasattr(self.audio, '_recording') and self.audio._recording:
-                    was_monitoring = True
                     self.audio.stop_stream()
                     logger.info("Stopped existing audio stream")
 
@@ -3103,7 +3082,8 @@ class MainWindow(QMainWindow):
 
             # Restart audio monitoring if it was active
             if was_monitoring:
-                self.start_audio_monitoring()
+                if not self.start_audio_monitoring():
+                    raise RuntimeError("Audio input stream did not start; device change is pending")
                 self.log("Audio monitoring restarted with new devices")
                 logger.info("Audio monitoring restarted")
 
@@ -3114,6 +3094,8 @@ class MainWindow(QMainWindow):
 
             self.log("Audio devices hot-swapped successfully!")
             logger.info("Audio device hot-swap complete")
+            self._audio_devices_pending = False
+            return True
 
         except Exception as e:
             self.log(f"ERROR: Failed to reinitialize audio devices: {e}")
@@ -3124,6 +3106,8 @@ class MainWindow(QMainWindow):
                 f"Failed to switch audio devices:\n\n{e}\n\n"
                 "Please check your audio device settings and try again."
             )
+
+            return False
 
     def _get_audio_output_device_index(self, device_name: str) -> Optional[int]:
         """
@@ -3212,6 +3196,18 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         """Handle window close event"""
+        if self.band_scanner and self.band_scanner.is_scanning():
+            self._close_after_scan = True
+            if not self._scan_stopping:
+                self.toggle_scan()
+            event.ignore()
+            return
+        if self.scan_thread:
+            self._close_after_scan = True
+            if not self._scan_stopping:
+                self.toggle_scan()
+            event.ignore()
+            return
         # Stop transcription polling timer FIRST to prevent warning spam during shutdown
         if hasattr(self, 'transcription_poll_timer'):
             logger.debug("Stopping transcription poll timer")

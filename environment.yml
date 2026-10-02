@@ -25,13 +25,10 @@ dependencies:
   - librosa>=0.10.0
   - resampy>=0.4.2
 
-  # Voice Activity Detection (for resemblyzer)
-  - webrtcvad>=2.0.10  # Pre-built on conda-forge, avoids need for C++ compiler
-
-  # PyTorch (for Whisper, Silero VAD, Resemblyzer)
+  # PyTorch (for Whisper and Silero VAD); match setup.py compatibility bounds.
   # Using cpuonly for smaller download (~500MB vs 2GB)
-  - pytorch>=2.0.0
-  - torchaudio>=2.0.0
+  - pytorch>=2.0.0,<2.6.0
+  - torchaudio>=2.0.0,<2.6.0
   - cpuonly  # CPU-only version, remove if you have GPU
 
   # Math / Signal Processing
@@ -41,6 +38,7 @@ dependencies:
 
   # Networking
   - pyserial>=3.5
+  - requests>=2.31.0
 
   # Configuration
   - pyyaml>=6.0
@@ -62,6 +60,7 @@ dependencies:
   - pip:
     # These packages are only on PyPI
     - faster-whisper>=0.10.0
+    - ctranslate2<4.5.0
     # Voice fingerprinting - removed (not effective for SSB audio)
     # - resemblyzer>=0.1.1
     - noisereduce>=3.0.0
@@ -74,4 +73,4 @@ dependencies:
     - pytest-cov>=4.1.0
     # Windows-specific: Console event handling for GPU cleanup
     # Prevents BSOD when closing PowerShell with GPU workers running
-    - pywin32>=306  # Only installs on Windows
+    - "pywin32>=306; sys_platform == 'win32'"

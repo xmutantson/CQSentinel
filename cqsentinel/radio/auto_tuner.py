@@ -226,7 +226,8 @@ class SSBAutoTuner:
 
             # Set new frequency
             try:
-                radio_controller.set_frequency(new_freq)
+                if radio_controller.set_frequency(new_freq) is False:
+                    raise RuntimeError("Radio rejected tuning command")
                 current_freq = new_freq
 
                 # Let radio settle

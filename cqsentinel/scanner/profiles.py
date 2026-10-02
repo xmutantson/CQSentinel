@@ -205,6 +205,13 @@ BAND_PROFILES: Dict[str, BandProfile] = {
 }
 
 
+# Physical bands selectable in the GUI, in ascending frequency order. Scenario
+# aliases (e.g. field_day_20m) share a band and are not separate checkbox choices.
+SUPPORTED_SCAN_BANDS = tuple(
+    name for name, profile in BAND_PROFILES.items() if name == profile.band_name
+)
+
+
 @dataclass
 class MultiBandProfile:
     """
@@ -253,7 +260,7 @@ ALL_HF_BANDS = MultiBandProfile(
 # All bands including VHF/UHF
 ALL_BANDS = MultiBandProfile(
     name="All Bands (HF/VHF/UHF)",
-    bands=["160m", "80m", "40m", "20m", "15m", "10m", "6m", "2m", "70cm"],
+    bands=list(SUPPORTED_SCAN_BANDS),
     repeat=True
 )
 

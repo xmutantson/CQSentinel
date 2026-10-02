@@ -26,6 +26,7 @@ class OpenAITranscriptionResult:
     text: str = ""
     success: bool = False
     error: Optional[str] = None
+    frequency_hz: float = 0.0
 
 
 class OpenAITranscriber:
@@ -183,7 +184,8 @@ class OpenAITranscriber:
             logger.error(f"OpenAI API connection test failed: {e}")
             return False
 
-    def transcribe_async(self, audio: np.ndarray, sample_rate: int = 16000) -> int:
+    def transcribe_async(self, audio: np.ndarray, sample_rate: int = 16000,
+                         frequency_hz: float = 0.0) -> int:
         """
         Asynchronously transcribe audio using OpenAI API.
 
@@ -206,7 +208,8 @@ class OpenAITranscriber:
                 request_id=request_id,
                 text=result.text,
                 success=result.success,
-                error=result.error
+                error=result.error,
+                frequency_hz=frequency_hz
             )
             self._result_queue.put(async_result)
 

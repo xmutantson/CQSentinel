@@ -41,17 +41,18 @@ async def health_check():
 @app.post("/v1/audio/transcriptions")
 async def transcribe_audio(
     file: UploadFile = File(...),
-    model: str = Form(MODEL_SIZE),
+    requested_model: str = Form(MODEL_SIZE, alias="model"),
     language: str = Form('en'),
     response_format: str = Form('json')
 ):
     """OpenAI-compatible transcription endpoint"""
+    tmp_path = None
     try:
         # Save uploaded file temporarily
         with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp_file:
+            tmp_path = tmp_file.name
             content = await file.read()
             tmp_file.write(content)
-            tmp_path = tmp_file.name
 
         # Transcribe
         segments, info = model.transcribe(
@@ -75,9 +76,6 @@ async def transcribe_audio(
             segment_list.append(segment_data)
             full_text.append(segment.text)
 
-        # Clean up temp file
-        os.unlink(tmp_path)
-
         # Return response
         if response_format == 'verbose_json':
             return JSONResponse({
@@ -96,6 +94,12 @@ async def transcribe_audio(
             status_code=500,
             content={'error': str(e)}
         )
+    finally:
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                logger.exception("Could not remove transcription temporary file")
 
 if __name__ == "__main__":
     import uvicorn

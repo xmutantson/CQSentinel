@@ -44,6 +44,20 @@ def cleanup_resources():
     try:
         logger.info("Cleaning up resources on exit...")
 
+        # Stop the owner of radio/capture work before releasing its dependencies.
+        scanner = getattr(_main_window, 'band_scanner', None)
+        if scanner is not None:
+            scanner.stop_scan()
+            if not scanner.wait_stopped(timeout=5.0):
+                logger.warning("Scanner is still finishing cancelled processing")
+        signal_scanner = getattr(_main_window, 'signal_scanner', None)
+        if signal_scanner is not None:
+            signal_scanner.stop()
+        scan_thread = getattr(_main_window, 'scan_thread', None)
+        if scan_thread is not None:
+            scan_thread.stop()
+            scan_thread.wait(3000)
+
         # Stop transcription poll timer FIRST to prevent warning spam
         if hasattr(_main_window, 'transcription_poll_timer') and _main_window.transcription_poll_timer:
             try:
@@ -264,7 +278,8 @@ def main():
         # Setup cache paths (ensures models go to correct directory)
         setup_cache_paths()
 
-        if not check_models_exist():
+        remote_transcription = config.audio.network_whisper_enabled or bool(config.audio.openai_api_key)
+        if not remote_transcription and not check_models_exist():
             # Hide splash and show model downloader
             splash.hide()
 
@@ -282,7 +297,7 @@ def main():
             if result != downloader.Accepted:
                 logger.warning("User skipped model download - advanced features will be disabled")
         else:
-            logger.info("AI models already available")
+            logger.info("Selected transcription backend does not require a local model download")
 
         # Import MainWindow after splash is shown (this is a slow import)
         # Use QTimer to defer heavy import so splash screen stays responsive

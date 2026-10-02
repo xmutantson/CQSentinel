@@ -11,6 +11,7 @@ from typing import Optional, Callable, List
 from dataclasses import dataclass
 import queue
 import threading
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -127,17 +128,20 @@ class AudioCapture:
             f"sample_rate={sample_rate}, channels={channels}"
         )
 
-    def record(self, duration: float) -> np.ndarray:
+    def record(self, duration: float, cancel_requested: Optional[Callable[[], bool]] = None) -> np.ndarray:
         """
         Record audio for a fixed duration (blocking)
 
         Args:
             duration: Recording duration in seconds
+            cancel_requested: Optional predicate checked before and during capture
 
         Returns:
             Audio data as numpy array
         """
         try:
+            if cancel_requested and cancel_requested():
+                return np.array([], dtype=self.dtype)
             logger.debug(f"Recording {duration}s of audio...")
 
             audio = sd.rec(
@@ -148,6 +152,14 @@ class AudioCapture:
                 device=self.device
             )
 
+            if cancel_requested:
+                # Check after starting too: Stop may arrive between the first
+                # cancellation check and sd.rec opening the recording stream.
+                while sd.get_stream().active:
+                    if cancel_requested():
+                        sd.stop()
+                        return np.array([], dtype=self.dtype)
+                    time.sleep(0.05)
             sd.wait()  # Wait until recording is finished
 
             logger.debug(f"Recorded {len(audio)} samples")

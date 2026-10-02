@@ -13,6 +13,9 @@ import sys
 from typing import Optional, List
 from dataclasses import dataclass
 import time
+import queue
+import threading
+from collections import deque
 
 logger = logging.getLogger(__name__)
 
@@ -487,6 +490,10 @@ class SubprocessTranscriber:
         self.workers_ready = 0
         self.is_ready = False
         self.request_counter = 0
+        self._request_lock = threading.Lock()
+        self._output_lock = threading.Lock()
+        self._failed_results = deque()
+        self._ready_worker_ids = set()
 
         # Shutdown and respawn control
         self._shutting_down = False
@@ -551,6 +558,7 @@ class SubprocessTranscriber:
                     if result.request_id == -1:
                         if result.success:
                             workers_ready += 1
+                            self._ready_worker_ids.add(result.worker_id)
                             logger.info(f"Worker {result.worker_id} ready ({workers_ready}/{self.num_workers})")
                         else:
                             logger.error(f"Worker {result.worker_id} failed to initialize: {result.error}")
@@ -600,16 +608,21 @@ class SubprocessTranscriber:
             raise RuntimeError("Worker pool not ready")
 
         # Create request
-        self.request_counter += 1
+        with self._request_lock:
+            self.request_counter += 1
+            request_id = self.request_counter
         request = TranscriptionRequest(
             audio=audio.copy(),  # Copy to avoid shared memory issues
             sample_rate=sample_rate,
-            request_id=self.request_counter,
+            request_id=request_id,
             frequency_hz=frequency_hz
         )
 
         # Send to pool (any available worker will pick it up)
-        self.input_queue.put(request)
+        try:
+            self.input_queue.put_nowait(request)
+        except queue.Full as exc:
+            raise RuntimeError("Transcription queue full; request was not submitted") from exc
         logger.debug(f"Submitted transcription request {request.request_id} to pool (frequency={frequency_hz/1e6:.3f} MHz)")
 
         return request.request_id
@@ -624,13 +637,28 @@ class SubprocessTranscriber:
         Returns:
             TranscriptionResult if available, None otherwise
         """
-        try:
-            if timeout > 0:
-                result = self.output_queue.get(timeout=timeout)
-            else:
-                result = self.output_queue.get_nowait()
-            return result
-        except:
+        # This is the sole output dispatcher after startup. Recovery only starts
+        # processes; readiness messages never escape to the request router.
+        with self._output_lock:
+            if self._failed_results:
+                return self._failed_results.popleft()
+            deadline = time.monotonic() + timeout
+            for _ in range(100):
+                try:
+                    remaining = max(0, deadline - time.monotonic())
+                    result = (self.output_queue.get(timeout=remaining) if remaining > 0
+                              else self.output_queue.get_nowait())
+                except queue.Empty:
+                    return None
+                if result.request_id != -1:
+                    return result
+                if result.success:
+                    self._ready_worker_ids.add(result.worker_id)
+                    logger.info(f"Worker {result.worker_id} ready")
+                else:
+                    self._ready_worker_ids.discard(result.worker_id)
+                    logger.error(f"Worker {result.worker_id} failed to initialize: {result.error}")
+                self.workers_ready = len(self._ready_worker_ids)
             return None
 
     def stop(self):
@@ -714,7 +742,7 @@ class SubprocessTranscriber:
         Respawn any dead workers.
 
         Returns:
-            Number of workers successfully respawned
+            Number of replacement processes started (readiness is asynchronous)
         """
         if self._shutting_down:
             return 0
@@ -739,6 +767,7 @@ class SubprocessTranscriber:
             for i in range(len(self.workers)):
                 if not self.workers[i].is_alive():
                     old_worker_id = self.worker_ids[i]
+                    self._ready_worker_ids.discard(old_worker_id)
                     old_pid = self.workers[i].pid
                     logger.info(f"Worker {old_worker_id} (PID {old_pid}) died, respawning...")
 
@@ -771,31 +800,9 @@ class SubprocessTranscriber:
                     logger.info(f"Respawned worker {new_worker_id} (PID: {new_worker.pid})")
                     respawned_count += 1
 
-            # Wait for respawned workers to become ready (with short timeout)
-            if respawned_count > 0:
-                logger.info(f"Waiting for {respawned_count} respawned workers to initialize...")
-                timeout = 30.0
-                start_time = time.time()
-                ready_count = 0
-
-                while ready_count < respawned_count and (time.time() - start_time) < timeout:
-                    try:
-                        result = self.output_queue.get(timeout=1.0)
-                        if result.request_id == -1:
-                            if result.success:
-                                ready_count += 1
-                                logger.info(f"Respawned worker {result.worker_id} ready ({ready_count}/{respawned_count})")
-                            else:
-                                logger.error(f"Respawned worker {result.worker_id} failed to initialize: {result.error}")
-                    except:
-                        # Check if any respawned worker died
-                        pass
-
-                if ready_count > 0:
-                    logger.info(f"Successfully respawned {ready_count} workers")
-                else:
-                    logger.error("Failed to respawn any workers")
-
+            # Model initialization is asynchronous. The normal result dispatcher
+            # handles readiness without blocking the GUI health timer or stealing
+            # completed transcripts from healthy workers.
             return respawned_count
 
         except Exception as e:
@@ -816,11 +823,18 @@ class SubprocessTranscriber:
         """
         cleared = 0
         try:
-            while not self.input_queue.empty():
+            # Bound health-timer work even if a producer is still submitting.
+            for _ in range(50):
                 try:
-                    self.input_queue.get_nowait()
-                    cleared += 1
-                except:
+                    request = self.input_queue.get_nowait()
+                    if request is not None:
+                        with self._output_lock:
+                            self._failed_results.append(TranscriptionResult(
+                                request.request_id, "", False,
+                                frequency_hz=request.frequency_hz,
+                                error="Request discarded during worker recovery"))
+                        cleared += 1
+                except queue.Empty:
                     break
             if cleared > 0:
                 logger.warning(f"Cleared {cleared} pending transcription requests from queue (overload recovery)")

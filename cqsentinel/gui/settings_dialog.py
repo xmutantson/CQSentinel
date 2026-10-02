@@ -10,6 +10,7 @@ Allows users to configure:
 """
 
 import logging
+from copy import deepcopy
 import platform
 from typing import List, Tuple
 
@@ -71,7 +72,8 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
 
         self.config_manager = get_config_manager()
-        self.config = self.config_manager.config
+        self.config = deepcopy(self.config_manager.config)
+        self.settings_applied = False
 
         self.init_ui()
         self.load_settings()
@@ -841,7 +843,9 @@ class SettingsDialog(QDialog):
 
         # Save configuration
         try:
-            self.config_manager.save()
+            self.config_manager.save(self.config)
+            self.settings_applied = True
+            self.config = deepcopy(self.config_manager.config)
             logger.info(f"Settings saved successfully to: {self.config_manager.config_file}")
             logger.info(f"  CI-V address: {self.config.radio.civ_address}")
             logger.info(f"  Serial port: {self.config.radio.serial_port}")
@@ -849,11 +853,13 @@ class SettingsDialog(QDialog):
         except Exception as e:
             logger.error(f"Failed to save settings: {e}")
             QMessageBox.critical(self, "Error", f"Failed to save settings: {e}")
+            return False
+        return True
 
     def accept(self):
         """Accept and save settings"""
-        self.apply_settings()
-        super().accept()
+        if self.apply_settings():
+            super().accept()
 
     def get_serial_port(self) -> str:
         """Get selected serial port"""
