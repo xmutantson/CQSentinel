@@ -2975,7 +2975,9 @@ class MainWindow(QMainWindow):
                 self.log(f"Audio output device changed: {old_audio_output_device or 'default'} -> {getattr(self.config.audio, 'output_device_name', None) or 'default'}")
                 audio_devices_changed = True
 
-            if audio_devices_changed:
+            # The last successful device name is historical once replacement
+            # has stopped/closed it. Even selecting that same name needs recovery.
+            if audio_devices_changed or getattr(self, '_audio_devices_pending', False):
                 # Check if scan is active - warn user to stop scan first
                 if self.scan_btn.text() == "Stop Scan":
                     QMessageBox.warning(
@@ -3022,7 +3024,10 @@ class MainWindow(QMainWindow):
                 self.log("*** Settings changed - restart required for full effect ***")
 
     def _reinitialize_audio_devices(self):
-        """Hot-swap audio devices without requiring application restart"""
+        """Hot-swap audio devices without requiring application restart."""
+        # Invalidate the runtime before any destructive step. Only a completed
+        # replacement can clear this; changing selection or cancelling cannot.
+        self._audio_devices_pending = True
         try:
             self.log("Reinitializing audio devices...")
             logger.info("Hot-swapping audio devices")
@@ -3089,6 +3094,7 @@ class MainWindow(QMainWindow):
 
             self.log("Audio devices hot-swapped successfully!")
             logger.info("Audio device hot-swap complete")
+            self._audio_devices_pending = False
             return True
 
         except Exception as e:
