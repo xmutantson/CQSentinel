@@ -6,8 +6,10 @@ Handles loading, saving, and validating configuration settings.
 
 import os
 import yaml
+import tempfile
+from copy import deepcopy
 from typing import Dict, Any, Optional
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass, asdict, field, fields
 from pathlib import Path
 import logging
 
@@ -144,6 +146,8 @@ class ConfigManager:
     def __init__(self, config_file: Optional[str] = None):
         self.config_file = config_file or self._get_default_config_path()
         self.config = AppConfig()
+        self._extra_data = {}
+        self._load_failed = False
 
     def _get_default_config_path(self) -> str:
         """Get default configuration file path"""
@@ -159,55 +163,77 @@ class ConfigManager:
             return self.config
 
         try:
-            with open(self.config_file, 'r') as f:
+            with open(self.config_file, 'r', encoding='utf-8') as f:
                 data = yaml.safe_load(f)
-
-            if data:
-                # Reconstruct nested dataclasses
-                self.config = AppConfig(
-                    radio=RadioConfig(**data.get('radio', {})),
-                    band_plan=BandPlan(**data.get('band_plan', {})),
-                    scan=ScanConfig(**data.get('scan', {})),
-                    audio=AudioConfig(**data.get('audio', {})),
-                    contest=ContestConfig(**data.get('contest', {})),
-                    voice_db=VoiceDBConfig(**data.get('voice_db', {})),
-                    config_dir=data.get('config_dir', str(Path.home() / ".cqsentinel")),
-                    log_level=data.get('log_level', 'INFO'),
-                )
-
+            if data is None:
+                data = {}
+            if not isinstance(data, dict):
+                raise ValueError("Configuration must contain a YAML mapping")
+            sections = {
+                'radio': RadioConfig, 'band_plan': BandPlan, 'scan': ScanConfig,
+                'audio': AudioConfig, 'contest': ContestConfig, 'voice_db': VoiceDBConfig,
+            }
+            values = {}
+            for name, config_type in sections.items():
+                section = data.get(name, {})
+                if not isinstance(section, dict):
+                    raise ValueError(f"Configuration section {name} must be a mapping")
+                known = {item.name for item in fields(config_type)}
+                values[name] = config_type(**{key: value for key, value in section.items() if key in known})
+            self.config = AppConfig(
+                **values,
+                config_dir=data.get('config_dir', str(Path.home() / '.cqsentinel')),
+                log_level=data.get('log_level', 'INFO'),
+            )
+            self._extra_data = deepcopy(data)  # Preserve fields from newer versions.
+            self._load_failed = False
             logger.info(f"Configuration loaded from {self.config_file}")
-
-        except Exception as e:
-            logger.error(f"Failed to load config: {e}")
-            logger.info("Using default configuration")
-
+        except Exception:
+            self._load_failed = True
+            logger.exception("Failed to load configuration; existing file was preserved")
+            raise
         return self.config
 
-    def save(self) -> None:
-        """Save configuration to file"""
+    def save(self, config: Optional[AppConfig] = None) -> None:
+        """Atomically save, publishing edited settings only after durable write.
+
+        Failures propagate to the caller; the previous file and active settings
+        remain intact. A malformed file must be repaired before it can be saved.
+        """
+        if self._load_failed:
+            raise ValueError("Cannot overwrite configuration that failed to load")
+        candidate = config if config is not None else self.config
+        data = deepcopy(self._extra_data)
+        for key, value in asdict(candidate).items():
+            if isinstance(value, dict):
+                data[key] = {**data.get(key, {}), **value}
+            else:
+                data[key] = value
+        target = Path(self.config_file).resolve()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = None
         try:
-            # Convert dataclasses to dicts
-            data = {
-                'radio': asdict(self.config.radio),
-                'band_plan': asdict(self.config.band_plan),
-                'scan': asdict(self.config.scan),
-                'audio': asdict(self.config.audio),
-                'contest': asdict(self.config.contest),
-                'voice_db': asdict(self.config.voice_db),
-                'config_dir': self.config.config_dir,
-                'log_level': self.config.log_level,
-            }
-
-            # Ensure config directory exists
-            os.makedirs(os.path.dirname(self.config_file), exist_ok=True)
-
-            with open(self.config_file, 'w') as f:
-                yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
-
-            logger.info(f"Configuration saved to {self.config_file}")
-
-        except Exception as e:
-            logger.error(f"Failed to save config: {e}")
+            with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8',
+                                             dir=target.parent, prefix=target.name + '.',
+                                             suffix='.tmp', delete=False) as output:
+                temporary = output.name
+                yaml.safe_dump(data, output, default_flow_style=False, sort_keys=False)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, target)
+            temporary = None
+        except Exception:
+            logger.exception("Failed to save configuration")
+            raise
+        finally:
+            if temporary is not None:
+                try:
+                    os.unlink(temporary)
+                except OSError:
+                    logger.warning("Could not remove temporary configuration file")
+        self.config = candidate
+        self._extra_data = data
+        logger.info(f"Configuration saved to {self.config_file}")
 
     def get_bands_list(self) -> list:
         """Get list of available band names"""

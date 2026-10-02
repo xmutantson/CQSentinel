@@ -46,7 +46,8 @@ class AudioPipeline:
         denoise_level: str = "medium",
         vad_threshold: float = 0.5,
         whisper_model: str = "small",
-        enable_voice_id: bool = True
+        enable_voice_id: bool = True,
+        enable_transcription: bool = True
     ):
         """
         Initialize audio pipeline
@@ -74,7 +75,7 @@ class AudioPipeline:
             model_size=whisper_model,
             device="cpu",
             compute_type="float32"  # Windows threading fix - avoid int8 crashes
-        )
+        ) if enable_transcription else None
 
         # Voice fingerprinting (lazy load)
         self.voice_embedder = VoiceEmbedder() if enable_voice_id else None
@@ -87,7 +88,8 @@ class AudioPipeline:
     def process(
         self,
         audio: np.ndarray,
-        skip_if_no_voice: bool = True
+        skip_if_no_voice: bool = True,
+        transcribe: bool = True
     ) -> ProcessedAudio:
         """
         Process audio through complete pipeline
@@ -116,7 +118,7 @@ class AudioPipeline:
         # Step 3: Transcribe (if speech detected)
         transcripts = []
 
-        if has_speech or not skip_if_no_voice:
+        if transcribe and self.transcriber and (has_speech or not skip_if_no_voice):
             try:
                 transcripts = self.transcriber.transcribe(
                     clean_audio,

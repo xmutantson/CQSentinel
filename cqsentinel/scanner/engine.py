@@ -18,8 +18,31 @@ from typing import Optional, Callable, Dict, Any
 from enum import Enum
 from dataclasses import dataclass, field
 from datetime import datetime
+from types import SimpleNamespace
 
 logger = logging.getLogger(__name__)
+
+
+class ScanCancelled(Exception):
+    """An operation belongs to a stopped or skipped scan."""
+
+
+class _ScanRadio:
+    """Prevent a tuner from issuing more CAT commands after cancellation."""
+    def __init__(self, scanner):
+        self.scanner = scanner
+
+    def __getattr__(self, name):
+        attribute = getattr(self.scanner.radio, name)
+        if not callable(attribute):
+            return attribute
+
+        def guarded(*args, **kwargs):
+            # FM centering restores the original mode in finally, including on stop.
+            if name != "set_mode":
+                self.scanner._check_cancelled()
+            return attribute(*args, **kwargs)
+        return guarded
 
 
 class ScanState(Enum):
@@ -129,6 +152,9 @@ class BandScanner:
         band_map=None,
         n3fjp_client=None,
         multiplier_tracker=None,
+        transcriber=None,
+        transcription_timeout_sec: float = 180.0,
+        auto_center_enabled: bool = True,
         # Scan parameters
         step_size_hz: int = 1000,
         scan_speed_steps_per_sec: float = 1.0,
@@ -158,6 +184,9 @@ class BandScanner:
             band_map: BandMapState instance
             n3fjp_client: N3FJPClient instance (optional)
             multiplier_tracker: MultiplierTracker instance (optional)
+            transcriber: TranscriptionRouter owning the selected backend queue
+            transcription_timeout_sec: Maximum wait for each transcription result
+            auto_center_enabled: Whether to retune detected signals before capture
             step_size_hz: Frequency step in Hz (default: 1 kHz)
             scan_speed_steps_per_sec: Scan rate (0.2 to 5.0 steps/sec)
             s_meter_threshold: Minimum S-meter reading to check for voice (0-9+)
@@ -182,6 +211,9 @@ class BandScanner:
         self.band_map = band_map
         self.n3fjp = n3fjp_client
         self.mult_tracker = multiplier_tracker
+        self.transcriber = transcriber
+        self.transcription_timeout = transcription_timeout_sec
+        self.auto_center_enabled = auto_center_enabled
 
         # Parameters
         self.step_size_hz = step_size_hz
@@ -208,6 +240,7 @@ class BandScanner:
         self._pause_requested = False
         self._skip_requested = False  # Human override to skip current frequency
         self._lock = threading.Lock()
+        self._stop_event = threading.Event()
 
         if use_s_meter_scan:
             logger.info(f"BandScanner initialized (S-meter scan S>={s_meter_threshold}, speed={scan_speed_steps_per_sec} steps/sec)")
@@ -232,6 +265,11 @@ class BandScanner:
             if self.is_scanning():
                 logger.warning("Scan already in progress")
                 return
+
+            if not self.transcriber:
+                raise ValueError("A transcription backend is required for full scanning")
+            if freq_end < freq_start or (step_size or self.step_size_hz) <= 0:
+                raise ValueError("Scan range and step size must be valid")
 
             # Set mode based on band:
             # VHF/UHF (above 30 MHz) = FM
@@ -268,10 +306,12 @@ class BandScanner:
 
             # Calculate total frequencies
             freq_range = freq_end - freq_start
-            self.progress.total_frequencies = int(freq_range / self.step_size_hz)
+            self.progress.total_frequencies = int(freq_range / self.step_size_hz) + 1
 
             # Start scan thread
             self._stop_requested = False
+            self._stop_event.clear()
+            self._skip_requested = False
             self._pause_requested = False
             self._scan_thread = threading.Thread(
                 target=self._scan_loop,
@@ -290,13 +330,34 @@ class BandScanner:
         """Stop scanning."""
         with self._lock:
             self._stop_requested = True
+            self._stop_event.set()
             logger.info("Stop requested")
+        self.audio_cap.interrupt_recording()
+
+    def wait_stopped(self, timeout=None):
+        """Wait for actual worker completion, including cancelled processing."""
+        thread = self._scan_thread
+        if thread and thread is not threading.current_thread():
+            thread.join(timeout)
+        return not self.is_scanning()
+
+    def _check_cancelled(self):
+        if self._stop_event.is_set() or self._skip_requested:
+            raise ScanCancelled()
+
+    def _capture(self, duration):
+        self._check_cancelled()
+        audio = self.audio_cap.record(
+            duration, cancel_requested=lambda: self._stop_event.is_set() or self._skip_requested)
+        self._check_cancelled()
+        return audio
 
     def skip_current(self):
         """Skip current frequency (human override)."""
         with self._lock:
             self._skip_requested = True
             logger.info("Skip current frequency requested")
+        self.audio_cap.interrupt_recording()
 
     def pause_scan(self):
         """Pause scanning."""
@@ -316,8 +377,7 @@ class BandScanner:
         """Check if scan is active."""
         return (
             self._scan_thread is not None and
-            self._scan_thread.is_alive() and
-            not self._stop_requested
+            self._scan_thread.is_alive()
         )
 
     def get_progress(self) -> ScanProgress:
@@ -388,7 +448,7 @@ class BandScanner:
             True if voice detected, False otherwise
         """
         self.progress.state = ScanState.VOICE_DETECTED
-        quick_audio = self.audio_cap.record(self.quick_check_duration)
+        quick_audio = self._capture(self.quick_check_duration)
         quick_result = self.pipeline.process_quick(quick_audio)
 
         if not quick_result['has_speech']:
@@ -408,6 +468,7 @@ class BandScanner:
             frequency: Frequency in Hz
         """
         try:
+            self._check_cancelled()
             # Check for skip request (human override)
             with self._lock:
                 if self._skip_requested:
@@ -416,7 +477,7 @@ class BandScanner:
                     return
 
             # Check if frequency is marked as local noise
-            if self.band_map and self.noise_skip_threshold > 0:
+            if self.band_map is not None and self.noise_skip_threshold > 0:
                 if self.band_map.is_noise_frequency(frequency, self.noise_skip_threshold):
                     logger.debug(f"{frequency/1e6:.3f} MHz: Skipping (marked as local noise)")
                     time.sleep(self.step_delay)  # Maintain scan timing
@@ -428,7 +489,7 @@ class BandScanner:
 
             # Tune radio
             self.progress.state = ScanState.MOVING
-            self.radio.set_frequency(int(frequency))
+            _ScanRadio(self).set_frequency(int(frequency))
             time.sleep(0.05)  # Quick settling time
 
             # Fast S-meter check first (if enabled)
@@ -446,8 +507,8 @@ class BandScanner:
                     # S-meter failed, fall back to VAD check
                     logger.debug(f"S-meter read failed: {e}, using voice detection")
                     # Fall through to VAD check below
-                    self._check_voice_vad(frequency)
-                    return
+                    if not self._check_voice_vad(frequency):
+                        return
             else:
                 # No S-meter scan - use traditional VAD check
                 if not self._check_voice_vad(frequency):
@@ -464,20 +525,24 @@ class BandScanner:
                 logger.warning(f"Could not get radio mode: {e}, assuming SSB")
                 mode = "USB"
 
-            if mode == "FM" and self.fm_tuner:
+            self._check_cancelled()
+            if not self.auto_center_enabled:
+                center_result = SimpleNamespace(success=True, final_frequency=frequency, iterations=0)
+            elif mode == "FM" and self.fm_tuner:
                 # Use FM power-based edge detection
                 logger.debug(f"Using FMAutoTuner for {mode} mode")
                 center_result = self.fm_tuner.auto_center(
-                    self.radio,
-                    self.audio_cap.record,
+                    _ScanRadio(self),
+                    self._capture,
                     frequency
                 )
             else:
                 # Use SSB pitch-based centering
                 logger.debug(f"Using SSBAutoTuner for {mode} mode")
+                self.tuner.set_sideband(mode)
                 center_result = self.tuner.auto_center(
-                    self.radio,
-                    self.audio_cap.record,
+                    _ScanRadio(self),
+                    self._capture,
                     frequency,
                     capture_duration=3.0
                 )
@@ -496,8 +561,8 @@ class BandScanner:
                     f"({center_result.iterations} iterations)"
                 )
             else:
-                centered_freq = frequency
-                logger.warning(f"Centering failed, using {frequency/1e6:.3f} MHz")
+                centered_freq = center_result.final_frequency
+                logger.warning(f"Centering failed, listening at {centered_freq/1e6:.3f} MHz")
 
             # Check for skip before long audio capture
             with self._lock:
@@ -508,7 +573,7 @@ class BandScanner:
 
             # Capture full sample
             self.progress.state = ScanState.LISTENING
-            full_audio = self.audio_cap.record(self.dwell_with_voice)
+            full_audio = self._capture(self.dwell_with_voice)
 
             # Check for skip after audio capture (may have been interrupted)
             with self._lock:
@@ -525,7 +590,31 @@ class BandScanner:
 
             # Process audio
             self.progress.state = ScanState.PROCESSING
-            result = self.pipeline.process(full_audio)
+            result = self.pipeline.process(full_audio, transcribe=False)
+            self._check_cancelled()
+            if not result.has_speech:
+                return
+            request_id = self.transcriber.transcribe_async(
+                audio=result.clean_audio,
+                sample_rate=self.audio_cap.sample_rate,
+                frequency_hz=centered_freq,
+            )
+            deadline = time.monotonic() + self.transcription_timeout
+            try:
+                while True:
+                    self._check_cancelled()
+                    transcription = self.transcriber.get_result_for(request_id)
+                    if transcription is not None:
+                        if not transcription.success:
+                            raise RuntimeError(transcription.error or "Transcription failed")
+                        break
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("Transcription deadline exceeded")
+                    self._stop_event.wait(0.05)
+            finally:
+                self.transcriber.cancel(request_id)
+            self._check_cancelled()
+            result.transcripts = [SimpleNamespace(text=transcription.text)]
 
             # Extract callsigns
             full_transcript = ' '.join(seg.text for seg in result.transcripts)
@@ -556,6 +645,7 @@ class BandScanner:
                 return
 
             # Process station
+            self._check_cancelled()
             self._process_station(
                 frequency=centered_freq,
                 callsigns=callsigns,
@@ -564,8 +654,12 @@ class BandScanner:
                 transcripts=result.transcripts
             )
 
+        except ScanCancelled:
+            logger.info("Scan operation cancelled")
         except Exception as e:
             logger.error(f"Error processing {frequency/1e6:.3f} MHz: {e}")
+        finally:
+            self._skip_requested = False
 
     def _process_station(
         self,
@@ -649,6 +743,7 @@ class BandScanner:
                 self.progress.new_stations += 1
 
         # Add to band map
+        self._check_cancelled()
         station = self.band_map.add_or_update_station(
             frequency=frequency,
             callsign=callsign,

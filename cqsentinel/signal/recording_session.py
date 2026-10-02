@@ -69,6 +69,7 @@ class RecordingSession:
         on_state_change: Optional[Callable] = None,
         on_result: Optional[Callable] = None,
         on_stuck: Optional[Callable] = None,  # Called when stuck on noise
+        transcription_timeout_sec: float = 180.0,
     ):
         """
         Initialize recording session manager.
@@ -124,6 +125,8 @@ class RecordingSession:
 
         # Transcription tracking
         self.pending_transcription_id = None
+        self.transcription_timeout = transcription_timeout_sec
+        self.transcription_deadline = None
 
         # VAD validation tracking
         self.vad_check_failures = 0
@@ -522,13 +525,14 @@ class RecordingSession:
             self.pending_transcription_id = self.transcriber.transcribe_async(
                 audio=self.recording_buffer.copy(),
                 sample_rate=self.sample_rate,
-                frequency_hz=self.current_frequency_hz  # Pass frequency for tracking
+                frequency_hz=self.current_result.frequency_hz
             )
             logger.info(
                 f"Submitted {self.recording_duration}s audio for transcription "
                 f"(request_id={self.pending_transcription_id}, frequency={self.current_frequency_hz/1e6:.3f} MHz)"
             )
             self._set_state(SessionState.TRANSCRIBING)
+            self.transcription_deadline = time.monotonic() + self.transcription_timeout
 
         except Exception as e:
             logger.error(f"Failed to submit transcription: {e}")
@@ -544,8 +548,8 @@ class RecordingSession:
 
         # Check for result (non-blocking)
         try:
-            result = self.transcriber.get_result(timeout=0)
-            if result is not None and result.request_id == self.pending_transcription_id:
+            result = self.transcriber.get_result_for(self.pending_transcription_id)
+            if result is not None:
                 if result.success:
                     self.current_result.transcript = result.text
                     logger.info(f"Transcription received: {len(result.text)} chars")
@@ -554,8 +558,17 @@ class RecordingSession:
                     self.current_result.success = False
                     self.current_result.error = result.error
                     self._set_state(SessionState.COMPLETE)
+            elif time.monotonic() >= self.transcription_deadline:
+                self.transcriber.cancel(self.pending_transcription_id)
+                self.current_result.success = False
+                self.current_result.error = "Transcription deadline exceeded"
+                self._set_state(SessionState.COMPLETE)
         except Exception as e:
-            logger.debug(f"Error checking transcription result: {e}")
+            self.transcriber.cancel(self.pending_transcription_id)
+            self.current_result.success = False
+            self.current_result.error = str(e)
+            self._set_state(SessionState.COMPLETE)
+            logger.error(f"Error checking transcription result: {e}")
 
         return None
 
@@ -590,10 +603,13 @@ class RecordingSession:
 
     def _reset_session(self):
         """Reset session state for next recording."""
+        if self.pending_transcription_id is not None and self.transcriber:
+            self.transcriber.cancel(self.pending_transcription_id)
         self.state = SessionState.IDLE
         self.current_result = None
         self.recording_position = 0
         self.pending_transcription_id = None
+        self.transcription_deadline = None
         self.centering_attempted = False  # Reset for next signal
         self.centering_in_progress = False  # Reset centering progress
         self.carrier_detector.reset()

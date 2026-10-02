@@ -320,6 +320,10 @@ class SignalScanner:
                 freq = self.radio.get_frequency()
                 if freq and freq > 0:
                     self.current_frequency = freq
+                    session = self.recording_session
+                    if (session.state == SessionState.RECORDING and session.current_result
+                            and freq != session.current_result.frequency_hz):
+                        session.cancel()  # Never combine audio from different tuned frequencies.
                     # Pass frequency to recording session for transcription tracking
                     self.recording_session.current_frequency_hz = freq
             except Exception as e:
@@ -386,7 +390,7 @@ class SignalScanner:
         self.sessions_completed += 1
 
         # Get the frequency this recording was made at
-        frequency = self.current_frequency
+        frequency = result.frequency_hz
         if frequency <= 0:
             logger.warning("No valid frequency for session result, cannot add to band map")
             return
@@ -451,7 +455,7 @@ class SignalScanner:
                     frequency=frequency,
                     callsign=None,
                     contestness_score=result.analysis.confidence * 100,
-                    activity_type=ActivityType.CONTEST,
+                    activity_type=ActivityType.RUN_STATION,
                     is_run_station=True,
                     status=StationStatus.NEW
                 )
@@ -518,7 +522,7 @@ class SignalScanner:
             frequency=frequency,
             callsign=analysis.running_station_callsign,
             contestness_score=analysis.confidence * 100,  # Convert to 0-100 scale
-            activity_type=ActivityType.CONTEST,
+            activity_type=ActivityType.RUN_STATION,
             is_run_station=True,
             status=StationStatus.NEW
         )

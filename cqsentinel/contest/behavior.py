@@ -170,7 +170,11 @@ class BehaviorAnalyzer:
             qso_rate_score +
             exchange_score
         )
-        total_score = min(total_score, 100.0)
+        # Voice ID is optional. Missing speaker evidence must not cap every
+        # transcript-only score at 60, below the default threshold of 70.
+        # This is a normalized heuristic, not a calibrated probability.
+        available_points = 100.0 if voice_segments else 60.0
+        total_score = min(total_score / available_points * 100.0, 100.0)
 
         # Classify station type
         station_type, is_run = self._classify_station_type(
@@ -412,6 +416,9 @@ class BehaviorAnalyzer:
         # Low contestness = ragchew
         if contestness_score < 40:
             return StationType.RAGCHEW, False
+
+        if not voice_segments:
+            return StationType.UNCLEAR, False
 
         # Count unique speakers
         unique_speakers = 0
